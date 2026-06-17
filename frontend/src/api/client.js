@@ -12,12 +12,28 @@ async function request(path, options = {}) {
   return body.data
 }
 
-export function listProjects() {
-  return request('/projects')
+export function listProjects(params = {}) {
+  const query = new URLSearchParams()
+  if (params.name) {
+    query.set('name', params.name)
+  }
+  if (params.code) {
+    query.set('code', params.code)
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return request(`/projects${suffix}`)
 }
 
 export function createProject(payload) {
   return request('/projects', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function updateProject(projectId, payload) {
+  return request(`/projects/${encodeURIComponent(projectId)}`, { method: 'PUT', body: JSON.stringify(payload) })
+}
+
+export function deleteProject(projectId) {
+  return request(`/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' })
 }
 
 export function listVersions(projectId) {

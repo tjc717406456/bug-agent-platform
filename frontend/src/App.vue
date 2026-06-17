@@ -51,20 +51,29 @@
         <section v-show="activePanel === 'projects'" class="panel">
           <div class="panel-title">
             <h2>项目管理</h2>
-            <el-button type="primary" :icon="Plus" @click="createProjectAction">新建项目</el-button>
+            <el-button type="primary" :icon="Plus" @click="openProjectDialog()">新增项目</el-button>
           </div>
-          <el-form :model="projectForm" label-width="90px" class="compact-form">
+          <el-form :model="projectQuery" label-width="90px" class="compact-form">
             <el-row :gutter="16">
-              <el-col :span="6"><el-form-item label="项目名"><el-input v-model="projectForm.name" /></el-form-item></el-col>
-              <el-col :span="6"><el-form-item label="项目编码"><el-input v-model="projectForm.code" /></el-form-item></el-col>
-              <el-col :span="12"><el-form-item label="说明"><el-input v-model="projectForm.description" /></el-form-item></el-col>
+              <el-col :span="8"><el-form-item label="项目名称"><el-input v-model="projectQuery.name" clearable /></el-form-item></el-col>
+              <el-col :span="8"><el-form-item label="项目编码"><el-input v-model="projectQuery.code" clearable /></el-form-item></el-col>
+              <el-col :span="8">
+                <el-button type="primary" :icon="Refresh" @click="loadAll">查询</el-button>
+                <el-button :icon="Refresh" @click="resetProjectQuery">重置</el-button>
+              </el-col>
             </el-row>
           </el-form>
-          <el-table :data="projects" highlight-current-row @current-change="selectProject">
+          <el-table :data="projects" highlight-current-row @current-change="selectProject" @row-dblclick="openProjectDialog">
             <el-table-column prop="id" label="ID" width="80" />
-            <el-table-column prop="name" label="项目名" />
+            <el-table-column prop="name" label="项目名称" />
             <el-table-column prop="code" label="编码" />
             <el-table-column prop="description" label="说明" />
+            <el-table-column label="操作" width="150">
+              <template #default="scope">
+                <el-button link type="primary" @click="openProjectDialog(scope.row)">编辑</el-button>
+                <el-button link type="danger" @click="deleteProjectAction(scope.row)">删除</el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </section>
 
@@ -317,6 +326,18 @@
       </el-tabs>
     </el-dialog>
 
+    <el-dialog v-model="projectDialogVisible" :title="projectForm.id ? '编辑项目' : '新增项目'" width="560px" destroy-on-close>
+      <el-form :model="projectForm" label-width="90px">
+        <el-form-item label="项目名称"><el-input v-model="projectForm.name" /></el-form-item>
+        <el-form-item label="项目编码"><el-input v-model="projectForm.code" /></el-form-item>
+        <el-form-item label="说明"><el-input v-model="projectForm.description" type="textarea" :rows="3" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="projectDialogVisible = false">取消</el-button>
+        <el-button type="primary" :icon="Check" @click="saveProjectAction">保存</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="dbhubDialogVisible" title="dbhub 数据源" width="640px" destroy-on-close>
       <el-form :model="dbhubForm" label-width="100px">
         <el-form-item label="数据源Key"><el-input v-model="dbhubForm.key" placeholder="user_bug_demo" /></el-form-item>
@@ -344,6 +365,7 @@ import {
   pollAgentAnalysisTask,
   createProject,
   deleteDbhubDatasource,
+  deleteProject,
   getAiConfig,
   importGit,
   importZip,
@@ -357,7 +379,8 @@ import {
   saveDbhubDatasource,
   saveDatasource,
   testDbhubDatasource,
-  testAiConfig
+  testAiConfig,
+  updateProject
 } from './api/client'
 
 const activePanel = ref('projects')
@@ -374,12 +397,14 @@ const analysisDialogVisible = ref(false)
 const activeReportTab = ref('report')
 const dbhubDatasources = ref([])
 const selectedDbhubDatasources = ref([])
+const projectDialogVisible = ref(false)
 const dbhubDialogVisible = ref(false)
 const apiRoutes = ref([])
 const routesLoading = ref(false)
 const selectedApiPrefix = ref("")
 
-const projectForm = reactive({ name: '', code: '', description: '' })
+const projectForm = reactive({ id: null, name: '', code: '', description: '' })
+const projectQuery = reactive({ name: '', code: '' })
 const gitForm = reactive({ repoUrl: '', branchName: '', accessToken: '' })
 const aiForm = reactive({ provider: 'openai-compatible', baseUrl: '', modelName: '', apiKey: '', timeoutSeconds: 60, enabled: true })
 const dbhubForm = reactive({ key: '', host: 'localhost', port: 3306, user: 'root', password: '1234', database: '' })
@@ -430,7 +455,17 @@ const filteredDbhubDatasources = computed(() => {
 })
 
 async function loadAll() {
-  projects.value = await listProjects()
+  await loadProjects()
+  dbhubDatasources.value = await listDbhubDatasources().catch(() => [])
+  await loadProjectRelated()
+  const config = await getAiConfig().catch(() => null)
+  if (config) {
+    Object.assign(aiForm, { ...config, apiKey: '' })
+  }
+}
+
+async function loadProjects() {
+  projects.value = await listProjects(projectQuery)
   if (!currentProject.value && projects.value.length) {
     currentProject.value = projects.value[0]
     selectedProjectId.value = currentProject.value.id
@@ -443,11 +478,11 @@ async function loadAll() {
     currentProject.value = matched || projects.value[0] || null
     selectedProjectId.value = currentProject.value?.id || null
   }
-  dbhubDatasources.value = await listDbhubDatasources().catch(() => [])
-  await loadProjectRelated()
-  const config = await getAiConfig().catch(() => null)
-  if (config) {
-    Object.assign(aiForm, { ...config, apiKey: '' })
+  if (!currentProject.value) {
+    selectedProjectId.value = null
+    datasourceProjectId.value = null
+    versions.value = []
+    datasources.value = []
   }
 }
 
@@ -461,10 +496,61 @@ async function loadProjectRelated() {
   await loadApiRoutes()
 }
 
-async function createProjectAction() {
-  await createProject(projectForm)
-  ElMessage.success('项目已创建')
-  Object.assign(projectForm, { name: '', code: '', description: '' })
+async function saveProjectAction() {
+  if (!projectForm.name || !projectForm.code) {
+    ElMessage.warning('项目名称和项目编码不能为空')
+    return
+  }
+  const saved = projectForm.id ? await updateProject(projectForm.id, projectForm) : await createProject(projectForm)
+  ElMessage.success(projectForm.id ? '项目已修改' : '项目已创建')
+  projectDialogVisible.value = false
+  resetProjectForm()
+  currentProject.value = saved
+  selectedProjectId.value = saved.id
+  datasourceProjectId.value = saved.id
+  await loadAll()
+}
+
+function openProjectDialog(row) {
+  if (row) {
+    Object.assign(projectForm, {
+      id: row.id,
+      name: row.name,
+      code: row.code,
+      description: row.description || ''
+    })
+  } else {
+    resetProjectForm()
+  }
+  projectDialogVisible.value = true
+}
+
+function resetProjectForm() {
+  Object.assign(projectForm, { id: null, name: '', code: '', description: '' })
+}
+
+async function deleteProjectAction(row) {
+  await ElMessageBox.confirm(`确认删除项目 ${row.name} 吗？项目版本、数据源绑定、代码索引和分析记录会一起删除。`, '删除项目', { type: 'warning' })
+  await deleteProject(row.id)
+  ElMessage.success('项目已删除')
+  if (selectedProjectId.value === row.id) {
+    selectedProjectId.value = null
+  }
+  if (datasourceProjectId.value === row.id) {
+    datasourceProjectId.value = null
+  }
+  if (currentProject.value?.id === row.id) {
+    currentProject.value = null
+    analysisForm.versionId = ''
+    analysisForm.apiPath = ''
+    selectedApiPrefix.value = ''
+    apiRoutes.value = []
+  }
+  await loadAll()
+}
+
+async function resetProjectQuery() {
+  Object.assign(projectQuery, { name: '', code: '' })
   await loadAll()
 }
 
