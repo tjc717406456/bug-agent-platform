@@ -35,10 +35,6 @@
 
     <el-container>
       <el-header class="header">
-        <div>
-          <h1>多项目后端 Bug 分析 Agent</h1>
-          <p>CodeGraph + dbhub + AI，按证据输出诊断报告。</p>
-        </div>
         <div class="header-actions">
           <el-select v-model="selectedProjectId" placeholder="选择项目" filterable @change="changeProject">
             <el-option v-for="project in projects" :key="project.id" :label="project.name" :value="project.id" />
@@ -197,7 +193,7 @@
           </div>
           <el-alert v-if="!currentProject" type="warning" show-icon title="先选择项目并完成源码索引" />
           <el-row v-else :gutter="16" class="analysis-grid">
-            <el-col :span="15">
+            <el-col :span="24">
               <div class="analysis-section">
                 <div class="section-title">
                   <h3>问题输入</h3>
@@ -245,20 +241,22 @@
                       </el-select>
                     </div>
                   </el-form-item>
-                  <el-form-item label="问题描述"><el-input v-model="analysisForm.userDescription" type="textarea" :rows="3" placeholder="可选，例如：列表只查出3条，实际数据库有5条，怀疑筛选条件或字段类型不对" /></el-form-item>
-                  <el-form-item label="请求参数"><el-input v-model="analysisForm.requestBody" type="textarea" :rows="4" /></el-form-item>
-                  <el-form-item label="响应结果"><el-input v-model="analysisForm.responseBody" type="textarea" :rows="4" /></el-form-item>
-                  <el-form-item label="异常堆栈"><el-input v-model="analysisForm.stackTrace" type="textarea" :rows="4" placeholder="可选" /></el-form-item>
-                  <el-form-item label="错误截图">
-                    <el-upload drag multiple :auto-upload="false" :limit="3" accept="image/png,image/jpeg,image/jpg,image/webp" :on-change="onScreenshotSelected" :on-remove="onScreenshotRemoved">
-                      <el-icon class="upload-icon"><UploadFilled /></el-icon>
-                      <div>可选，拖入截图或点击选择，最多3张</div>
-                    </el-upload>
-                  </el-form-item>
+                  <el-form-item label="问题描述"><el-input v-model="analysisForm.userDescription" type="textarea" :rows="2" placeholder="可选，例如：列表只查出3条，实际数据库有5条，怀疑筛选条件或字段类型不对" /></el-form-item>
+                  <el-row :gutter="16">
+                    <el-col :span="8"><el-form-item label="请求参数"><el-input v-model="analysisForm.requestBody" type="textarea" :rows="3" /></el-form-item></el-col>
+                    <el-col :span="8"><el-form-item label="响应结果"><el-input v-model="analysisForm.responseBody" type="textarea" :rows="3" /></el-form-item></el-col>
+                    <el-col :span="8"><el-form-item label="异常堆栈"><el-input v-model="analysisForm.stackTrace" type="textarea" :rows="3" placeholder="可选" /></el-form-item></el-col>
+                  </el-row>
                   <el-row :gutter="16">
                     <el-col :span="12"><el-form-item label="Trace ID"><el-input v-model="analysisForm.traceId" placeholder="可选" /></el-form-item></el-col>
                     <el-col :span="12"><el-form-item label="请求时间"><el-input v-model="analysisForm.requestTime" placeholder="可选" /></el-form-item></el-col>
                   </el-row>
+                  <el-form-item label="错误截图">
+                    <el-upload drag multiple :auto-upload="false" :limit="3" accept="image/png,image/jpeg,image/jpg,image/webp" :on-change="onScreenshotSelected" :on-remove="onScreenshotRemoved" class="compact-upload">
+                      <el-icon class="upload-icon"><UploadFilled /></el-icon>
+                      <div>可选，拖入截图或点击选择，最多3张</div>
+                    </el-upload>
+                  </el-form-item>
                   <div class="analysis-actions">
                     <el-button type="primary" :icon="DataAnalysis" @click="analyzeAction">开始分析</el-button>
                     <el-button type="success" :icon="DataAnalysis" @click="agentAnalyzeAction">Agent分析</el-button>
@@ -266,47 +264,12 @@
                 </el-form>
               </div>
             </el-col>
-            <el-col :span="9">
-              <div class="analysis-section evidence-panel">
-                <div class="section-title">
-                  <h3>证据概览</h3>
-                  <span>当前版本的链路摘要</span>
-                </div>
-                <el-descriptions :column="1" size="small" border>
-                  <el-descriptions-item label="接口">
-                    <span class="mono">{{ analysisForm.apiPath || '未选择' }}</span>
-                  </el-descriptions-item>
-                  <el-descriptions-item label="版本">
-                    <span>{{ currentVersionLabel }}</span>
-                  </el-descriptions-item>
-                  <el-descriptions-item label="数据源">
-                    <span>{{ currentDatasource?.dbhubKey || '未绑定' }}</span>
-                  </el-descriptions-item>
-                  <el-descriptions-item label="路由状态">
-                    <el-tag :type="analysisForm.apiPath ? 'success' : 'info'">{{ analysisForm.apiPath ? '已填写' : '未填写' }}</el-tag>
-                  </el-descriptions-item>
-                  <el-descriptions-item label="截图">
-                    <span>{{ screenshotFiles.length }} 张</span>
-                  </el-descriptions-item>
-                </el-descriptions>
-                <div class="evidence-block">
-                  <div class="evidence-title">最近版本接口</div>
-                  <div class="route-chip-list">
-                    <el-tag v-for="route in apiRoutes.slice(0, 8)" :key="route.id" effect="plain" class="route-chip" @click="selectApiRoute(route.path)">{{ route.path }}</el-tag>
-                  </div>
-                </div>
-                <div class="evidence-block">
-                  <div class="evidence-title">操作提示</div>
-                  <p class="hint-text">先选版本，再搜接口。接口没命中时，先看版本是否选对，不要直接怪 AI。</p>
-                </div>
-              </div>
-            </el-col>
           </el-row>
         </section>
       </el-main>
     </el-container>
 
-    <el-dialog v-model="analysisDialogVisible" width="72%" class="analysis-dialog" destroy-on-close>
+    <el-dialog v-model="analysisDialogVisible" width="820px" class="analysis-dialog" align-center destroy-on-close>
       <template #header>
         <div class="report-header">
           <span>分析报告 #{{ analysisResult?.id }}</span>

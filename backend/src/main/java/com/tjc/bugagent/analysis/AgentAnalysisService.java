@@ -28,8 +28,9 @@ import java.util.stream.Collectors;
  */
 @Service
 public class AgentAnalysisService {
-    private static final int MAX_ITERATIONS = 8;
+    private static final int MAX_ITERATIONS = 6;
     private static final int MAX_CONTINUOUS_FAILURES = 2;
+    private static final int MAX_NO_NEW_FACT_ROUNDS = 2;
     private static final Pattern UNKNOWN_COLUMN_PATTERN = Pattern.compile("Unknown column '([^']+)'");
     private static final Pattern FROM_TABLE_PATTERN = Pattern.compile("(?i)\\bfrom\\s+([`\\w.]+)");
 
@@ -68,12 +69,17 @@ public class AgentAnalysisService {
         List<Map<String, Object>> rounds = new ArrayList<Map<String, Object>>();
         String finalReport = null;
         int continuousFailures = 0;
+        int noNewKeyFactRounds = 0;
 
         for (int iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
-            String prompt = buildAgentPrompt(initialEvidence, rounds, iteration);
+            String forceFinishReason = resolveForceFinishReason(initialEvidence, rounds, noNewKeyFactRounds);
+            String prompt = buildAgentPrompt(initialEvidence, rounds, iteration, forceFinishReason);
             AiToolCallResult aiResult = aiClient.chatWithTools(prompt, agentToolExecutor.toolSchemas());
             String aiResponse = aiResult.hasToolCall() ? aiResult.getRawResponse() : aiResult.getContent();
             AgentToolCall call = parseToolCall(aiResult);
+            if (!isBlank(forceFinishReason) && !"finish".equals(call.getAction())) {
+                call = finishCall(buildForcedFinishReport(forceFinishReason, rounds));
+            }
 
             Map<String, Object> round = new LinkedHashMap<String, Object>();
             round.put("iteration", iteration);
@@ -83,6 +89,7 @@ public class AgentAnalysisService {
             round.put("arguments", call.getArguments());
 
             AgentToolResult toolResult = agentToolExecutor.execute(call, toolContext);
+            boolean newKeyFact = isNewKeyFact(rounds, call, toolResult);
             round.put("toolOk", toolResult.isOk());
             round.put("toolSummary", toolResult.getSummary());
             round.put("toolEvidence", toolResult.getEvidence());
@@ -94,6 +101,7 @@ public class AgentAnalysisService {
             }
             if (toolResult.isOk()) {
                 continuousFailures = 0;
+                noNewKeyFactRounds = newKeyFact ? 0 : noNewKeyFactRounds + 1;
             } else {
                 continuousFailures++;
             }
@@ -120,16 +128,26 @@ public class AgentAnalysisService {
         return result;
     }
 
-    private String buildAgentPrompt(String initialEvidence, List<Map<String, Object>> rounds, int iteration) {
+    private String buildAgentPrompt(String initialEvidence, List<Map<String, Object>> rounds, int iteration, String forceFinishReason) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("你是只读 Bug 定位 Agent，只负责定位问题，不修改代码，不生成补丁。\n");
         prompt.append("必须基于证据判断；证据不足就调用工具继续查，每轮只能调用一个工具。\n");
+        prompt.append("当入口、调用链、SQL/数据源、返回模型、差异点这五类证据已经足够解释问题时，必须停止查证并调用 finish。\n");
+        prompt.append("如果连续两轮没有新增关键事实，必须停止查证并收口。\n");
+        prompt.append("同一文件、同一类、同一 SQL 已读过且没有新问题时，不要重复读取。\n");
         prompt.append("数据库只能执行只读 SQL。最终报告要让测试、实施能看懂，并保留开发可追溯证据。\n\n");
         prompt.append("【工具使用方式】\n");
         prompt.append("通过调用提供的工具（tool_calls）行动，不要自己手写 JSON，不要输出 Markdown。\n");
         prompt.append("调用工具前，可在回复正文用一两句话简述这步要查什么、为什么。\n");
-        prompt.append("证据足够后调用 finish 工具，report 参数写最终报告。\n");
+        prompt.append("证据足够后调用 finish 工具，report 参数写最终报告；不要继续追查无关细节。\n");
         prompt.append("最终报告必须包含：问题结论、证据链路、关键代码/SQL/数据证据、根因类型、建议处理人、置信度。\n\n");
+        prompt.append("【收口规则】\n");
+        prompt.append("如果你已经能明确指出最可能的根因和最小修复点，就不要再查重复证据，直接 finish。\n");
+        prompt.append("如果只能给出高概率判断，也要在最终报告里说明剩余风险，不要空转。\n\n");
+        if (!isBlank(forceFinishReason)) {
+            prompt.append("【强制收口要求】\n");
+            prompt.append("当前触发收口条件：").append(forceFinishReason).append("。本轮必须调用 finish，不要再调用查证工具。\n\n");
+        }
         prompt.append("【初始证据】\n").append(initialEvidence).append("\n");
         if (!rounds.isEmpty()) {
             prompt.append("【已执行轮次】\n");
@@ -144,6 +162,72 @@ public class AgentAnalysisService {
         }
         prompt.append("现在是第").append(iteration).append("轮，请基于已有证据决定下一步：继续查证，或调用 finish 收敛。\n");
         return prompt.toString();
+    }
+
+    private String resolveForceFinishReason(String initialEvidence, List<Map<String, Object>> rounds, int noNewKeyFactRounds) {
+        if (noNewKeyFactRounds >= MAX_NO_NEW_FACT_ROUNDS) {
+            return "连续两轮没有新增关键事实";
+        }
+        if (hasEnoughEvidence(initialEvidence, rounds)) {
+            return "证据已经足够形成结论";
+        }
+        return null;
+    }
+
+    private boolean hasEnoughEvidence(String initialEvidence, List<Map<String, Object>> rounds) {
+        String evidence = buildEvidenceLog(initialEvidence, rounds).toLowerCase();
+        boolean hasRoute = evidence.contains("命中路由") || evidence.contains("route");
+        boolean hasCallChain = evidence.contains("相关调用节点") || evidence.contains("调用链") || evidence.contains("service");
+        boolean hasSql = evidence.contains("sql") || evidence.contains("数据库") || evidence.contains("select ");
+        boolean hasModel = evidence.contains("返回对象") || evidence.contains("dto") || evidence.contains("vo") || evidence.contains("entity");
+        boolean hasDiff = evidence.contains("不一致") || evidence.contains("缺失") || evidence.contains("没返回") || evidence.contains("未返回") || evidence.contains("映射");
+        return hasRoute && hasCallChain && hasSql && hasModel && hasDiff;
+    }
+
+    private boolean isNewKeyFact(List<Map<String, Object>> rounds, AgentToolCall call, AgentToolResult toolResult) {
+        String text = (safe(call.getThought()) + "\n" + safe(call.getAction()) + "\n" + safe(call.getArguments()) + "\n" + safe(toolResult.getSummary()) + "\n" + safe(toolResult.getEvidence())).toLowerCase();
+        if (text.contains("无源码定位信息") || text.contains("未找到") || text.contains("缺少")) {
+            return false;
+        }
+        String normalized = normalizeFactSignature(text);
+        for (Map<String, Object> round : rounds) {
+            String previous = (safe(round.get("thought")) + "\n" + safe(round.get("action")) + "\n" + safe(round.get("arguments")) + "\n" + safe(round.get("toolSummary")) + "\n" + safe(round.get("toolEvidence"))).toLowerCase();
+            if (normalized.equals(normalizeFactSignature(previous))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private String normalizeFactSignature(String text) {
+        String normalized = safe(text)
+                .replaceAll("\\s+", " ")
+                .replaceAll("nodeid=\\d+", "nodeid=#")
+                .replaceAll("line=\\d+", "line=#")
+                .replaceAll("id=\\d+", "id=#");
+        if (normalized.length() > 300) {
+            normalized = normalized.substring(0, 300);
+        }
+        return normalized;
+    }
+
+    private String buildForcedFinishReport(String reason, List<Map<String, Object>> rounds) {
+        StringBuilder report = new StringBuilder();
+        report.append("问题结论：Agent 已基于当前证据收口，原因判断以最强证据链为准。\n");
+        report.append("收口原因：").append(reason).append("\n");
+        report.append("证据链路：\n");
+        for (Map<String, Object> round : rounds) {
+            report.append("- 第").append(round.get("iteration")).append("轮：")
+                    .append(safe(round.get("toolSummary"))).append("\n");
+        }
+        if (!rounds.isEmpty()) {
+            Map<String, Object> lastRound = rounds.get(rounds.size() - 1);
+            report.append("关键证据摘要：").append(extractEvidenceSummary(safe(lastRound.get("toolEvidence")))).append("\n");
+        }
+        report.append("建议处理人：后端开发\n");
+        report.append("置信度：MEDIUM\n");
+        report.append("建议处理：结合已有证据确认入口、调用链、SQL、返回模型是否一致，再做最小修复。\n");
+        return report.toString();
     }
 
     private AgentToolCall parseToolCall(AiToolCallResult aiResult) {
@@ -408,8 +492,4 @@ public class AgentAnalysisService {
         return value.substring(0, maxLength) + "...";
     }
 }
-
-
-
-
 

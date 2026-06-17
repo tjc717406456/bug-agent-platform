@@ -74,13 +74,13 @@ body {
 }
 
 .header {
-  height: 78px;
+  height: 48px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   background: #ffffff;
   border-bottom: 1px solid #d7dee8;
-  padding: 0 22px;
+  padding: 0 18px;
 }
 
 .header-actions {
@@ -93,19 +93,8 @@ body {
   width: 240px;
 }
 
-.header h1 {
-  margin: 0;
-  font-size: 20px;
-}
-
-.header p {
-  margin: 6px 0 0;
-  color: #6b7280;
-  font-size: 13px;
-}
-
 .main {
-  padding: 20px;
+  padding: 16px 20px 20px;
 }
 
 .panel {
@@ -177,14 +166,14 @@ body {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #fbfdff;
-  padding: 16px;
+  padding: 14px 16px;
 }
 
 .section-title {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .section-title h3 {
@@ -205,24 +194,6 @@ body {
   padding-top: 4px;
 }
 
-.evidence-panel {
-  position: sticky;
-  top: 96px;
-}
-
-.evidence-block {
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px solid #e2e8f0;
-}
-
-.evidence-title {
-  margin-bottom: 10px;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 700;
-}
-
 .route-chip-list {
   display: flex;
   flex-wrap: wrap;
@@ -241,13 +212,27 @@ body {
   line-height: 1.6;
 }
 
+.compact-upload .el-upload-dragger {
+  padding: 10px;
+}
+
+.compact-upload .upload-icon {
+  font-size: 24px;
+}
+
 .mono {
   font-family: Consolas, "Liberation Mono", monospace;
   color: #0f172a;
 }
 
+.analysis-dialog {
+  max-width: calc(100vw - 48px);
+}
+
 .analysis-dialog .el-dialog__body {
+  max-height: 72vh;
   padding-top: 0;
+  overflow: hidden;
 }
 
 .analysis-result-summary {
@@ -255,15 +240,16 @@ body {
 }
 
 .scroll-content {
-  max-height: 62vh;
+  max-height: 46vh;
   margin: 0;
-  padding: 14px;
+  padding: 12px;
   overflow: auto;
   white-space: pre-wrap;
   background: #0f172a;
   color: #e5e7eb;
   border-radius: 6px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 @media (max-width: 980px) {
@@ -276,10 +262,6 @@ body {
     flex: 0 0 100%;
   }
 
-  .evidence-panel {
-    position: static;
-    margin-top: 16px;
-  }
 }
 .api-path-picker {
   display: grid;
