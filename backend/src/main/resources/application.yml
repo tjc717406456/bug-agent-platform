@@ -11,7 +11,7 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
   redis:
     host: localhost
-    port: 6380
+    port: 6379
   servlet:
     multipart:
       max-file-size: 200MB
@@ -22,3 +22,24 @@ spring:
 
 app:
   workspace-root: ./workspace
+  task-ttl-seconds: 1800
+  async:
+    core-pool-size: 2
+    max-pool-size: 8
+    queue-capacity: 50
+  dbhub:
+    max-pool-size: 3
+    min-idle: 0
+    connection-timeout-ms: 10000
+  agent:
+    max-iterations: 6
+    initial-evidence-limit: 12000
+    sql-text-limit: 2000
+    tool-result-limit: 4000
+    self-critique: true
+  eval:
+    cases-path: ./workspace/eval-cases.json
+  log:
+    dir: ./workspace/logs
+    max-bytes: 10485760
+    retention-days: 1

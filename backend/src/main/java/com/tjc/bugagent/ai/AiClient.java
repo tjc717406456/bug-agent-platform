@@ -1,8 +1,11 @@
 package com.tjc.bugagent.ai;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
@@ -10,18 +13,24 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 调用 OpenAI 兼容的 Chat Completions 接口。
  */
 @Service
 public class AiClient {
-    private final AiConfigService aiConfigService;
-    private final RestTemplate restTemplate;
+    private static final Logger log = LoggerFactory.getLogger(AiClient.class);
 
-    public AiClient(AiConfigService aiConfigService, RestTemplate restTemplate) {
+    private static final int CONNECT_TIMEOUT_MS = 10000;
+    private static final int DEFAULT_READ_TIMEOUT_SECONDS = 60;
+
+    private final AiConfigService aiConfigService;
+    // 按读超时缓存 RestTemplate；SimpleClientHttpRequestFactory 每次请求新建连接，实例可安全共享
+    private final Map<Integer, RestTemplate> restTemplateCache = new ConcurrentHashMap<Integer, RestTemplate>();
+
+    public AiClient(AiConfigService aiConfigService) {
         this.aiConfigService = aiConfigService;
-        this.restTemplate = restTemplate;
     }
 
     /**
@@ -33,9 +42,16 @@ public class AiClient {
     }
 
     /**
-     * 发送带工具定义的对话请求，优先让模型返回标准 tool_calls。
+     * 发送带工具定义的单轮对话请求，内部补全 system + user 消息。
      */
     public AiToolCallResult chatWithTools(String prompt, List<Map<String, Object>> tools) {
+        return chatWithMessages(buildMessages(prompt), tools);
+    }
+
+    /**
+     * 发送多轮对话请求，调用方自行维护完整 messages（含 system、历轮 assistant/tool 结果）。
+     */
+    public AiToolCallResult chatWithMessages(List<Map<String, Object>> messages, List<Map<String, Object>> tools) {
         AiToolCallResult result = new AiToolCallResult();
         AiConfig config = aiConfigService.getEnabledConfig();
         if (config == null) {
@@ -49,7 +65,7 @@ public class AiClient {
 
         Map<String, Object> body = new HashMap<String, Object>();
         body.put("model", config.getModelName());
-        body.put("messages", buildMessages(prompt));
+        body.put("messages", messages);
         body.put("temperature", 0.2);
         if (tools != null && !tools.isEmpty()) {
             body.put("tools", tools);
@@ -58,26 +74,21 @@ public class AiClient {
 
         try {
             String url = config.getBaseUrl().replaceAll("/+$", "") + "/chat/completions";
-            System.out.println("======= AI请求开始 =======");
-            System.out.println("请求地址: " + url);
-            System.out.println("模型名称: " + config.getModelName());
-            System.out.println("API Key前缀: " + maskApiKey(config.getApiKey()));
-            System.out.println("请求体: " + body);
+            // 元信息走 info；请求/响应体含源码、SQL、库数据，只在 debug 级别输出，默认不打印
+            log.info("AI request url={} model={} keyPrefix={}", url, config.getModelName(), maskApiKey(config.getApiKey()));
+            log.debug("AI request body: {}", body);
 
+            // 按读超时取缓存的 RestTemplate，避免每轮新建
+            RestTemplate restTemplate = buildRestTemplate(config);
             Map response = restTemplate.postForObject(url, new HttpEntity<Map<String, Object>>(body, headers), Map.class);
 
-            System.out.println("响应体: " + response);
-            System.out.println("======= AI请求结束 =======");
+            log.debug("AI response body: {}", response);
 
             result.setRawResponse(String.valueOf(response));
             parseResponse(response, result);
             return result;
         } catch (Exception exception) {
-            System.err.println("======= AI请求失败 =======");
-            System.err.println("错误信息: " + exception.getMessage());
-            System.err.println("错误类型: " + exception.getClass().getName());
-            exception.printStackTrace();
-            System.err.println("=========================");
+            log.error("AI request failed: {}", exception.getMessage(), exception);
             result.setContent("AI call failed: " + exception.getMessage());
             return result;
         }
@@ -90,49 +101,84 @@ public class AiClient {
         return chat("Return only: ok");
     }
 
-    private List<Map<String, String>> buildMessages(String prompt) {
-        List<Map<String, String>> messages = new ArrayList<Map<String, String>>();
+    private List<Map<String, Object>> buildMessages(String prompt) {
+        List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
         messages.add(message("system", "You are a backend bug analysis agent. Use only the provided evidence and answer in Chinese."));
         messages.add(message("user", prompt));
         return messages;
     }
 
+    @SuppressWarnings("unchecked")
     private void parseResponse(Map response, AiToolCallResult result) {
-        if (response == null || response.get("choices") == null) {
+        if (response == null || !(response.get("choices") instanceof List)) {
             result.setContent("AI returned empty response.");
             return;
         }
         List choices = (List) response.get("choices");
-        if (choices.isEmpty()) {
+        if (choices.isEmpty() || !(choices.get(0) instanceof Map)) {
             result.setContent("AI returned no choices.");
             return;
         }
         Map first = (Map) choices.get(0);
-        Map responseMessage = (Map) first.get("message");
-        if (responseMessage == null) {
+        if (!(first.get("message") instanceof Map)) {
             result.setContent(String.valueOf(first));
             return;
         }
+        Map<String, Object> responseMessage = (Map<String, Object>) first.get("message");
+        // 留存原始 assistant message，供多轮对话原样回填
+        result.setAssistantMessage(responseMessage);
         Object content = responseMessage.get("content");
         result.setContent(content == null ? "" : String.valueOf(content));
         Object toolCallsValue = responseMessage.get("tool_calls");
         if (!(toolCallsValue instanceof List) || ((List) toolCallsValue).isEmpty()) {
             return;
         }
-        Map toolCall = (Map) ((List) toolCallsValue).get(0);
-        Object functionValue = toolCall.get("function");
-        if (!(functionValue instanceof Map)) {
-            return;
+        // 解析本轮全部 tool_calls，让上层一轮内并行执行，减少串行 LLM 往返
+        List<AiToolCall> toolCalls = new ArrayList<AiToolCall>();
+        for (Object item : (List) toolCallsValue) {
+            if (!(item instanceof Map)) {
+                continue;
+            }
+            Map toolCall = (Map) item;
+            Object functionValue = toolCall.get("function");
+            if (!(functionValue instanceof Map)) {
+                continue;
+            }
+            Map function = (Map) functionValue;
+            Object name = function.get("name");
+            if (name == null || String.valueOf(name).trim().isEmpty()) {
+                continue;
+            }
+            Object arguments = function.get("arguments");
+            Object id = toolCall.get("id");
+            toolCalls.add(new AiToolCall(
+                    id == null ? null : String.valueOf(id),
+                    String.valueOf(name),
+                    arguments == null ? "{}" : String.valueOf(arguments)));
         }
-        Map function = (Map) functionValue;
-        Object name = function.get("name");
-        Object arguments = function.get("arguments");
-        result.setToolName(name == null ? null : String.valueOf(name));
-        result.setArgumentsJson(arguments == null ? "{}" : String.valueOf(arguments));
+        result.setToolCalls(toolCalls);
+        if (!toolCalls.isEmpty()) {
+            // 兼容只读首个调用的旧逻辑
+            result.setToolName(toolCalls.get(0).getName());
+            result.setArgumentsJson(toolCalls.get(0).getArgumentsJson());
+        }
     }
 
-    private Map<String, String> message(String role, String content) {
-        Map<String, String> message = new HashMap<String, String>();
+    private RestTemplate buildRestTemplate(AiConfig config) {
+        int readTimeoutSeconds = config.getTimeoutSeconds() == null || config.getTimeoutSeconds() <= 0
+                ? DEFAULT_READ_TIMEOUT_SECONDS : config.getTimeoutSeconds();
+        return restTemplateCache.computeIfAbsent(readTimeoutSeconds, this::createRestTemplate);
+    }
+
+    private RestTemplate createRestTemplate(int readTimeoutSeconds) {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(CONNECT_TIMEOUT_MS);
+        factory.setReadTimeout(readTimeoutSeconds * 1000);
+        return new RestTemplate(factory);
+    }
+
+    private Map<String, Object> message(String role, String content) {
+        Map<String, Object> message = new HashMap<String, Object>();
         message.put("role", role);
         message.put("content", content);
         return message;

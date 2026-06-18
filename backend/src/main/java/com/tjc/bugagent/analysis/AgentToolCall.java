@@ -9,7 +9,17 @@ import java.util.Map;
 public class AgentToolCall {
     private String thought;
     private String action;
+    // 对应 OpenAI tool_call 的 id，多轮回填 tool 结果时按它配对
+    private String toolCallId;
     private Map<String, Object> arguments = new LinkedHashMap<String, Object>();
+
+    public String getToolCallId() {
+        return toolCallId;
+    }
+
+    public void setToolCallId(String toolCallId) {
+        this.toolCallId = toolCallId;
+    }
 
     public String getThought() {
         return thought;

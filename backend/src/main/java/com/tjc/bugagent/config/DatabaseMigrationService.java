@@ -24,7 +24,38 @@ public class DatabaseMigrationService {
         ensureDbhubDatasourceConfigTable();
         ensureDefaultDbhubDatasources();
         ensureAnalysisScreenshotColumn();
+        ensureAnalysisFeedbackColumns();
         ensureTableComments();
+    }
+
+    /**
+     * 给分析记录补反馈字段：用户标注结论对错 + 正确根因 + 期望关键词，沉淀成回归用例的 ground truth。
+     */
+    private void ensureAnalysisFeedbackColumns() {
+        if (!tableExists("analysis_record")) {
+            return;
+        }
+        addColumnIfMissing("analysis_record", "feedback_verdict", "varchar(16) comment '人工标注结论(CORRECT/WRONG/PARTIAL)' after evidence_json");
+        addColumnIfMissing("analysis_record", "actual_root_cause", "mediumtext comment '人工确认的真实根因' after feedback_verdict");
+        addColumnIfMissing("analysis_record", "expect_keywords", "varchar(1024) comment '正确结论必须命中的关键词JSON' after actual_root_cause");
+        addColumnIfMissing("analysis_record", "feedback_note", "varchar(512) comment '反馈备注' after expect_keywords");
+        addColumnIfMissing("analysis_record", "feedback_at", "datetime comment '反馈时间' after feedback_note");
+    }
+
+    private boolean tableExists(String tableName) {
+        Integer count = jdbcTemplate.queryForObject(
+                "select count(1) from information_schema.tables where table_schema = database() and table_name = ?",
+                Integer.class, tableName);
+        return count != null && count > 0;
+    }
+
+    private void addColumnIfMissing(String tableName, String columnName, String columnDefinition) {
+        Integer count = jdbcTemplate.queryForObject(
+                "select count(1) from information_schema.columns where table_schema = database() and table_name = ? and column_name = ?",
+                Integer.class, tableName, columnName);
+        if (count == null || count == 0) {
+            jdbcTemplate.execute("alter table " + tableName + " add column " + columnName + " " + columnDefinition);
+        }
     }
 
     /**

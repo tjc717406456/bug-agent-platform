@@ -53,6 +53,12 @@ public class ProjectController {
         return ApiResponse.ok(projectService.listVersions(projectId));
     }
 
+    @DeleteMapping("/{projectId}/versions/{versionId}")
+    public ApiResponse<String> deleteVersion(@PathVariable Long projectId, @PathVariable Long versionId) {
+        projectService.deleteVersion(projectId, versionId);
+        return ApiResponse.ok("ok");
+    }
+
     @PostMapping("/{projectId}/datasources")
     public ApiResponse<Void> saveDatasource(@PathVariable Long projectId, @Valid @RequestBody SaveDatasourceRequest request) {
         projectService.saveDatasource(projectId, request);

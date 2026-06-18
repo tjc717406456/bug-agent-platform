@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat src/main/resources/mapper/UserMapper.xml)",
+      "Bash(cat bug-scenario.sql)",
+      "Bash(cat src/main/resources/application.yml)",
+      "Bash(cat src/main/java/com/tjc/samplebug/user/UserRecord.java)",
+      "Bash(claude --version)",
+      "WebFetch(domain:github.com)",
+      "Bash(npx -y \"github:JuliusBrussee/caveman\" --help)",
+      "Bash(curl -s \"https://registry.npmjs.org/@upstash/context7-mcp/latest\")",
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\);process.stdin.on\\('end',\\(\\)=>{try{const j=JSON.parse\\(d\\);console.log\\('包名:',j.name,'版本:',j.version\\);console.log\\('bin:',JSON.stringify\\(j.bin\\)\\);console.log\\('desc:',j.description\\)}catch\\(e\\){console.log\\('未找到'\\)}}\\)\")",
+      "Bash(curl -s \"https://registry.npmjs.org/-/v1/search?text=fast-context%20mcp&size=8\")",
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\);process.stdin.on\\('end',\\(\\)=>{try{const j=JSON.parse\\(d\\);j.objects.forEach\\(o=>console.log\\('•',o.package.name,'—',\\(o.package.description||''\\).slice\\(0,70\\)\\)\\)}catch\\(e\\){console.log\\('解析失败'\\)}}\\)\")"
+    ]
+  }
+}

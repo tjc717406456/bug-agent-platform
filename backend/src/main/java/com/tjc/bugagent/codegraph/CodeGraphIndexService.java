@@ -9,7 +9,10 @@ import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.AnnotationExpr;
+import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.MemberValuePair;
 import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedReferenceTypeDeclaration;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
@@ -30,8 +33,10 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -95,7 +100,9 @@ public class CodeGraphIndexService {
         }
         ParserConfiguration configuration = new ParserConfiguration()
                 .setSymbolResolver(new JavaSymbolSolver(typeSolver))
-                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_8);
+                // 用高版本语言级，兼容 var/record/switch 表达式等新语法；旧代码向下兼容。
+                // 锁死 JAVA_8 会让用了新语法的文件直接 parse 失败、整文件丢失
+                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17);
         return new JavaParser(configuration);
     }
 
@@ -140,6 +147,13 @@ public class CodeGraphIndexService {
             Long classNodeId = addNode(projectId, versionId, "CLASS", className, qualifiedClass, file, clazz.getBegin().map(p -> p.line).orElse(null), "{}");
             state.classNodeIds.put(qualifiedClass, classNodeId);
             state.classNodeIds.put(className, classNodeId);
+            // 记下实现/继承关系，链接调用时把接口/父类调用展开到实现类、子类
+            for (ClassOrInterfaceType implemented : clazz.getImplementedTypes()) {
+                addImplementor(state, implemented.getNameAsString(), qualifiedClass);
+            }
+            for (ClassOrInterfaceType extended : clazz.getExtendedTypes()) {
+                addImplementor(state, extended.getNameAsString(), qualifiedClass);
+            }
             Map<String, String> fieldTypes = collectFieldTypes(clazz, packageName);
             // 每个类重置本类失败计数，避免一个类的噪音连累同类其他方法
             guard.beginClass();
@@ -150,6 +164,8 @@ public class CodeGraphIndexService {
                 addMethodIndex(state, methodName, qualifiedClass, qualifiedMethod, methodNodeId);
                 addEdge(projectId, versionId, classNodeId, methodNodeId, "CLASS_HAS_METHOD", "{}");
                 addRouteNodes(projectId, versionId, clazz, method, methodNodeId, file);
+                // MyBatis 注解 SQL（@Select 等）也建 SQL 节点，linkMapperMethods 会按全限定名把方法连过来
+                indexAnnotationSql(projectId, versionId, method, qualifiedMethod, file);
                 for (MethodCallExpr call : method.findAll(MethodCallExpr.class)) {
                     String symbolOwner = resolveSymbolOwnerType(call, guard);
                     String heuristicOwner = symbolOwner == null ? resolveCallOwnerType(call, fieldTypes, packageName) : symbolOwner;
@@ -227,6 +243,17 @@ public class CodeGraphIndexService {
         values.add(value);
     }
 
+    private void addImplementor(JavaIndexState state, String superSimpleName, String implQualified) {
+        List<String> impls = state.implementorsBySimpleName.get(superSimpleName);
+        if (impls == null) {
+            impls = new ArrayList<String>();
+            state.implementorsBySimpleName.put(superSimpleName, impls);
+        }
+        if (!impls.contains(implQualified)) {
+            impls.add(implQualified);
+        }
+    }
+
     private void linkKnownCalls(Long projectId, Long versionId, JavaIndexState state) {
         List<CodeGraphRepository.EdgeInsert> edges = new ArrayList<CodeGraphRepository.EdgeInsert>();
         for (PendingCall call : state.pendingCalls) {
@@ -242,26 +269,43 @@ public class CodeGraphIndexService {
     }
 
     private List<Long> resolveCallTargets(PendingCall call, JavaIndexState state) {
+        String method = call.getTargetMethodName();
         if (call.getOwnerType() != null) {
-            List<Long> scopedTargets = state.methodsByQualifiedClassAndName.get(call.getOwnerType() + "#" + call.getTargetMethodName());
-            if (scopedTargets != null) {
-                return scopedTargets;
+            // owner 自身 + 它的实现/子类，跨过接口抽象方法连到有方法体的实现，链路才能到 SQL
+            LinkedHashSet<Long> targets = new LinkedHashSet<Long>();
+            collectByOwner(state, call.getOwnerType(), method, targets);
+            for (String impl : implementorsOf(state, call.getOwnerType())) {
+                collectByOwner(state, impl, method, targets);
             }
-            String simpleOwner = simpleName(call.getOwnerType());
-            List<Long> simpleTargets = state.methodsByQualifiedClassAndName.get(simpleOwner + "#" + call.getTargetMethodName());
-            if (simpleTargets != null) {
-                return simpleTargets;
+            if (!targets.isEmpty()) {
+                return new ArrayList<Long>(targets);
             }
         }
-        List<Long> sameClassTargets = state.methodsByQualifiedClassAndName.get(call.getSourceClassName() + "#" + call.getTargetMethodName());
+        List<Long> sameClassTargets = state.methodsByQualifiedClassAndName.get(call.getSourceClassName() + "#" + method);
         if (sameClassTargets != null) {
             return sameClassTargets;
         }
-        List<Long> targets = state.methodsByName.get(call.getTargetMethodName());
+        List<Long> targets = state.methodsByName.get(method);
         if (targets == null || targets.size() > 8) {
             return new ArrayList<Long>();
         }
         return targets;
+    }
+
+    private void collectByOwner(JavaIndexState state, String owner, String method, Set<Long> out) {
+        List<Long> scoped = state.methodsByQualifiedClassAndName.get(owner + "#" + method);
+        if (scoped != null) {
+            out.addAll(scoped);
+        }
+        List<Long> simple = state.methodsByQualifiedClassAndName.get(simpleName(owner) + "#" + method);
+        if (simple != null) {
+            out.addAll(simple);
+        }
+    }
+
+    private List<String> implementorsOf(JavaIndexState state, String ownerType) {
+        List<String> impls = state.implementorsBySimpleName.get(simpleName(ownerType));
+        return impls == null ? Collections.<String>emptyList() : impls;
     }
 
     private void addRouteNodes(Long projectId, Long versionId, ClassOrInterfaceDeclaration clazz, MethodDeclaration method, Long methodNodeId, Path file) {
@@ -285,18 +329,51 @@ public class CodeGraphIndexService {
     private List<String> mappingValues(List<AnnotationExpr> annotations) {
         List<String> values = new ArrayList<String>();
         for (AnnotationExpr annotation : annotations) {
-            String name = annotation.getNameAsString();
-            if (!name.endsWith("Mapping")) {
+            if (!annotation.getNameAsString().endsWith("Mapping")) {
                 continue;
             }
-            Matcher matcher = Pattern.compile("\\\"([^\\\"]*)\\\"").matcher(annotation.toString());
-            if (matcher.find()) {
-                values.add(matcher.group(1));
-            } else if (name.equals("GetMapping") || name.equals("PostMapping") || name.equals("PutMapping") || name.equals("DeleteMapping")) {
-                values.add("");
-            }
+            values.addAll(extractMappingPaths(annotation));
         }
         return values;
+    }
+
+    /**
+     * 从 *Mapping 注解里取真实路由路径：明确读 value/path 属性，支持数组多路径。
+     * 避免老逻辑盲取第一个字符串字面量（会把 produces 等属性误当路径）。
+     */
+    private List<String> extractMappingPaths(AnnotationExpr annotation) {
+        List<String> paths = new ArrayList<String>();
+        if (annotation.isSingleMemberAnnotationExpr()) {
+            collectStringValues(annotation.asSingleMemberAnnotationExpr().getMemberValue(), paths);
+        } else if (annotation.isNormalAnnotationExpr()) {
+            for (MemberValuePair pair : annotation.asNormalAnnotationExpr().getPairs()) {
+                String pairName = pair.getNameAsString();
+                if ("value".equals(pairName) || "path".equals(pairName)) {
+                    collectStringValues(pair.getValue(), paths);
+                }
+            }
+        }
+        // 裸用 @GetMapping（无路径）也给一个空路径，让它挂到类级路径上
+        if (paths.isEmpty()) {
+            paths.add("");
+        }
+        return paths;
+    }
+
+    /**
+     * 收集表达式里的字符串字面量，数组形式逐个展开。
+     */
+    private void collectStringValues(Expression expression, List<String> out) {
+        if (expression == null) {
+            return;
+        }
+        if (expression.isStringLiteralExpr()) {
+            out.add(expression.asStringLiteralExpr().getValue());
+        } else if (expression.isArrayInitializerExpr()) {
+            for (Expression item : expression.asArrayInitializerExpr().getValues()) {
+                collectStringValues(item, out);
+            }
+        }
     }
 
     private String normalizePath(String classPath, String methodPath) {
@@ -305,6 +382,50 @@ public class CodeGraphIndexService {
             joined = joined.substring(0, joined.length() - 1);
         }
         return joined;
+    }
+
+    /**
+     * 索引 Mapper 接口方法上的注解 SQL（@Select/@Insert/@Update/@Delete）。
+     * 建的节点结构与 XML 一致，复用 linkMapperMethods 把 Java 方法连到 SQL，再连到表。
+     * 注：@SelectProvider 等动态构造 SQL 的注解无法静态提取，跳过。
+     */
+    private void indexAnnotationSql(Long projectId, Long versionId, MethodDeclaration method, String qualifiedMethod, Path file) {
+        String sql = extractAnnotationSql(method);
+        if (sql == null) {
+            return;
+        }
+        Integer line = method.getBegin().map(p -> p.line).orElse(null);
+        String name = method.getNameAsString();
+        Long sqlNodeId = addNode(projectId, versionId, "SQL", name, qualifiedMethod, file, line, json("sql", sql));
+        Long mapperNodeId = addNode(projectId, versionId, "MAPPER_METHOD", name, qualifiedMethod, file, line, "{}");
+        addEdge(projectId, versionId, mapperNodeId, sqlNodeId, "MAPPER_TO_SQL", "{}");
+        for (String table : extractTables(sql)) {
+            Long tableNodeId = addNode(projectId, versionId, "DB_TABLE", table, table, file, null, "{}");
+            addEdge(projectId, versionId, sqlNodeId, tableNodeId, "SQL_TO_TABLE", "{}");
+        }
+    }
+
+    private String extractAnnotationSql(MethodDeclaration method) {
+        for (AnnotationExpr annotation : method.getAnnotations()) {
+            String name = annotation.getNameAsString();
+            if (!"Select".equals(name) && !"Insert".equals(name) && !"Update".equals(name) && !"Delete".equals(name)) {
+                continue;
+            }
+            List<String> parts = new ArrayList<String>();
+            if (annotation.isSingleMemberAnnotationExpr()) {
+                collectStringValues(annotation.asSingleMemberAnnotationExpr().getMemberValue(), parts);
+            } else if (annotation.isNormalAnnotationExpr()) {
+                for (MemberValuePair pair : annotation.asNormalAnnotationExpr().getPairs()) {
+                    if ("value".equals(pair.getNameAsString())) {
+                        collectStringValues(pair.getValue(), parts);
+                    }
+                }
+            }
+            if (!parts.isEmpty()) {
+                return compactSql(String.join(" ", parts));
+            }
+        }
+        return null;
     }
 
     private void indexMyBatisXml(Long projectId, Long versionId, Path sourceRoot) throws Exception {
@@ -494,6 +615,8 @@ public class CodeGraphIndexService {
         private final Map<String, Long> methodsByQualifiedName = new HashMap<String, Long>();
         private final Map<String, List<Long>> methodsByQualifiedClassAndName = new HashMap<String, List<Long>>();
         private final Map<String, List<Long>> methodsByName = new HashMap<String, List<Long>>();
+        // 接口/父类简单名 → 实现类/子类全限定名列表，把接口调用展开到实现，跨过抽象方法直达 SQL
+        private final Map<String, List<String>> implementorsBySimpleName = new HashMap<String, List<String>>();
         private final List<PendingCall> pendingCalls = new ArrayList<PendingCall>();
     }
 

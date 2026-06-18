@@ -2,9 +2,7 @@ package com.tjc.bugagent.analysis;
 
 import org.springframework.stereotype.Service;
 
-import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 管理 Agent 异步分析任务。
@@ -12,10 +10,11 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 public class AgentAnalysisTaskService {
     private final AgentAnalysisTaskRunner taskRunner;
-    private final Map<String, AgentAnalysisTaskStatus> tasks = new ConcurrentHashMap<String, AgentAnalysisTaskStatus>();
+    private final AgentAnalysisTaskStore taskStore;
 
-    public AgentAnalysisTaskService(AgentAnalysisTaskRunner taskRunner) {
+    public AgentAnalysisTaskService(AgentAnalysisTaskRunner taskRunner, AgentAnalysisTaskStore taskStore) {
         this.taskRunner = taskRunner;
+        this.taskStore = taskStore;
     }
 
     /**
@@ -27,7 +26,7 @@ public class AgentAnalysisTaskService {
         status.setTaskId(taskId);
         status.setStatus("PENDING");
         status.setMessage("任务已提交");
-        tasks.put(taskId, status);
+        taskStore.save(status);
         taskRunner.run(taskId, request, status);
 
         AgentAnalysisTaskSubmitResult result = new AgentAnalysisTaskSubmitResult();
@@ -40,7 +39,7 @@ public class AgentAnalysisTaskService {
      * 查询任务状态。
      */
     public AgentAnalysisTaskStatus getStatus(String taskId) {
-        AgentAnalysisTaskStatus status = tasks.get(taskId);
+        AgentAnalysisTaskStatus status = taskStore.find(taskId);
         if (status == null) {
             AgentAnalysisTaskStatus missing = new AgentAnalysisTaskStatus();
             missing.setTaskId(taskId);

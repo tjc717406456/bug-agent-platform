@@ -1,5 +1,7 @@
 package com.tjc.bugagent.dbhub;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tjc.bugagent.config.AppProperties;
 import com.zaxxer.hikari.HikariDataSource;
 import org.springframework.stereotype.Service;
 
@@ -23,10 +25,14 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 public class DbhubQueryService {
     private final DbhubDatasourceService datasourceService;
+    private final ObjectMapper objectMapper;
+    private final AppProperties appProperties;
     private final Map<String, HikariDataSource> dataSourceCache = new ConcurrentHashMap<String, HikariDataSource>();
 
-    public DbhubQueryService(DbhubDatasourceService datasourceService) {
+    public DbhubQueryService(DbhubDatasourceService datasourceService, ObjectMapper objectMapper, AppProperties appProperties) {
         this.datasourceService = datasourceService;
+        this.objectMapper = objectMapper;
+        this.appProperties = appProperties;
     }
 
     /**
@@ -65,7 +71,7 @@ public class DbhubQueryService {
         } catch (Exception exception) {
             return "dbhub call failed: " + exception.getMessage();
         }
-        return "{result=" + result + "}";
+        return wrapResult(result);
     }
 
     /**
@@ -75,7 +81,7 @@ public class DbhubQueryService {
         if (isBlank(datasourceKey)) {
             return "No dbhub datasource is configured.";
         }
-        if (!isReadonlySql(sql)) {
+        if (!ReadonlySqlGuard.isReadonly(sql)) {
             return "Only readonly SQL is allowed";
         }
         DbhubDatasourceConfig config = datasourceService.getDatasourceConfig(datasourceKey);
@@ -85,7 +91,7 @@ public class DbhubQueryService {
         try (Connection connection = getConnection(config);
              Statement statement = connection.createStatement();
              ResultSet resultSet = statement.executeQuery(sql)) {
-            return "{result=" + rowsToList(resultSet) + "}";
+            return wrapResult(rowsToList(resultSet));
         } catch (Exception exception) {
             return "dbhub readonly query failed: " + exception.getMessage();
         }
@@ -112,11 +118,24 @@ public class DbhubQueryService {
         dataSourceCache.clear();
     }
 
+    /**
+     * 把查询结果包成标准 JSON 返给模型，避免之前 Map.toString() 那种非标准格式难解析。
+     */
+    private String wrapResult(Object data) {
+        Map<String, Object> wrapper = new LinkedHashMap<String, Object>();
+        wrapper.put("result", data);
+        try {
+            return objectMapper.writeValueAsString(wrapper);
+        } catch (Exception exception) {
+            return "{\"result\":\"" + data + "\"}";
+        }
+    }
+
     private Object describeTable(Connection connection, String database, String tableName) {
         Map<String, Object> tableInfo = new LinkedHashMap<String, Object>();
         try {
             tableInfo.put("columns", queryColumns(connection, database, tableName));
-            tableInfo.put("totalRows", queryCount(connection, tableName));
+            tableInfo.put("totalRows", queryApproximateRows(connection, database, tableName));
             tableInfo.put("recentData", queryRecentData(connection, tableName));
             return tableInfo;
         } catch (Exception exception) {
@@ -140,10 +159,18 @@ public class DbhubQueryService {
         return rows;
     }
 
-    private long queryCount(Connection connection, String tableName) throws Exception {
-        try (Statement statement = connection.createStatement();
-             ResultSet resultSet = statement.executeQuery("select count(*) as total from " + quoteIdentifier(tableName))) {
-            return resultSet.next() ? resultSet.getLong("total") : 0L;
+    /**
+     * 取 information_schema 里的近似行数，避免对大表执行 count(*) 全表扫描。
+     * InnoDB 下 TABLE_ROWS 是估算值，作"数据量大致多少"的取证证据足够。
+     */
+    private long queryApproximateRows(Connection connection, String database, String tableName) throws Exception {
+        String sql = "select TABLE_ROWS from INFORMATION_SCHEMA.TABLES where TABLE_SCHEMA = ? and TABLE_NAME = ?";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, database);
+            statement.setString(2, tableName);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() ? resultSet.getLong("TABLE_ROWS") : 0L;
+            }
         }
     }
 
@@ -187,8 +214,10 @@ public class DbhubQueryService {
                 "?allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai");
         dataSource.setUsername(config.getUser());
         dataSource.setPassword(config.getPassword() == null ? "" : config.getPassword());
-        dataSource.setMaximumPoolSize(3);
-        dataSource.setMinimumIdle(0);
+        AppProperties.Dbhub dbhub = appProperties.getDbhub();
+        dataSource.setMaximumPoolSize(dbhub.getMaxPoolSize());
+        dataSource.setMinimumIdle(dbhub.getMinIdle());
+        dataSource.setConnectionTimeout(dbhub.getConnectionTimeoutMs());
         dataSource.setPoolName("dbhub-" + config.getKey());
         return dataSource;
     }
@@ -213,21 +242,6 @@ public class DbhubQueryService {
             throw new IllegalArgumentException("Invalid table name: " + identifier);
         }
         return "`" + identifier + "`";
-    }
-
-    private boolean isReadonlySql(String sql) {
-        String normalized = sql == null ? "" : sql.trim().toLowerCase();
-        if (normalized.isEmpty()) {
-            return false;
-        }
-        if (normalized.contains(";") && normalized.replaceAll(";\\s*$", "").contains(";")) {
-            return false;
-        }
-        return normalized.startsWith("select ")
-                || normalized.startsWith("show ")
-                || normalized.startsWith("desc ")
-                || normalized.startsWith("describe ")
-                || normalized.startsWith("explain ");
     }
 
     private boolean isBlank(String value) {

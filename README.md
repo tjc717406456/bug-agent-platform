@@ -15,7 +15,7 @@ Multi-project backend bug analysis agent platform.
 1. Start local dependencies:
 
 - MySQL: `localhost:3306`, root password `1234`
-- Redis: `localhost:6380`
+- Redis: `localhost:6379`
 
 2. Start backend:
 

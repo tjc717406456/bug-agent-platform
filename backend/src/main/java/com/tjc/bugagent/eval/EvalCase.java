@@ -1,32 +1,33 @@
-package com.tjc.bugagent.analysis;
+package com.tjc.bugagent.eval;
 
-import javax.validation.constraints.NotBlank;
-import javax.validation.constraints.NotNull;
+import java.util.List;
 
 /**
- * Request for starting a bug analysis.
+ * 一条标注好的 Bug 评估用例：分析输入 + 期望命中的根因关键词和置信度。
+ * 用例集是衡量分析准确率的尺子，改 prompt/逻辑后跑一遍就知道变好还是变差。
  */
-public class AnalysisRequest {
-    @NotNull
+public class EvalCase {
+    private String name;
     private Long projectId;
     private Long versionId;
-    @NotBlank
     private String apiPath;
     private String userDescription;
     private String requestBody;
     private String responseBody;
     private String stackTrace;
-    private String screenshotPaths;
     private String traceId;
     private String requestTime;
-    private String logText;
+    // 期望结论里出现的关键词，全部命中才算定位准（如 ["nick_name", "字段", "不存在"]）
+    private List<String> expectKeywords;
+    // 期望的最低置信度，可选（LOW/MEDIUM/HIGH）
+    private String expectConfidence;
 
-    public String getLogText() {
-        return logText;
+    public String getName() {
+        return name;
     }
 
-    public void setLogText(String logText) {
-        this.logText = logText;
+    public void setName(String name) {
+        this.name = name;
     }
 
     public Long getProjectId() {
@@ -85,14 +86,6 @@ public class AnalysisRequest {
         this.stackTrace = stackTrace;
     }
 
-    public String getScreenshotPaths() {
-        return screenshotPaths;
-    }
-
-    public void setScreenshotPaths(String screenshotPaths) {
-        this.screenshotPaths = screenshotPaths;
-    }
-
     public String getTraceId() {
         return traceId;
     }
@@ -107,5 +100,21 @@ public class AnalysisRequest {
 
     public void setRequestTime(String requestTime) {
         this.requestTime = requestTime;
+    }
+
+    public List<String> getExpectKeywords() {
+        return expectKeywords;
+    }
+
+    public void setExpectKeywords(List<String> expectKeywords) {
+        this.expectKeywords = expectKeywords;
+    }
+
+    public String getExpectConfidence() {
+        return expectConfidence;
+    }
+
+    public void setExpectConfidence(String expectConfidence) {
+        this.expectConfidence = expectConfidence;
     }
 }

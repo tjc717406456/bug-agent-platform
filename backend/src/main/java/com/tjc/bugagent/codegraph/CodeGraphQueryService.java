@@ -25,6 +25,10 @@ public class CodeGraphQueryService {
     public CodeGraphQueryResult queryByApiPath(Long projectId, Long versionId, String apiPath) {
         CodeGraphQueryResult result = new CodeGraphQueryResult();
         List<CodeNode> routes = codeGraphRepository.findRouteNodes(projectId, versionId, "%" + apiPath + "%");
+        // LIKE 命中不了时，按模板匹配兜底：运行时真实路径 /user/123 也能对上索引的 /user/{id}
+        if (routes.isEmpty()) {
+            routes = matchByTemplate(projectId, versionId, apiPath);
+        }
         result.setRouteNodes(routes);
         Set<Long> visitedNodeIds = new LinkedHashSet<Long>();
         List<CodeNode> relatedNodes = new ArrayList<CodeNode>();
@@ -94,5 +98,42 @@ public class CodeGraphQueryService {
 
     public List<CodeNode> searchNodesByClassName(Long projectId, Long versionId, String className) {
         return codeGraphRepository.searchByClassName(projectId, versionId, className);
+    }
+
+    /**
+     * 把运行时真实路径按路由模板匹配，解决 /user/123 对不上索引的 /user/{id}。
+     * 只比带占位符的模板，无占位符的已由 LIKE 覆盖。
+     */
+    private List<CodeNode> matchByTemplate(Long projectId, Long versionId, String apiPath) {
+        String path = stripQuery(apiPath);
+        List<CodeNode> all = codeGraphRepository.findRouteNodes(projectId, versionId, "%", 500);
+        List<CodeNode> matched = new ArrayList<CodeNode>();
+        for (CodeNode route : all) {
+            if (templateMatches(route.getName(), path)) {
+                matched.add(route);
+            }
+        }
+        return matched;
+    }
+
+    private boolean templateMatches(String template, String path) {
+        if (template == null || template.indexOf('{') < 0) {
+            return false;
+        }
+        // /user/{id} → ^/user/[^/]+/?$，占位符吃掉一个路径段
+        String regex = "^" + template.replaceAll("\\{[^/}]+}", "[^/]+") + "/?$";
+        try {
+            return path.matches(regex);
+        } catch (Exception exception) {
+            return false;
+        }
+    }
+
+    private String stripQuery(String apiPath) {
+        if (apiPath == null) {
+            return "";
+        }
+        int queryIndex = apiPath.indexOf('?');
+        return queryIndex >= 0 ? apiPath.substring(0, queryIndex) : apiPath;
     }
 }

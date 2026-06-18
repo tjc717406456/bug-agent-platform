@@ -1,0 +1,43 @@
+package com.tjc.bugagent.analysis;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * 保存分析记录的人工反馈，给评估飞轮攒 ground truth。
+ */
+@Service
+public class AnalysisFeedbackService {
+    private final JdbcTemplate jdbcTemplate;
+    private final ObjectMapper objectMapper;
+
+    public AnalysisFeedbackService(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
+        this.jdbcTemplate = jdbcTemplate;
+        this.objectMapper = objectMapper;
+    }
+
+    /**
+     * 标注某条分析记录的对错与正确根因，关键词序列化成 JSON 存起来。
+     */
+    public void saveFeedback(Long recordId, AnalysisFeedbackRequest request) {
+        int updated = jdbcTemplate.update(
+                "update analysis_record set feedback_verdict = ?, actual_root_cause = ?, expect_keywords = ?, feedback_note = ?, feedback_at = now() where id = ?",
+                request.getVerdict(), request.getActualRootCause(), toJson(request.getExpectKeywords()), request.getNote(), recordId);
+        if (updated == 0) {
+            throw new IllegalArgumentException("分析记录不存在: " + recordId);
+        }
+    }
+
+    private String toJson(List<String> keywords) {
+        List<String> safe = keywords == null ? new ArrayList<String>() : keywords;
+        try {
+            return objectMapper.writeValueAsString(safe);
+        } catch (Exception exception) {
+            return "[]";
+        }
+    }
+}

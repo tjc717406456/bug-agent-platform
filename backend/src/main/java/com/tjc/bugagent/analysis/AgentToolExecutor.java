@@ -4,6 +4,7 @@ import com.tjc.bugagent.codegraph.CodeGraphQueryResult;
 import com.tjc.bugagent.codegraph.CodeGraphQueryService;
 import com.tjc.bugagent.codegraph.CodeNode;
 import com.tjc.bugagent.dbhub.DbhubClient;
+import com.tjc.bugagent.dbhub.ReadonlySqlGuard;
 import com.tjc.bugagent.project.ProjectDatasource;
 import com.tjc.bugagent.project.ProjectService;
 import com.tjc.bugagent.project.ProjectVersion;
@@ -68,20 +69,6 @@ public class AgentToolExecutor {
             return AgentToolResult.ok("finish", "Agent 已输出最终报告", call.stringArg("report"));
         }
         return AgentToolResult.fail(action, "不支持的工具: " + action);
-    }
-
-    /**
-     * 返回给模型的工具说明。
-     */
-    public String toolManual() {
-        return "可用工具：\n" +
-                "1. search_code {\"keyword\":\"方法名/类名/字段名\"}：搜索已索引 Java 方法和 Mapper。\n" +
-                "2. get_code_detail {\"nodeId\":123} 或 {\"className\":\"全限定类名\",\"methodName\":\"方法名\"}：读取关键源码片段。\n" +
-                "3. trace_call_chain {\"apiPath\":\"/xxx\"}：重新按接口路径追调用链、SQL 和表。\n" +
-                "4. search_sql {\"keyword\":\"表名/字段名/Mapper方法\"}：搜索 SQL 或 Mapper 节点。\n" +
-                "5. describe_tables {\"tables\":\"table1,table2\"}：查询表结构、数据量和最近样例。\n" +
-                "6. query_database {\"sql\":\"select ...\"}：执行只读 SQL，只允许 SELECT/SHOW/DESC/DESCRIBE/EXPLAIN。\n" +
-                "7. finish {\"report\":\"最终定位报告\"}：证据足够后输出报告。";
     }
 
     /**
@@ -243,7 +230,7 @@ public class AgentToolExecutor {
             return AgentToolResult.fail("query_database", "项目未配置 dbhub 数据源");
         }
         String sql = call.stringArg("sql");
-        if (!isReadonlySql(sql)) {
+        if (!ReadonlySqlGuard.isReadonly(sql)) {
             return AgentToolResult.fail("query_database", "只允许只读 SQL: " + sql);
         }
         String evidence = dbhubClient.queryReadonly(context.getDatasource().getDbhubKey(), sql);
@@ -260,26 +247,61 @@ public class AgentToolExecutor {
                 .collect(Collectors.toList());
     }
 
-    private boolean isReadonlySql(String sql) {
-        String normalized = safe(sql).trim().toLowerCase();
-        if (normalized.isEmpty()) {
-            return false;
+    /**
+     * 供初始证据预取源码片段使用，可指定较小的窗口以控制 token。
+     */
+    public String readSourceSnippet(CodeNode node, AgentToolContext context, int maxLines) {
+        return readSnippet(node, context, maxLines);
+    }
+
+    /**
+     * 按"类全限定名 + 行号"读源码，用于异常堆栈栈帧的精确定位。
+     * 先在图谱里按类名找真实文件路径，找不到再按全限定名推断源码路径兜底。
+     */
+    public String readSourceAtClassLine(AgentToolContext context, String className, Integer lineNo, int maxLines) {
+        if (isBlank(className) || lineNo == null) {
+            return "无定位信息";
         }
-        if (normalized.contains(";") && normalized.replaceAll(";\\s*$", "").contains(";")) {
-            return false;
+        CodeNode located = firstNodeWithFile(
+                codeGraphQueryService.searchNodesByClassName(context.getProjectId(), context.getVersionId(), className));
+        CodeNode node = new CodeNode();
+        node.setLineNo(lineNo);
+        if (located != null) {
+            node.setName(located.getName());
+            node.setFilePath(located.getFilePath());
+            node.setQualifiedName(located.getQualifiedName());
+        } else {
+            // 内部类/lambda 的 $ 部分对应同一个源文件，去掉再推断路径
+            String stripped = stripInnerClass(className);
+            node.setName(stripped);
+            node.setQualifiedName(stripped + ".__stackframe");
+            node.setFilePath(stripped.replace('.', '/') + ".java");
         }
-        return normalized.startsWith("select ")
-                || normalized.startsWith("show ")
-                || normalized.startsWith("desc ")
-                || normalized.startsWith("describe ")
-                || normalized.startsWith("explain ");
+        return readSnippet(node, context, maxLines);
+    }
+
+    private CodeNode firstNodeWithFile(List<CodeNode> nodes) {
+        if (nodes == null) {
+            return null;
+        }
+        for (CodeNode node : nodes) {
+            if (node.getFilePath() != null) {
+                return node;
+            }
+        }
+        return null;
+    }
+
+    private String stripInnerClass(String className) {
+        int dollar = className.indexOf('$');
+        return dollar >= 0 ? className.substring(0, dollar) : className;
     }
 
     private String formatNodeWithSnippet(CodeNode node, AgentToolContext context) {
-        return formatNode(node) + "\n源码片段:\n" + readSnippet(node, context);
+        return formatNode(node) + "\n源码片段:\n" + readSnippet(node, context, MAX_SNIPPET_LINES);
     }
 
-    private String readSnippet(CodeNode node, AgentToolContext context) {
+    private String readSnippet(CodeNode node, AgentToolContext context, int maxLines) {
         if (node.getFilePath() == null || node.getLineNo() == null) {
             return "无源码定位信息";
         }
@@ -287,7 +309,7 @@ public class AgentToolExecutor {
             Path path = resolveSourcePath(node.getFilePath(), node.getQualifiedName(), context);
             List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
             int start = Math.max(0, node.getLineNo() - 8);
-            int end = Math.min(lines.size(), start + MAX_SNIPPET_LINES);
+            int end = Math.min(lines.size(), start + maxLines);
             StringBuilder snippet = new StringBuilder();
             for (int index = start; index < end; index++) {
                 snippet.append(index + 1).append(": ").append(lines.get(index)).append("\n");

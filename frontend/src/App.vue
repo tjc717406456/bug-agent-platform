@@ -1,335 +1,411 @@
 <template>
-  <el-container class="layout">
-    <el-aside width="248px" class="sidebar">
+  <a-layout class="layout">
+    <a-layout-sider :width="248" class="sidebar" theme="dark">
       <div class="brand">
-        <el-icon><Cpu /></el-icon>
+        <BugOutlined />
         <span>Bug Agent</span>
       </div>
-      <el-menu :default-active="activePanel" class="menu" @select="activePanel = $event">
-        <el-menu-item index="projects">
-          <el-icon><Folder /></el-icon>
-          <span>项目管理</span>
-        </el-menu-item>
-        <el-menu-item index="source">
-          <el-icon><UploadFilled /></el-icon>
-          <span>源码导入</span>
-        </el-menu-item>
-        <el-menu-item index="ai-settings">
-          <el-icon><Setting /></el-icon>
-          <span>AI 配置</span>
-        </el-menu-item>
-        <el-menu-item index="dbhub-sources">
-          <el-icon><Connection /></el-icon>
-          <span>dbhub数据源</span>
-        </el-menu-item>
-        <el-menu-item index="project-dbhub">
-          <el-icon><Setting /></el-icon>
-          <span>项目dbhub绑定</span>
-        </el-menu-item>
-        <el-menu-item index="analysis">
-          <el-icon><DataAnalysis /></el-icon>
-          <span>Bug 分析</span>
-        </el-menu-item>
-      </el-menu>
-    </el-aside>
+      <a-menu :selected-keys="[activePanel]" theme="dark" mode="inline" @click="({ key }) => (activePanel = key)">
+        <a-menu-item key="projects"><template #icon><FolderOutlined /></template>项目管理</a-menu-item>
+        <a-menu-item key="source"><template #icon><UploadOutlined /></template>源码导入</a-menu-item>
+        <a-menu-item key="ai-settings"><template #icon><SettingOutlined /></template>AI 配置</a-menu-item>
+        <a-menu-item key="dbhub-sources"><template #icon><ApiOutlined /></template>dbhub数据源</a-menu-item>
+        <a-menu-item key="project-dbhub"><template #icon><SettingOutlined /></template>项目dbhub绑定</a-menu-item>
+        <a-menu-item key="analysis"><template #icon><BarChartOutlined /></template>Bug 分析</a-menu-item>
+      </a-menu>
+    </a-layout-sider>
 
-    <el-container>
-      <el-header class="header">
+    <a-layout>
+      <a-layout-header class="header">
         <div class="header-actions">
-          <el-select v-model="selectedProjectId" placeholder="选择项目" filterable @change="changeProject">
-            <el-option v-for="project in projects" :key="project.id" :label="project.name" :value="project.id" />
-          </el-select>
-          <el-button :icon="Refresh" @click="loadAll">刷新</el-button>
+          <a-select
+            v-model:value="selectedProjectId"
+            :options="projectOptions"
+            show-search
+            option-filter-prop="label"
+            allow-clear
+            placeholder="选择项目"
+            style="width: 240px"
+            @change="changeProject"
+          />
+          <a-button @click="loadAll"><template #icon><ReloadOutlined /></template>刷新</a-button>
         </div>
-      </el-header>
+      </a-layout-header>
 
-      <el-main class="main">
+      <a-layout-content class="main">
         <section v-show="activePanel === 'projects'" class="panel">
           <div class="panel-title">
             <h2>项目管理</h2>
-            <el-button type="primary" :icon="Plus" @click="openProjectDialog()">新增项目</el-button>
+            <a-button type="primary" @click="openProjectDialog()"><template #icon><PlusOutlined /></template>新增项目</a-button>
           </div>
-          <el-form :model="projectQuery" label-width="90px" class="compact-form">
-            <el-row :gutter="16">
-              <el-col :span="8"><el-form-item label="项目名称"><el-input v-model="projectQuery.name" clearable /></el-form-item></el-col>
-              <el-col :span="8"><el-form-item label="项目编码"><el-input v-model="projectQuery.code" clearable /></el-form-item></el-col>
-              <el-col :span="8">
-                <el-button type="primary" :icon="Refresh" @click="loadAll">查询</el-button>
-                <el-button :icon="Refresh" @click="resetProjectQuery">重置</el-button>
-              </el-col>
-            </el-row>
-          </el-form>
-          <el-table :data="projects" highlight-current-row @current-change="selectProject" @row-dblclick="openProjectDialog">
-            <el-table-column prop="id" label="ID" width="80" />
-            <el-table-column prop="name" label="项目名称" />
-            <el-table-column prop="code" label="编码" />
-            <el-table-column prop="description" label="说明" />
-            <el-table-column label="操作" width="150">
-              <template #default="scope">
-                <el-button link type="primary" @click="openProjectDialog(scope.row)">编辑</el-button>
-                <el-button link type="danger" @click="deleteProjectAction(scope.row)">删除</el-button>
+          <a-form layout="inline" class="compact-form">
+            <a-form-item label="项目名称"><a-input v-model:value="projectQuery.name" allow-clear /></a-form-item>
+            <a-form-item label="项目编码"><a-input v-model:value="projectQuery.code" allow-clear /></a-form-item>
+            <a-form-item>
+              <a-button type="primary" @click="loadAll"><template #icon><ReloadOutlined /></template>查询</a-button>
+              <a-button class="left-gap" @click="resetProjectQuery">重置</a-button>
+            </a-form-item>
+          </a-form>
+          <a-table
+            class="top-gap"
+            :data-source="projects"
+            :pagination="false"
+            row-key="id"
+            :custom-row="projectRowEvents"
+            :row-class-name="projectRowClass"
+            size="middle"
+          >
+            <a-table-column title="ID" data-index="id" :width="80" />
+            <a-table-column title="项目名称" data-index="name" />
+            <a-table-column title="编码" data-index="code" />
+            <a-table-column title="说明" data-index="description" />
+            <a-table-column title="操作" :width="150">
+              <template #default="{ record }">
+                <a-button type="link" size="small" @click="openProjectDialog(record)">编辑</a-button>
+                <a-button type="link" danger size="small" @click="deleteProjectAction(record)">删除</a-button>
               </template>
-            </el-table-column>
-          </el-table>
+            </a-table-column>
+          </a-table>
         </section>
 
         <section v-show="activePanel === 'source'" class="panel">
           <div class="panel-title">
             <h2>源码导入</h2>
-            <el-tag v-if="currentProject">当前：{{ currentProject.name }}</el-tag>
+            <a-tag v-if="currentProject" color="blue">当前：{{ currentProject.name }}</a-tag>
           </div>
-          <el-alert v-if="!currentProject" type="warning" show-icon title="先在项目管理里选择一个项目" />
+          <a-alert v-if="!currentProject" type="warning" show-icon message="先在项目管理里选择一个项目" />
           <div v-else class="split">
-            <el-card shadow="never">
-              <template #header>Git 拉取</template>
-              <el-form :model="gitForm" label-width="90px">
-                <el-form-item label="仓库地址"><el-input v-model="gitForm.repoUrl" /></el-form-item>
-                <el-form-item label="分支"><el-input v-model="gitForm.branchName" placeholder="可空" /></el-form-item>
-                <el-form-item label="Token"><el-input v-model="gitForm.accessToken" type="password" show-password placeholder="首版预留" /></el-form-item>
-                <el-button type="primary" :icon="Download" @click="importGitAction">导入 Git</el-button>
-              </el-form>
-            </el-card>
-            <el-card shadow="never">
-              <template #header>ZIP 上传</template>
-              <el-upload drag :auto-upload="false" :limit="1" accept=".zip" :on-change="onZipSelected">
-                <el-icon class="upload-icon"><UploadFilled /></el-icon>
-                <div>拖入 ZIP 或点击选择</div>
-              </el-upload>
-              <el-button type="primary" :icon="Upload" class="top-gap" @click="importZipAction">上传并索引</el-button>
-            </el-card>
+            <a-card title="Git 拉取" :bordered="false">
+              <a-form layout="vertical">
+                <a-form-item label="仓库地址"><a-input v-model:value="gitForm.repoUrl" /></a-form-item>
+                <a-form-item label="分支"><a-input v-model:value="gitForm.branchName" placeholder="可空" /></a-form-item>
+                <a-form-item label="Token"><a-input-password v-model:value="gitForm.accessToken" placeholder="首版预留" /></a-form-item>
+                <a-button type="primary" @click="importGitAction"><template #icon><DownloadOutlined /></template>导入 Git</a-button>
+              </a-form>
+            </a-card>
+            <a-card title="ZIP 上传" :bordered="false">
+              <a-upload-dragger :max-count="1" accept=".zip" :file-list="zipFileList" :before-upload="beforeZipUpload" @remove="removeZip">
+                <p class="ant-upload-drag-icon"><InboxOutlined /></p>
+                <p class="ant-upload-text">拖入 ZIP 或点击选择</p>
+              </a-upload-dragger>
+              <a-button type="primary" class="top-gap" @click="importZipAction"><template #icon><UploadOutlined /></template>上传并索引</a-button>
+            </a-card>
           </div>
-          <el-table :data="versions" class="top-gap">
-            <el-table-column prop="id" label="版本ID" width="90" />
-            <el-table-column prop="sourceType" label="来源" width="100" />
-            <el-table-column prop="branchName" label="分支" width="140" />
-            <el-table-column prop="indexStatus" label="索引状态" width="130" />
-            <el-table-column prop="indexMessage" label="索引消息" />
-            <el-table-column prop="sourcePath" label="源码路径" />
-          </el-table>
+          <a-table class="top-gap" :data-source="versions" :pagination="false" row-key="id" size="middle">
+            <a-table-column title="来源" data-index="sourceType" :width="100" />
+            <a-table-column title="索引状态" data-index="indexStatus" :width="130" />
+            <a-table-column title="更新时间" data-index="updatedAt" :width="200" />
+            <a-table-column title="索引消息" data-index="indexMessage" :ellipsis="true" />
+            <a-table-column title="操作" :width="90">
+              <template #default="{ record }">
+                <a-button type="link" danger size="small" @click="deleteVersionAction(record)">删除</a-button>
+              </template>
+            </a-table-column>
+          </a-table>
         </section>
 
         <section v-show="activePanel === 'ai-settings'" class="panel">
-          <div class="panel-title"><h2>AI 配置</h2></div>
-          <el-form :model="aiForm" label-width="100px" class="compact-form">
-            <el-form-item label="Provider"><el-input v-model="aiForm.provider" /></el-form-item>
-            <el-form-item label="Base URL"><el-input v-model="aiForm.baseUrl" /></el-form-item>
-            <el-form-item label="Model"><el-input v-model="aiForm.modelName" /></el-form-item>
-            <el-form-item label="API Key"><el-input v-model="aiForm.apiKey" type="password" show-password /></el-form-item>
-            <el-form-item label="超时秒"><el-input-number v-model="aiForm.timeoutSeconds" :min="10" :max="300" /></el-form-item>
-            <el-button type="primary" :icon="Check" @click="saveAiAction">保存 AI</el-button>
-            <el-button :icon="Connection" @click="testAiAction">测试连接</el-button>
-          </el-form>
+          <div class="panel-title">
+            <h2>AI 配置</h2>
+            <div>
+              <a-button @click="testAiAction"><template #icon><ApiOutlined /></template>测试当前</a-button>
+              <a-button type="primary" class="left-gap" @click="openAiDialog"><template #icon><PlusOutlined /></template>新增配置</a-button>
+            </div>
+          </div>
+          <p class="panel-tip">选中的配置决定 Agent 分析走哪个 AI，同一时间只启用一个。</p>
+          <a-table class="top-gap" :data-source="aiConfigs" :pagination="false" row-key="id" size="middle">
+            <a-table-column title="启用" :width="64">
+              <template #default="{ record }">
+                <a-radio :checked="selectedAiConfigId === record.id" @change="() => activateAiAction(record.id)" />
+              </template>
+            </a-table-column>
+            <a-table-column title="Provider" data-index="provider" :width="160" />
+            <a-table-column title="Model" data-index="modelName" :width="170" />
+            <a-table-column title="Base URL" data-index="baseUrl" :ellipsis="true" />
+            <a-table-column title="超时秒" data-index="timeoutSeconds" :width="90" />
+            <a-table-column title="操作" :width="90">
+              <template #default="{ record }">
+                <a-button type="link" danger size="small" @click="deleteAiAction(record)">删除</a-button>
+              </template>
+            </a-table-column>
+          </a-table>
         </section>
 
         <section v-show="activePanel === 'dbhub-sources'" class="panel">
           <div class="panel-title">
             <h2>dbhub 数据源管理</h2>
             <div>
-              <el-button type="danger" :disabled="!selectedDbhubDatasources.length" @click="deleteSelectedDbhubDatasources">删除选中</el-button>
-              <el-button type="primary" :icon="Plus" @click="openDbhubDialog()">新增数据源</el-button>
+              <a-button danger :disabled="!selectedDbhubKeys.length" @click="deleteSelectedDbhubDatasources">删除选中</a-button>
+              <a-button type="primary" class="left-gap" @click="openDbhubDialog()"><template #icon><PlusOutlined /></template>新增数据源</a-button>
             </div>
           </div>
-          <el-form :model="dbhubQuery" label-width="90px" class="compact-form">
-            <el-row :gutter="16">
-              <el-col :span="8"><el-form-item label="用户名"><el-input v-model="dbhubQuery.user" clearable /></el-form-item></el-col>
-              <el-col :span="8"><el-form-item label="库名"><el-input v-model="dbhubQuery.database" clearable /></el-form-item></el-col>
-              <el-col :span="8"><el-button :icon="Refresh" @click="resetDbhubQuery">重置</el-button></el-col>
-            </el-row>
-          </el-form>
-          <el-table :data="filteredDbhubDatasources" class="top-gap" @selection-change="changeDbhubSelection" @row-dblclick="openDbhubDialog">
-            <el-table-column type="selection" width="48" />
-            <el-table-column prop="key" label="Key" width="140" />
-            <el-table-column prop="host" label="主机" width="160" />
-            <el-table-column prop="port" label="端口" width="80" />
-            <el-table-column prop="database" label="库名" />
-            <el-table-column prop="user" label="用户" width="140" />
-            <el-table-column label="操作" width="100">
-              <template #default="scope">
-                <el-button link type="primary" @click="openDbhubDialog(scope.row)">编辑</el-button>
+          <a-form layout="inline" class="compact-form">
+            <a-form-item label="用户名"><a-input v-model:value="dbhubQuery.user" allow-clear /></a-form-item>
+            <a-form-item label="库名"><a-input v-model:value="dbhubQuery.database" allow-clear /></a-form-item>
+            <a-form-item><a-button @click="resetDbhubQuery">重置</a-button></a-form-item>
+          </a-form>
+          <a-table
+            class="top-gap"
+            :data-source="filteredDbhubDatasources"
+            :pagination="false"
+            row-key="key"
+            :row-selection="dbhubRowSelection"
+            :custom-row="dbhubRowEvents"
+            size="middle"
+          >
+            <a-table-column title="Key" data-index="key" :width="140" />
+            <a-table-column title="主机" data-index="host" :width="160" />
+            <a-table-column title="端口" data-index="port" :width="80" />
+            <a-table-column title="库名" data-index="database" />
+            <a-table-column title="用户" data-index="user" :width="140" />
+            <a-table-column title="操作" :width="100">
+              <template #default="{ record }">
+                <a-button type="link" size="small" @click="openDbhubDialog(record)">编辑</a-button>
               </template>
-            </el-table-column>
-          </el-table>
+            </a-table-column>
+          </a-table>
         </section>
 
         <section v-show="activePanel === 'project-dbhub'" class="panel">
           <div class="panel-title"><h2>项目 dbhub 绑定</h2></div>
-          <el-form :model="datasourceForm" label-width="110px" class="compact-form">
-            <el-row :gutter="16">
-              <el-col :span="8">
-                <el-form-item label="指定项目">
-                  <el-select v-model="datasourceProjectId" placeholder="选择项目" filterable style="width: 100%" @change="changeDatasourceProject">
-                    <el-option v-for="project in projects" :key="project.id" :label="project.name" :value="project.id" />
-                  </el-select>
-                </el-form-item>
-              </el-col>
-              <el-col :span="8"><el-form-item label="环境"><el-input v-model="datasourceForm.env" /></el-form-item></el-col>
-              <el-col :span="8">
-                <el-form-item label="dbhub Key">
-                  <el-select v-model="datasourceForm.dbhubKey" placeholder="选择数据库" style="width: 100%">
-                    <el-option v-for="datasource in dbhubDatasources" :key="datasource.key" :label="datasource.key" :value="datasource.key" />
-                  </el-select>
-                </el-form-item>
-              </el-col>
-            </el-row>
-            <el-button type="primary" :icon="Check" @click="saveDatasourceAction">保存绑定</el-button>
-          </el-form>
-          <el-table :data="datasources" class="top-gap">
-            <el-table-column prop="env" label="环境" width="100" />
-            <el-table-column prop="dbhubKey" label="dbhub Key" />
-          </el-table>
+          <a-form layout="vertical" class="compact-form">
+            <a-row :gutter="16">
+              <a-col :span="8">
+                <a-form-item label="指定项目">
+                  <a-select
+                    v-model:value="datasourceProjectId"
+                    :options="projectOptions"
+                    show-search
+                    option-filter-prop="label"
+                    placeholder="选择项目"
+                    style="width: 100%"
+                    @change="changeDatasourceProject"
+                  />
+                </a-form-item>
+              </a-col>
+              <a-col :span="8"><a-form-item label="环境"><a-input v-model:value="datasourceForm.env" /></a-form-item></a-col>
+              <a-col :span="8">
+                <a-form-item label="dbhub Key">
+                  <a-select v-model:value="datasourceForm.dbhubKey" :options="dbhubKeyOptions" placeholder="选择数据库" style="width: 100%" />
+                </a-form-item>
+              </a-col>
+            </a-row>
+            <a-button type="primary" @click="saveDatasourceAction"><template #icon><CheckOutlined /></template>保存绑定</a-button>
+          </a-form>
+          <a-table class="top-gap" :data-source="datasources" :pagination="false" row-key="id" size="middle">
+            <a-table-column title="环境" data-index="env" :width="100" />
+            <a-table-column title="dbhub Key" data-index="dbhubKey" />
+          </a-table>
         </section>
 
         <section v-show="activePanel === 'analysis'" class="panel">
           <div class="panel-title analysis-header">
             <div>
               <h2>Bug 分析工作台</h2>
-              <p>先选项目和版本，再选接口地址，减少手填和版本选错。</p>
+              <p>先选项目，再选接口地址，减少手填。</p>
             </div>
             <div class="analysis-status">
-              <el-tag type="info">{{ currentProject?.name || '未选项目' }}</el-tag>
-              <el-tag v-if="currentVersion" type="success">版本 {{ currentVersion.id }}</el-tag>
-              <el-tag v-if="currentDatasource" type="warning">{{ currentDatasource.dbhubKey }}</el-tag>
+              <a-tag>{{ currentProject?.name || '未选项目' }}</a-tag>
+              <a-tag v-if="currentDatasource" color="orange">{{ currentDatasource.dbhubKey }}</a-tag>
             </div>
           </div>
-          <el-alert v-if="!currentProject" type="warning" show-icon title="先选择项目并完成源码索引" />
-          <el-row v-else :gutter="16" class="analysis-grid">
-            <el-col :span="24">
-              <div class="analysis-section">
-                <div class="section-title">
-                  <h3>问题输入</h3>
-                  <span>接口、版本、证据</span>
-                </div>
-                <el-form :model="analysisForm" label-width="110px" class="analysis-form">
-                  <el-row :gutter="16">
-                    <el-col :span="12">
-                      <el-form-item label="项目">
-                        <el-select v-model="selectedProjectId" placeholder="选择项目" filterable @change="changeProject">
-                          <el-option v-for="project in projects" :key="project.id" :label="project.name" :value="project.id" />
-                        </el-select>
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="12">
-                      <el-form-item label="版本">
-                        <el-select v-model="analysisForm.versionId" placeholder="最新成功版本" filterable clearable @change="changeAnalysisVersion">
-                          <el-option v-for="version in versions" :key="version.id" :label="versionOptionLabel(version)" :value="version.id" />
-                        </el-select>
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
-                  <el-form-item label="接口地址">
-                    <div class="api-path-picker">
-                      <el-select
-                        v-model="selectedApiPrefix"
-                        placeholder="选择前缀"
-                        filterable
-                        clearable
-                        :loading="routesLoading"
-                        @focus="loadApiRoutes()"
-                        @change="changeApiPrefix"
-                      >
-                        <el-option v-for="prefix in apiPrefixes" :key="prefix" :label="prefix" :value="prefix" />
-                      </el-select>
-                      <el-select
-                        v-model="analysisForm.apiPath"
-                        placeholder="选择接口"
-                        filterable
-                        clearable
-                        :disabled="!selectedApiPrefix"
-                        @change="changeApiPath"
-                      >
-                        <el-option v-for="route in filteredApiRoutes" :key="route.id" :label="route.path" :value="route.path" />
-                      </el-select>
-                    </div>
-                  </el-form-item>
-                  <el-form-item label="问题描述"><el-input v-model="analysisForm.userDescription" type="textarea" :rows="2" placeholder="可选，例如：列表只查出3条，实际数据库有5条，怀疑筛选条件或字段类型不对" /></el-form-item>
-                  <el-row :gutter="16">
-                    <el-col :span="8"><el-form-item label="请求参数"><el-input v-model="analysisForm.requestBody" type="textarea" :rows="3" /></el-form-item></el-col>
-                    <el-col :span="8"><el-form-item label="响应结果"><el-input v-model="analysisForm.responseBody" type="textarea" :rows="3" /></el-form-item></el-col>
-                    <el-col :span="8"><el-form-item label="异常堆栈"><el-input v-model="analysisForm.stackTrace" type="textarea" :rows="3" placeholder="可选" /></el-form-item></el-col>
-                  </el-row>
-                  <el-row :gutter="16">
-                    <el-col :span="12"><el-form-item label="Trace ID"><el-input v-model="analysisForm.traceId" placeholder="可选" /></el-form-item></el-col>
-                    <el-col :span="12"><el-form-item label="请求时间"><el-input v-model="analysisForm.requestTime" placeholder="可选" /></el-form-item></el-col>
-                  </el-row>
-                  <el-form-item label="错误截图">
-                    <el-upload drag multiple :auto-upload="false" :limit="3" accept="image/png,image/jpeg,image/jpg,image/webp" :on-change="onScreenshotSelected" :on-remove="onScreenshotRemoved" class="compact-upload">
-                      <el-icon class="upload-icon"><UploadFilled /></el-icon>
-                      <div>可选，拖入截图或点击选择，最多3张</div>
-                    </el-upload>
-                  </el-form-item>
-                  <div class="analysis-actions">
-                    <el-button type="primary" :icon="DataAnalysis" @click="analyzeAction">开始分析</el-button>
-                    <el-button type="success" :icon="DataAnalysis" @click="agentAnalyzeAction">Agent分析</el-button>
+          <a-alert v-if="!currentProject" type="warning" show-icon message="先选择项目并完成源码索引" />
+          <div v-else class="analysis-section">
+            <div class="section-title">
+              <h3>问题输入</h3>
+              <span>接口、版本、证据</span>
+            </div>
+            <a-form layout="horizontal" :label-col="{ style: { width: '92px' } }" :wrapper-col="{ flex: 'auto' }" class="analysis-form">
+              <a-row :gutter="16">
+                <a-col :span="6">
+                  <a-form-item label="项目">
+                    <a-select
+                      v-model:value="selectedProjectId"
+                      :options="projectOptions"
+                      show-search
+                      option-filter-prop="label"
+                      placeholder="选择项目"
+                      style="width: 100%"
+                      @change="changeProject"
+                    />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="9">
+                  <a-form-item label="接口地址">
+                    <a-select
+                      v-model:value="selectedApiPrefix"
+                      :options="apiPrefixOptions"
+                      show-search
+                      option-filter-prop="label"
+                      allow-clear
+                      placeholder="选择前缀"
+                      :loading="routesLoading"
+                      style="width: 100%"
+                      @focus="loadApiRoutes()"
+                      @change="changeApiPrefix"
+                    />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="9">
+                  <a-form-item label="接口二级">
+                    <a-select
+                      v-model:value="analysisForm.apiPath"
+                      :options="apiRouteOptions"
+                      show-search
+                      option-filter-prop="label"
+                      allow-clear
+                      placeholder="选择接口"
+                      :disabled="!selectedApiPrefix"
+                      style="width: 100%"
+                      @change="changeApiPath"
+                    />
+                  </a-form-item>
+                </a-col>
+              </a-row>
+              <a-form-item label="问题描述">
+                <a-textarea v-model:value="analysisForm.userDescription" :rows="4" placeholder="可选，例如：列表只查出3条，实际数据库有5条，怀疑筛选条件或字段类型不对" />
+              </a-form-item>
+              <a-row :gutter="16">
+                <a-col :span="8"><a-form-item label="请求参数"><a-textarea v-model:value="analysisForm.requestBody" :rows="3" /></a-form-item></a-col>
+                <a-col :span="8"><a-form-item label="响应结果"><a-textarea v-model:value="analysisForm.responseBody" :rows="3" /></a-form-item></a-col>
+                <a-col :span="8"><a-form-item label="异常堆栈"><a-textarea v-model:value="analysisForm.stackTrace" :rows="3" placeholder="可选" /></a-form-item></a-col>
+              </a-row>
+              <a-form-item label="日志">
+                <a-row :gutter="16">
+                  <a-col :span="16">
+                    <a-textarea v-model:value="analysisForm.logText" :rows="4" placeholder="可选，粘贴一段日志，或右侧上传 .log 文件，自动抠出堆栈、SQL、traceId、时间" />
+                  </a-col>
+                  <a-col :span="8">
+                    <a-upload-dragger :max-count="1" accept=".log,.txt" :file-list="logFileList" :before-upload="beforeLogUpload" @remove="removeLog">
+                      <p class="ant-upload-drag-icon"><InboxOutlined /></p>
+                      <p class="ant-upload-text">拖入 .log 文件或点击选择（≤10MB）</p>
+                    </a-upload-dragger>
+                  </a-col>
+                </a-row>
+              </a-form-item>
+              <a-row :gutter="16" align="middle">
+                <a-col :span="16">
+                  <a-form-item label="错误截图" style="margin-bottom:0">
+                    <a-upload-dragger
+                      multiple
+                      :max-count="3"
+                      accept="image/png,image/jpeg,image/jpg,image/webp"
+                      :file-list="screenshotFileList"
+                      :before-upload="beforeScreenshotUpload"
+                      @remove="removeScreenshot"
+                    >
+                      <p class="ant-upload-drag-icon"><InboxOutlined /></p>
+                      <p class="ant-upload-text">可选，拖入截图或点击选择，最多3张</p>
+                    </a-upload-dragger>
+                  </a-form-item>
+                </a-col>
+                <a-col :span="8">
+                  <div class="actions-col">
+                    <a-button type="primary" @click="analyzeAction"><template #icon><BarChartOutlined /></template>开始分析</a-button>
+                    <a-button class="left-gap" style="background:#52c41a;border-color:#52c41a;color:#fff" @click="agentAnalyzeAction"><template #icon><BarChartOutlined /></template>Agent分析</a-button>
                   </div>
-                </el-form>
-              </div>
-            </el-col>
-          </el-row>
+                </a-col>
+              </a-row>
+            </a-form>
+          </div>
         </section>
-      </el-main>
-    </el-container>
+      </a-layout-content>
+    </a-layout>
 
-    <el-dialog v-model="analysisDialogVisible" width="820px" class="analysis-dialog" align-center destroy-on-close>
-      <template #header>
+    <a-modal v-model:open="analysisDialogVisible" width="820px" :footer="null" centered destroy-on-close>
+      <template #title>
         <div class="report-header">
           <span>分析报告 #{{ analysisResult?.id }}</span>
-          <el-tag v-if="analysisResult">{{ analysisResult.confidence }}</el-tag>
+          <a-tag v-if="analysisResult" color="blue">{{ analysisResult.confidence }}</a-tag>
         </div>
       </template>
-      <div class="analysis-result-summary">
-        <el-alert :title="analysisResult?.plainAnswer" type="success" show-icon :closable="false" />
-      </div>
-      <el-tabs v-model="activeReportTab">
-        <el-tab-pane label="分析报告" name="report">
+      <a-alert :message="analysisResult?.plainAnswer" type="success" show-icon />
+      <a-tabs v-model:activeKey="activeReportTab" class="top-gap">
+        <a-tab-pane key="report" tab="分析报告">
           <pre class="scroll-content">{{ analysisResult?.conclusion }}</pre>
-        </el-tab-pane>
-        <el-tab-pane label="证据" name="evidence">
+        </a-tab-pane>
+        <a-tab-pane key="evidence" tab="证据">
           <pre class="scroll-content">{{ analysisResult?.evidenceJson }}</pre>
-        </el-tab-pane>
-      </el-tabs>
-    </el-dialog>
+        </a-tab-pane>
+      </a-tabs>
+      <div class="feedback-box">
+        <div class="feedback-title">结论反馈（标注后沉淀为回归用例，喂回评估）</div>
+        <a-radio-group v-model:value="feedbackForm.verdict">
+          <a-radio value="CORRECT">结论正确</a-radio>
+          <a-radio value="PARTIAL">部分正确</a-radio>
+          <a-radio value="WRONG">结论错误</a-radio>
+        </a-radio-group>
+        <a-input v-model:value="feedbackForm.expectKeywords" class="top-gap" placeholder="正确结论必须命中的关键词，逗号分隔，如 nick_name,字段,不存在" />
+        <a-textarea v-model:value="feedbackForm.actualRootCause" :rows="2" class="top-gap" placeholder="真实根因（结论错或部分对时填）" />
+        <a-input v-model:value="feedbackForm.note" class="top-gap" placeholder="备注（可选）" />
+        <div class="top-gap">
+          <a-button type="primary" @click="submitFeedbackAction"><template #icon><CheckOutlined /></template>提交反馈</a-button>
+        </div>
+      </div>
+    </a-modal>
 
-    <el-dialog v-model="projectDialogVisible" :title="projectForm.id ? '编辑项目' : '新增项目'" width="560px" destroy-on-close>
-      <el-form :model="projectForm" label-width="90px">
-        <el-form-item label="项目名称"><el-input v-model="projectForm.name" /></el-form-item>
-        <el-form-item label="项目编码"><el-input v-model="projectForm.code" /></el-form-item>
-        <el-form-item label="说明"><el-input v-model="projectForm.description" type="textarea" :rows="3" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="projectDialogVisible = false">取消</el-button>
-        <el-button type="primary" :icon="Check" @click="saveProjectAction">保存</el-button>
-      </template>
-    </el-dialog>
+    <a-modal v-model:open="projectDialogVisible" :title="projectForm.id ? '编辑项目' : '新增项目'" width="560px" centered destroy-on-close @ok="saveProjectAction">
+      <a-form layout="vertical">
+        <a-form-item label="项目名称"><a-input v-model:value="projectForm.name" /></a-form-item>
+        <a-form-item label="项目编码"><a-input v-model:value="projectForm.code" /></a-form-item>
+        <a-form-item label="说明"><a-textarea v-model:value="projectForm.description" :rows="3" /></a-form-item>
+      </a-form>
+    </a-modal>
 
-    <el-dialog v-model="dbhubDialogVisible" title="dbhub 数据源" width="640px" destroy-on-close>
-      <el-form :model="dbhubForm" label-width="100px">
-        <el-form-item label="数据源Key"><el-input v-model="dbhubForm.key" placeholder="user_bug_demo" /></el-form-item>
-        <el-form-item label="主机"><el-input v-model="dbhubForm.host" /></el-form-item>
-        <el-form-item label="端口"><el-input-number v-model="dbhubForm.port" :min="1" :max="65535" style="width: 100%" /></el-form-item>
-        <el-form-item label="库名"><el-input v-model="dbhubForm.database" /></el-form-item>
-        <el-form-item label="用户名"><el-input v-model="dbhubForm.user" /></el-form-item>
-        <el-form-item label="密码"><el-input v-model="dbhubForm.password" type="password" show-password /></el-form-item>
-      </el-form>
+    <a-modal v-model:open="dbhubDialogVisible" title="dbhub 数据源" width="640px" centered destroy-on-close>
+      <a-form layout="vertical">
+        <a-form-item label="数据源Key"><a-input v-model:value="dbhubForm.key" placeholder="user_bug_demo" /></a-form-item>
+        <a-form-item label="主机"><a-input v-model:value="dbhubForm.host" /></a-form-item>
+        <a-form-item label="端口"><a-input-number v-model:value="dbhubForm.port" :min="1" :max="65535" style="width: 100%" /></a-form-item>
+        <a-form-item label="库名"><a-input v-model:value="dbhubForm.database" /></a-form-item>
+        <a-form-item label="用户名"><a-input v-model:value="dbhubForm.user" /></a-form-item>
+        <a-form-item label="密码"><a-input-password v-model:value="dbhubForm.password" /></a-form-item>
+      </a-form>
       <template #footer>
-        <el-button @click="dbhubDialogVisible = false">取消</el-button>
-        <el-button :icon="Connection" @click="testDbhubDatasourceAction">测试连接</el-button>
-        <el-button type="primary" :icon="Check" @click="saveDbhubDatasourceAction">保存</el-button>
+        <a-button @click="dbhubDialogVisible = false">取消</a-button>
+        <a-button @click="testDbhubDatasourceAction"><template #icon><ApiOutlined /></template>测试连接</a-button>
+        <a-button type="primary" @click="saveDbhubDatasourceAction"><template #icon><CheckOutlined /></template>保存</a-button>
       </template>
-    </el-dialog>
-  </el-container>
+    </a-modal>
+
+    <a-modal v-model:open="aiDialogVisible" title="新增 AI 配置" width="560px" centered destroy-on-close @ok="saveAiAction">
+      <a-form layout="vertical">
+        <a-form-item label="Provider"><a-input v-model:value="aiForm.provider" /></a-form-item>
+        <a-form-item label="Base URL"><a-input v-model:value="aiForm.baseUrl" placeholder="http://host:port/v1" /></a-form-item>
+        <a-form-item label="Model"><a-input v-model:value="aiForm.modelName" /></a-form-item>
+        <a-form-item label="API Key"><a-input-password v-model:value="aiForm.apiKey" /></a-form-item>
+        <a-form-item label="超时秒"><a-input-number v-model:value="aiForm.timeoutSeconds" :min="10" :max="300" style="width: 100%" /></a-form-item>
+      </a-form>
+    </a-modal>
+  </a-layout>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, Connection, Cpu, DataAnalysis, Download, Folder, Plus, Refresh, Setting, Upload, UploadFilled } from '@element-plus/icons-vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { message, Modal } from 'ant-design-vue'
+import {
+  ApiOutlined,
+  BarChartOutlined,
+  BugOutlined,
+  CheckOutlined,
+  DownloadOutlined,
+  FolderOutlined,
+  InboxOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  SettingOutlined,
+  UploadOutlined
+} from '@ant-design/icons-vue'
 import {
   analyzeBug,
   pollAgentAnalysisTask,
   createProject,
   deleteDbhubDatasource,
   deleteProject,
-  getAiConfig,
+  listAiConfigs,
+  createAiConfig,
+  activateAiConfig,
+  deleteAiConfig,
   importGit,
   importZip,
   listApiRoutes,
@@ -337,8 +413,10 @@ import {
   listDatasources,
   listProjects,
   listVersions,
-  saveAiConfig,
+  deleteVersion,
   submitAgentAnalysisTaskScreenshots,
+  submitAnalysisFeedback,
+  uploadLog,
   saveDbhubDatasource,
   saveDatasource,
   testDbhubDatasource,
@@ -360,11 +438,15 @@ const analysisDialogVisible = ref(false)
 const activeReportTab = ref('report')
 const dbhubDatasources = ref([])
 const selectedDbhubDatasources = ref([])
+const selectedDbhubKeys = ref([])
 const projectDialogVisible = ref(false)
 const dbhubDialogVisible = ref(false)
+const aiConfigs = ref([])
+const selectedAiConfigId = ref(null)
+const aiDialogVisible = ref(false)
 const apiRoutes = ref([])
 const routesLoading = ref(false)
-const selectedApiPrefix = ref("")
+const selectedApiPrefix = ref('')
 
 const projectForm = reactive({ id: null, name: '', code: '', description: '' })
 const projectQuery = reactive({ name: '', code: '' })
@@ -373,7 +455,14 @@ const aiForm = reactive({ provider: 'openai-compatible', baseUrl: '', modelName:
 const dbhubForm = reactive({ key: '', host: 'localhost', port: 3306, user: 'root', password: '1234', database: '' })
 const dbhubQuery = reactive({ user: '', database: '' })
 const datasourceForm = reactive({ env: 'test', dbhubKey: '' })
-const analysisForm = reactive({ versionId: '', apiPath: '', userDescription: '', requestBody: '', responseBody: '', stackTrace: '', traceId: '', requestTime: '' })
+const analysisForm = reactive({ versionId: '', apiPath: '', userDescription: '', requestBody: '', responseBody: '', stackTrace: '', traceId: '', requestTime: '', logText: '' })
+const logFileList = ref([])
+const feedbackForm = reactive({ verdict: '', expectKeywords: '', actualRootCause: '', note: '' })
+// 出新分析结果就清空上一次的反馈输入
+watch(() => analysisResult.value?.id, () => {
+  Object.assign(feedbackForm, { verdict: '', expectKeywords: '', actualRootCause: '', note: '' })
+})
+
 const currentVersion = computed(() => {
   if (!currentProject.value) return null
   if (analysisForm.versionId) {
@@ -385,10 +474,12 @@ const currentDatasource = computed(() => {
   if (!currentProject.value) return null
   return datasources.value.find((item) => item.enabled) || datasources.value[0] || null
 })
-const currentVersionLabel = computed(() => {
-  if (!currentVersion.value) return '未选择'
-  return `${currentVersion.value.id} / ${currentVersion.value.sourceType} / ${currentVersion.value.indexStatus}`
-})
+
+const projectOptions = computed(() => projects.value.map((project) => ({ value: project.id, label: project.name })))
+const versionOptions = computed(() => versions.value.map((version) => ({ value: version.id, label: versionOptionLabel(version) })))
+const dbhubKeyOptions = computed(() => dbhubDatasources.value.map((item) => ({ value: item.key, label: item.key })))
+const apiPrefixOptions = computed(() => apiPrefixes.value.map((prefix) => ({ value: prefix, label: prefix })))
+const apiRouteOptions = computed(() => filteredApiRoutes.value.map((route) => ({ value: route.path, label: route.path })))
 
 const apiPrefixes = computed(() => {
   const prefixes = new Set()
@@ -417,13 +508,53 @@ const filteredDbhubDatasources = computed(() => {
   })
 })
 
+const zipFileList = computed(() => (zipFile.value ? [{ uid: 'zip', name: zipFile.value.name }] : []))
+const screenshotFileList = computed(() => screenshotFiles.value.map((file, index) => ({ uid: String(index), name: file.name })))
+
+const dbhubRowSelection = computed(() => ({
+  selectedRowKeys: selectedDbhubKeys.value,
+  onChange: (keys, rows) => {
+    selectedDbhubKeys.value = keys
+    selectedDbhubDatasources.value = rows
+  }
+}))
+
+function projectRowEvents(record) {
+  return {
+    onClick: () => selectProject(record),
+    onDblclick: () => openProjectDialog(record)
+  }
+}
+
+function projectRowClass(record) {
+  return currentProject.value?.id === record.id ? 'active-row' : ''
+}
+
+function dbhubRowEvents(record) {
+  return { onDblclick: () => openDbhubDialog(record) }
+}
+
+// Element 的 ElMessageBox.confirm 等价封装，取消时 reject，保持原有 await 流程
+function confirm(content, title = '确认') {
+  return new Promise((resolve, reject) => {
+    Modal.confirm({ title, content, okText: '确定', cancelText: '取消', onOk: () => resolve(true), onCancel: () => reject(new Error('cancelled')) })
+  })
+}
+
 async function loadAll() {
   await loadProjects()
   dbhubDatasources.value = await listDbhubDatasources().catch(() => [])
   await loadProjectRelated()
-  const config = await getAiConfig().catch(() => null)
-  if (config) {
-    Object.assign(aiForm, { ...config, apiKey: '' })
+  await loadAiConfigs()
+}
+
+async function loadAiConfigs() {
+  aiConfigs.value = await listAiConfigs().catch(() => [])
+  const active = aiConfigs.value.find((item) => item.enabled)
+  selectedAiConfigId.value = active ? active.id : (aiConfigs.value[0]?.id ?? null)
+  // 有配置但没启用项时，默认激活第一条，保证分析有可用 AI
+  if (!active && selectedAiConfigId.value) {
+    await activateAiConfig(selectedAiConfigId.value).catch(() => {})
   }
 }
 
@@ -461,11 +592,11 @@ async function loadProjectRelated() {
 
 async function saveProjectAction() {
   if (!projectForm.name || !projectForm.code) {
-    ElMessage.warning('项目名称和项目编码不能为空')
+    message.warning('项目名称和项目编码不能为空')
     return
   }
   const saved = projectForm.id ? await updateProject(projectForm.id, projectForm) : await createProject(projectForm)
-  ElMessage.success(projectForm.id ? '项目已修改' : '项目已创建')
+  message.success(projectForm.id ? '项目已修改' : '项目已创建')
   projectDialogVisible.value = false
   resetProjectForm()
   currentProject.value = saved
@@ -476,12 +607,7 @@ async function saveProjectAction() {
 
 function openProjectDialog(row) {
   if (row) {
-    Object.assign(projectForm, {
-      id: row.id,
-      name: row.name,
-      code: row.code,
-      description: row.description || ''
-    })
+    Object.assign(projectForm, { id: row.id, name: row.name, code: row.code, description: row.description || '' })
   } else {
     resetProjectForm()
   }
@@ -493,9 +619,9 @@ function resetProjectForm() {
 }
 
 async function deleteProjectAction(row) {
-  await ElMessageBox.confirm(`确认删除项目 ${row.name} 吗？项目版本、数据源绑定、代码索引和分析记录会一起删除。`, '删除项目', { type: 'warning' })
+  await confirm(`确认删除项目 ${row.name} 吗？项目版本、数据源绑定、代码索引和分析记录会一起删除。`, '删除项目')
   await deleteProject(row.id)
-  ElMessage.success('项目已删除')
+  message.success('项目已删除')
   if (selectedProjectId.value === row.id) {
     selectedProjectId.value = null
   }
@@ -570,11 +696,6 @@ function changeApiPrefix(prefix) {
   analysisForm.apiPath = ''
 }
 
-function selectApiRoute(path) {
-  selectedApiPrefix.value = routePrefix(path)
-  analysisForm.apiPath = path
-}
-
 function versionOptionLabel(version) {
   return `${version.id} / ${version.sourceType} / ${version.indexStatus}`
 }
@@ -592,70 +713,129 @@ function routePrefix(path) {
 
 async function importGitAction() {
   await importGit(currentProject.value.id, gitForm)
-  ElMessage.success('Git 导入任务已提交')
+  message.success('Git 导入任务已提交')
   await loadProjectRelated()
 }
 
-function onZipSelected(uploadFile) {
-  zipFile.value = uploadFile.raw
+function beforeZipUpload(file) {
+  zipFile.value = file
+  return false
 }
 
-function onScreenshotSelected(uploadFile, uploadFiles) {
-  screenshotFiles.value = uploadFiles.map((item) => item.raw).filter(Boolean)
+function removeZip() {
+  zipFile.value = null
 }
 
-function onScreenshotRemoved(uploadFile, uploadFiles) {
-  screenshotFiles.value = uploadFiles.map((item) => item.raw).filter(Boolean)
+function beforeScreenshotUpload(file) {
+  screenshotFiles.value = [...screenshotFiles.value, file]
+  return false
+}
+
+function removeScreenshot(file) {
+  const index = Number(file.uid)
+  screenshotFiles.value = screenshotFiles.value.filter((_, idx) => idx !== index)
+}
+
+async function beforeLogUpload(file) {
+  if (file.size > 10 * 1024 * 1024) {
+    message.warning('日志文件不能超过 10MB')
+    return false
+  }
+  logFileList.value = [file]
+  try {
+    analysisForm.logText = await uploadLog(file)
+    message.success('日志已解析并填入')
+  } catch (error) {
+    message.error(error.message || '日志上传失败')
+    logFileList.value = []
+  }
+  return false
+}
+
+function removeLog() {
+  logFileList.value = []
+}
+
+async function deleteVersionAction(row) {
+  await confirm('确认删除这个版本吗？对应的代码索引和磁盘源码会一起删除。', '删除版本')
+  await deleteVersion(currentProject.value.id, row.id)
+  message.success('版本已删除')
+  await loadProjectRelated()
 }
 
 async function importZipAction() {
   if (!zipFile.value) {
-    ElMessage.warning('请选择 ZIP 文件')
+    message.warning('请选择 ZIP 文件')
     return
   }
   await importZip(currentProject.value.id, zipFile.value)
-  ElMessage.success('ZIP 导入任务已提交')
+  message.success('ZIP 导入任务已提交')
   await loadProjectRelated()
 }
 
+function openAiDialog() {
+  Object.assign(aiForm, { provider: 'openai-compatible', baseUrl: '', modelName: '', apiKey: '', timeoutSeconds: 60, enabled: true })
+  aiDialogVisible.value = true
+}
+
 async function saveAiAction() {
-  await saveAiConfig(aiForm)
-  ElMessage.success('AI 配置已保存')
+  if (!aiForm.baseUrl || !aiForm.modelName || !aiForm.apiKey) {
+    message.warning('Base URL、Model、API Key 不能为空')
+    return
+  }
+  await createAiConfig(aiForm)
+  message.success('AI 配置已新增')
+  aiDialogVisible.value = false
+  await loadAiConfigs()
+}
+
+async function activateAiAction(id) {
+  await activateAiConfig(id)
+  selectedAiConfigId.value = id
+  message.success('已切换 Agent 分析使用的 AI')
+  await loadAiConfigs()
+}
+
+async function deleteAiAction(row) {
+  await confirm(`确认删除配置 ${row.provider} / ${row.modelName} 吗？`, '删除 AI 配置')
+  await deleteAiConfig(row.id)
+  message.success('AI 配置已删除')
+  await loadAiConfigs()
 }
 
 async function testAiAction() {
   const result = await testAiConfig()
-  ElMessage.info(result)
+  message.info(result)
 }
 
 async function saveDatasourceAction() {
   if (!datasourceProjectId.value) {
-    ElMessage.warning('先选择要配置 dbhub 的项目')
+    message.warning('先选择要配置 dbhub 的项目')
     return
   }
   await saveDatasource(datasourceProjectId.value, datasourceForm)
-  ElMessage.success('数据源已保存')
+  message.success('数据源已保存')
   await loadProjectRelated()
 }
 
 async function saveDbhubDatasourceAction() {
   if (!dbhubForm.key || !dbhubForm.database) {
-    ElMessage.warning('数据源 Key 和库名不能为空')
+    message.warning('数据源 Key 和库名不能为空')
     return
   }
   await saveDbhubDatasource(dbhubForm)
-  ElMessage.success('dbhub 数据源已保存')
+  message.success('dbhub 数据源已保存')
   dbhubDatasources.value = await listDbhubDatasources()
   dbhubDialogVisible.value = false
 }
 
 async function testDbhubDatasourceAction() {
   if (!dbhubForm.key || !dbhubForm.database) {
-    ElMessage.warning('先填写完整数据源信息')
+    message.warning('先填写完整数据源信息')
     return
   }
   const result = await testDbhubDatasource(dbhubForm)
-  ElMessage.success(result)
+  message.success(result)
 }
 
 function openDbhubDialog(row) {
@@ -668,14 +848,7 @@ function openDbhubDialog(row) {
 }
 
 function fillDbhubForm(row) {
-  Object.assign(dbhubForm, {
-    key: row.key,
-    host: row.host,
-    port: row.port,
-    user: row.user,
-    password: '',
-    database: row.database
-  })
+  Object.assign(dbhubForm, { key: row.key, host: row.host, port: row.port, user: row.user, password: '', database: row.database })
 }
 
 function resetDbhubForm() {
@@ -686,49 +859,36 @@ function resetDbhubQuery() {
   Object.assign(dbhubQuery, { user: '', database: '' })
 }
 
-function changeDbhubSelection(rows) {
-  selectedDbhubDatasources.value = rows
-}
-
 async function deleteSelectedDbhubDatasources() {
   if (!selectedDbhubDatasources.value.length) {
-    ElMessage.warning('请先勾选要删除的数据源')
+    message.warning('请先勾选要删除的数据源')
     return
   }
   const keys = selectedDbhubDatasources.value.map((item) => item.key)
-  await ElMessageBox.confirm(`确认删除 ${keys.join('、')} 吗？`, '删除数据源', { type: 'warning' })
+  await confirm(`确认删除 ${keys.join('、')} 吗？`, '删除数据源')
   await Promise.all(keys.map((key) => deleteDbhubDatasource(key)))
-  ElMessage.success('数据源已删除')
+  message.success('数据源已删除')
   selectedDbhubDatasources.value = []
+  selectedDbhubKeys.value = []
   dbhubDatasources.value = await listDbhubDatasources()
 }
 
 async function analyzeAction() {
-  const loading = ElMessage({
-    message: '正在分析中...',
-    type: 'info',
-    duration: 0,
-    icon: 'el-icon-loading'
-  })
+  const close = message.loading('正在分析中...', 0)
   try {
     const payload = { ...analysisForm, projectId: currentProject.value.id }
     payload.versionId = payload.versionId ? Number(payload.versionId) : null
     analysisResult.value = await analyzeBug(payload)
     activeReportTab.value = 'report'
     analysisDialogVisible.value = true
-    ElMessage.success('分析完成')
+    message.success('分析完成')
   } finally {
-    loading.close()
+    close()
   }
 }
 
 async function agentAnalyzeAction() {
-  const loading = ElMessage({
-    message: 'Agent任务已提交，正在分析...',
-    type: 'warning',
-    duration: 0,
-    icon: 'el-icon-loading'
-  })
+  const close = message.loading('Agent任务已提交，正在分析...', 0)
   try {
     const payload = { ...analysisForm, projectId: currentProject.value.id }
     payload.versionId = payload.versionId ? Number(payload.versionId) : null
@@ -736,9 +896,9 @@ async function agentAnalyzeAction() {
     analysisResult.value = await waitAgentTask(task.taskId)
     activeReportTab.value = 'report'
     analysisDialogVisible.value = true
-    ElMessage.success('Agent分析完成！')
+    message.success('Agent分析完成！')
   } finally {
-    loading.close()
+    close()
   }
 }
 
@@ -760,9 +920,60 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+async function submitFeedbackAction() {
+  if (!analysisResult.value?.id) {
+    message.warning('没有可反馈的分析记录')
+    return
+  }
+  if (!feedbackForm.verdict) {
+    message.warning('请先选择结论是否正确')
+    return
+  }
+  const expectKeywords = feedbackForm.expectKeywords
+    .split(/[,，]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+  await submitAnalysisFeedback(analysisResult.value.id, {
+    verdict: feedbackForm.verdict,
+    actualRootCause: feedbackForm.actualRootCause,
+    expectKeywords,
+    note: feedbackForm.note
+  })
+  message.success('反馈已记录，已沉淀为回归用例')
+}
+
 onMounted(loadAll)
 </script>
 
-
-
-
+<style scoped>
+.active-row > td {
+  background: #e6f4ff;
+}
+.left-gap {
+  margin-left: 8px;
+}
+/* 分析台收紧：表单项间距小一点、上传框矮一点，整页不出滚动条 */
+.analysis-form :deep(.ant-form-item) {
+  margin-bottom: 12px;
+}
+.analysis-form :deep(.ant-upload-drag) {
+  padding: 6px;
+}
+.analysis-form :deep(.ant-upload-drag-icon) {
+  margin: 0 0 2px;
+  font-size: 22px;
+}
+.analysis-form :deep(.ant-upload-text) {
+  font-size: 12px;
+  margin: 0;
+}
+.analysis-actions {
+  padding-top: 0;
+}
+.actions-col {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+</style>

@@ -40,6 +40,10 @@ export function listVersions(projectId) {
   return request(`/projects/${projectId}/versions`)
 }
 
+export function deleteVersion(projectId, versionId) {
+  return request(`/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}`, { method: 'DELETE' })
+}
+
 export function listApiRoutes(projectId, versionId, keyword = '') {
   const params = new URLSearchParams()
   if (keyword) {
@@ -83,12 +87,20 @@ export function deleteDbhubDatasource(key) {
   return request(`/dbhub/datasources/${encodeURIComponent(key)}`, { method: 'DELETE' })
 }
 
-export function getAiConfig() {
+export function listAiConfigs() {
   return request('/ai-config')
 }
 
-export function saveAiConfig(payload) {
+export function createAiConfig(payload) {
   return request('/ai-config', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function activateAiConfig(id) {
+  return request(`/ai-config/${encodeURIComponent(id)}/activate`, { method: 'POST' })
+}
+
+export function deleteAiConfig(id) {
+  return request(`/ai-config/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 export function testAiConfig() {
@@ -122,5 +134,15 @@ export function submitAgentAnalysisTaskScreenshots(payload, screenshots = []) {
 
 export function pollAgentAnalysisTask(taskId) {
   return request(`/analysis/agent/tasks/${encodeURIComponent(taskId)}/poll`, { method: 'POST' })
+}
+
+export function submitAnalysisFeedback(recordId, payload) {
+  return request(`/analysis/records/${encodeURIComponent(recordId)}/feedback`, { method: 'PUT', body: JSON.stringify(payload) })
+}
+
+export function uploadLog(file) {
+  const form = new FormData()
+  form.append('file', file)
+  return request('/analysis/logs/upload', { method: 'POST', body: form })
 }
 

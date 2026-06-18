@@ -12,6 +12,15 @@ public class ProjectVersion {
     private String sourcePath;
     private String indexStatus;
     private String indexMessage;
+    private String updatedAt;
+
+    public String getUpdatedAt() {
+        return updatedAt;
+    }
+
+    public void setUpdatedAt(String updatedAt) {
+        this.updatedAt = updatedAt;
+    }
 
     public Long getId() {
         return id;

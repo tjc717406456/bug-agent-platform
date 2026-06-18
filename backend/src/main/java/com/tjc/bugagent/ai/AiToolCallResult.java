@@ -1,19 +1,42 @@
 package com.tjc.bugagent.ai;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
 /**
- * AI 返回的工具调用结果。
+ * AI 返回的工具调用结果。一轮可能包含多个工具调用。
  */
 public class AiToolCallResult {
     private String content;
     private String toolName;
     private String argumentsJson;
     private String rawResponse;
+    private List<AiToolCall> toolCalls = new ArrayList<AiToolCall>();
+    // 模型本轮返回的原始 assistant message，多轮对话时原样回填，保证 tool_calls 与 tool 结果配对
+    private Map<String, Object> assistantMessage;
+
+    public Map<String, Object> getAssistantMessage() {
+        return assistantMessage;
+    }
+
+    public void setAssistantMessage(Map<String, Object> assistantMessage) {
+        this.assistantMessage = assistantMessage;
+    }
 
     /**
      * 判断本轮是否拿到了标准工具调用。
      */
     public boolean hasToolCall() {
-        return toolName != null && !toolName.trim().isEmpty();
+        return !toolCalls.isEmpty();
+    }
+
+    public List<AiToolCall> getToolCalls() {
+        return toolCalls;
+    }
+
+    public void setToolCalls(List<AiToolCall> toolCalls) {
+        this.toolCalls = toolCalls == null ? new ArrayList<AiToolCall>() : toolCalls;
     }
 
     public String getContent() {

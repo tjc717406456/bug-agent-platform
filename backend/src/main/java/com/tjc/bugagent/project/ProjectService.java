@@ -1,10 +1,12 @@
 package com.tjc.bugagent.project;
 
+import org.apache.commons.io.FileUtils;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.File;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -101,21 +103,50 @@ public class ProjectService {
 
     public List<ProjectVersion> listVersions(Long projectId) {
         return jdbcTemplate.query(
-                "select id, project_id, source_type, branch_name, commit_id, source_path, index_status, index_message from project_version where project_id = ? order by id desc",
+                "select id, project_id, source_type, branch_name, commit_id, source_path, index_status, index_message, coalesce(indexed_at, created_at) as updated_at from project_version where project_id = ? order by id desc",
                 new ProjectVersionMapper(), projectId);
     }
 
     public ProjectVersion latestReadyVersion(Long projectId) {
         List<ProjectVersion> versions = jdbcTemplate.query(
-                "select id, project_id, source_type, branch_name, commit_id, source_path, index_status, index_message from project_version where project_id = ? and index_status = 'SUCCESS' order by id desc limit 1",
+                "select id, project_id, source_type, branch_name, commit_id, source_path, index_status, index_message, coalesce(indexed_at, created_at) as updated_at from project_version where project_id = ? and index_status = 'SUCCESS' order by id desc limit 1",
                 new ProjectVersionMapper(), projectId);
         return versions.isEmpty() ? null : versions.get(0);
     }
 
     public ProjectVersion getVersion(Long versionId) {
         return jdbcTemplate.queryForObject(
-                "select id, project_id, source_type, branch_name, commit_id, source_path, index_status, index_message from project_version where id = ?",
+                "select id, project_id, source_type, branch_name, commit_id, source_path, index_status, index_message, coalesce(indexed_at, created_at) as updated_at from project_version where id = ?",
                 new ProjectVersionMapper(), versionId);
+    }
+
+    /**
+     * 删除某个版本：连带清掉代码图谱（code_node/code_edge）和磁盘源码目录。
+     */
+    public void deleteVersion(Long projectId, Long versionId) {
+        List<String> paths = jdbcTemplate.queryForList(
+                "select source_path from project_version where id = ? and project_id = ?", String.class, versionId, projectId);
+        jdbcTemplate.update("delete from code_edge where project_id = ? and version_id = ?", projectId, versionId);
+        jdbcTemplate.update("delete from code_node where project_id = ? and version_id = ?", projectId, versionId);
+        jdbcTemplate.update("delete from project_version where id = ? and project_id = ?", versionId, projectId);
+        if (!paths.isEmpty()) {
+            deleteSourceDir(projectId, paths.get(0));
+        }
+    }
+
+    private void deleteSourceDir(Long projectId, String sourcePath) {
+        if (sourcePath == null || sourcePath.trim().isEmpty()) {
+            return;
+        }
+        String projectDirName = "project-" + projectId;
+        File current = new File(sourcePath);
+        while (current != null && current.getParentFile() != null) {
+            if (projectDirName.equals(current.getParentFile().getName())) {
+                break;
+            }
+            current = current.getParentFile();
+        }
+        FileUtils.deleteQuietly(current == null ? new File(sourcePath) : current);
     }
 
     public void saveDatasource(Long projectId, SaveDatasourceRequest request) {
@@ -184,6 +215,7 @@ public class ProjectService {
             version.setSourcePath(rs.getString("source_path"));
             version.setIndexStatus(rs.getString("index_status"));
             version.setIndexMessage(rs.getString("index_message"));
+            version.setUpdatedAt(rs.getString("updated_at"));
             return version;
         }
     }

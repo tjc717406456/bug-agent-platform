@@ -11,6 +11,8 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -45,6 +47,8 @@ public class SourceImportService {
         if (files == null || files.length == 0) {
             throw new IllegalStateException("git clone produced no source directory");
         }
+        // 新源码已就绪，清掉该项目的旧版本（图谱 + 磁盘），保证一个项目只留当前一份
+        pruneProjectVersions(projectId);
         Long versionId = createVersion(projectId, "GIT", request.getBranchName(), files[0].getAbsolutePath());
         codeGraphIndexService.indexAsync(projectId, versionId, files[0].toPath());
         return versionId;
@@ -54,6 +58,8 @@ public class SourceImportService {
         Path target = workspacePath(projectId, "zip");
         unzip(file, target);
         Path sourceRoot = findSourceRoot(target);
+        // 新源码已就绪，清掉该项目的旧版本（图谱 + 磁盘），保证一个项目只留当前一份
+        pruneProjectVersions(projectId);
         Long versionId = createVersion(projectId, "ZIP", null, sourceRoot.toFile().getAbsolutePath());
         codeGraphIndexService.indexAsync(projectId, versionId, sourceRoot);
         return versionId;
@@ -70,6 +76,45 @@ public class SourceImportService {
         Path path = new File(appProperties.getWorkspaceRoot(), "project-" + projectId + File.separator + type + "-" + UUID.randomUUID()).toPath();
         Files.createDirectories(path);
         return path;
+    }
+
+    /**
+     * 清掉该项目已有的全部版本：删代码图谱（code_node/code_edge）和磁盘源码目录，再删版本行。
+     * 一个项目只保留一份当前源码，重导即覆盖，DB 和磁盘不再随导入次数无限增长。
+     */
+    private void pruneProjectVersions(Long projectId) {
+        List<Map<String, Object>> versions = jdbcTemplate.queryForList(
+                "select id, source_path from project_version where project_id = ?", projectId);
+        for (Map<String, Object> version : versions) {
+            Long versionId = ((Number) version.get("id")).longValue();
+            jdbcTemplate.update("delete from code_edge where project_id = ? and version_id = ?", projectId, versionId);
+            jdbcTemplate.update("delete from code_node where project_id = ? and version_id = ?", projectId, versionId);
+            deleteSourceDir(projectId, (String) version.get("source_path"));
+        }
+        jdbcTemplate.update("delete from project_version where project_id = ?", projectId);
+    }
+
+    /**
+     * 删除一次导入落地的源码目录（project-X 下的 type-uuid 那层），尽量把磁盘清干净。
+     */
+    private void deleteSourceDir(Long projectId, String sourcePath) {
+        if (sourcePath == null || sourcePath.trim().isEmpty()) {
+            return;
+        }
+        File importRoot = locateImportRoot(new File(sourcePath), projectId);
+        FileUtils.deleteQuietly(importRoot);
+    }
+
+    private File locateImportRoot(File dir, Long projectId) {
+        String projectDirName = "project-" + projectId;
+        File current = dir;
+        while (current != null && current.getParentFile() != null) {
+            if (projectDirName.equals(current.getParentFile().getName())) {
+                return current;
+            }
+            current = current.getParentFile();
+        }
+        return dir;
     }
 
     private Long createVersion(Long projectId, String sourceType, String branchName, String sourcePath) {
