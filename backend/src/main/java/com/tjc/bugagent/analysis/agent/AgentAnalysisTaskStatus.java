@@ -1,13 +1,40 @@
-package com.tjc.bugagent.analysis;
+package com.tjc.bugagent.analysis.agent;
+
+import com.tjc.bugagent.analysis.AnalysisResult;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Agent 分析任务状态。
  */
 public class AgentAnalysisTaskStatus {
+    // 进度步骤最多保留的条数，防止 Redis 里无限增长
+    private static final int MAX_PROGRESS = 60;
+
     private String taskId;
     private String status;
     private String message;
     private AnalysisResult result;
+    private List<String> progress = new ArrayList<String>();
+
+    public List<String> getProgress() {
+        return progress;
+    }
+
+    public void setProgress(List<String> progress) {
+        this.progress = progress == null ? new ArrayList<String>() : progress;
+    }
+
+    /**
+     * 追加一条进度，超出上限丢掉最早的。
+     */
+    public void addProgress(String step) {
+        progress.add(step);
+        while (progress.size() > MAX_PROGRESS) {
+            progress.remove(0);
+        }
+    }
 
     public String getTaskId() {
         return taskId;

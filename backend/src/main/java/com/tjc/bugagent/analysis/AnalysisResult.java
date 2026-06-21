@@ -9,6 +9,15 @@ public class AnalysisResult {
     private String conclusion;
     private String confidence;
     private String evidenceJson;
+    private String autoVerify;
+
+    public String getAutoVerify() {
+        return autoVerify;
+    }
+
+    public void setAutoVerify(String autoVerify) {
+        this.autoVerify = autoVerify;
+    }
 
     public Long getId() {
         return id;

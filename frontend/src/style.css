@@ -240,7 +240,7 @@ body {
 }
 
 .scroll-content {
-  max-height: 46vh;
+  max-height: 32vh;
   margin: 0;
   padding: 12px;
   overflow: auto;

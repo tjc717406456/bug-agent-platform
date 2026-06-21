@@ -1,0 +1,315 @@
+package com.tjc.bugagent.analysis.agent;
+
+import com.tjc.bugagent.analysis.AnalysisProgressListener;
+import com.tjc.bugagent.analysis.AnalysisRecordRepository;
+import com.tjc.bugagent.analysis.AnalysisRequest;
+import com.tjc.bugagent.analysis.AnalysisResult;
+import com.tjc.bugagent.analysis.log.LogClues;
+import com.tjc.bugagent.analysis.log.LogEvidenceExtractor;
+import com.tjc.bugagent.analysis.log.LogStorageService;
+import com.tjc.bugagent.analysis.verify.AnalysisAutoVerifier;
+import com.tjc.bugagent.ai.AiClient;
+import com.tjc.bugagent.ai.AiToolCallResult;
+import com.tjc.bugagent.codegraph.CodeGraphQueryResult;
+import com.tjc.bugagent.codegraph.CodeGraphQueryService;
+import com.tjc.bugagent.config.AppProperties;
+import com.tjc.bugagent.project.ProjectDatasource;
+import com.tjc.bugagent.project.ProjectService;
+import com.tjc.bugagent.project.ProjectVersion;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 只读 Bug 定位 Agent 的编排核心：维护多轮对话、驱动工具查证、判断收敛并产出报告。
+ * 提示词、初始证据、工具执行、消息协议、收敛判定、报告生成、持久化等内聚逻辑各自拆给专门协作类，
+ * 这里只管串流程。
+ */
+@Service
+public class AgentAnalysisService {
+    private static final Logger log = LoggerFactory.getLogger(AgentAnalysisService.class);
+    private static final int MAX_CONTINUOUS_FAILURES = 2;
+    // 模型只描述计划不发工具调用时，最多纠偏几次再放弃，专治 gpt-5.5 这类爱"动嘴不动手"的模型
+    private static final int MAX_TOOL_NUDGES = 2;
+
+    private final ProjectService projectService;
+    private final CodeGraphQueryService codeGraphQueryService;
+    private final AgentToolExecutor agentToolExecutor;
+    private final AiClient aiClient;
+    private final AppProperties appProperties;
+    private final LogEvidenceExtractor logEvidenceExtractor;
+    private final LogStorageService logStorageService;
+    private final AnalysisAutoVerifier analysisAutoVerifier;
+    private final AgentPromptBuilder promptBuilder;
+    private final PlainAnswerResolver plainAnswerResolver;
+    private final AgentToolCallParser toolCallParser;
+    private final InitialEvidenceBuilder initialEvidenceBuilder;
+    private final ToolFanoutExecutor toolFanoutExecutor;
+    private final AnalysisRecordRepository recordRepository;
+    private final AgentConversation conversation;
+    private final AgentRoundReporter reporter;
+    private final AgentConvergenceJudge judge;
+    private final SimilarCaseRetriever similarCaseRetriever;
+
+    public AgentAnalysisService(ProjectService projectService,
+                                CodeGraphQueryService codeGraphQueryService,
+                                AgentToolExecutor agentToolExecutor,
+                                AiClient aiClient,
+                                AppProperties appProperties,
+                                LogEvidenceExtractor logEvidenceExtractor,
+                                LogStorageService logStorageService,
+                                AnalysisAutoVerifier analysisAutoVerifier,
+                                AgentPromptBuilder promptBuilder,
+                                PlainAnswerResolver plainAnswerResolver,
+                                AgentToolCallParser toolCallParser,
+                                InitialEvidenceBuilder initialEvidenceBuilder,
+                                ToolFanoutExecutor toolFanoutExecutor,
+                                AnalysisRecordRepository recordRepository,
+                                AgentConversation conversation,
+                                AgentRoundReporter reporter,
+                                AgentConvergenceJudge judge,
+                                SimilarCaseRetriever similarCaseRetriever) {
+        this.projectService = projectService;
+        this.codeGraphQueryService = codeGraphQueryService;
+        this.agentToolExecutor = agentToolExecutor;
+        this.aiClient = aiClient;
+        this.appProperties = appProperties;
+        this.logEvidenceExtractor = logEvidenceExtractor;
+        this.logStorageService = logStorageService;
+        this.analysisAutoVerifier = analysisAutoVerifier;
+        this.promptBuilder = promptBuilder;
+        this.plainAnswerResolver = plainAnswerResolver;
+        this.toolCallParser = toolCallParser;
+        this.initialEvidenceBuilder = initialEvidenceBuilder;
+        this.toolFanoutExecutor = toolFanoutExecutor;
+        this.recordRepository = recordRepository;
+        this.conversation = conversation;
+        this.reporter = reporter;
+        this.judge = judge;
+        this.similarCaseRetriever = similarCaseRetriever;
+    }
+
+    /**
+     * 执行 Agent 多轮分析并保存分析记录。
+     */
+    public AnalysisResult analyze(AnalysisRequest request) {
+        return analyze(request, AnalysisProgressListener.NOOP);
+    }
+
+    /**
+     * 带进度回调的分析：每轮关键动作通过 listener 回传，前端实时展示，告别黑盒干等。
+     */
+    public AnalysisResult analyze(AnalysisRequest request, AnalysisProgressListener progress) {
+        ProjectVersion version = resolveVersion(request);
+        CodeGraphQueryResult graph = codeGraphQueryService.queryByApiPath(request.getProjectId(), version.getId(), request.getApiPath());
+        ProjectDatasource datasource = projectService.firstEnabledDatasource(request.getProjectId());
+        AgentToolExecutor.AgentToolContext toolContext = new AgentToolExecutor.AgentToolContext(
+                request.getProjectId(), version.getId(), request.getApiPath(), datasource);
+
+        // 有日志就先抠出堆栈、SQL、traceId、时间，缺啥补啥，让后续流程自动用上
+        LogClues logClues = enrichFromLog(request);
+        String initialEvidence = initialEvidenceBuilder.buildInitialEvidence(request, version, graph, datasource, toolContext, logClues);
+        // 维护一条完整 OpenAI 对话，历轮工具结果按协议回填，模型每轮都能看到上下文全貌
+        List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
+        messages.add(conversation.message("system", promptBuilder.buildSystemPrompt()));
+        messages.add(conversation.message("user", promptBuilder.buildInitialUserPrompt(initialEvidence)));
+        // 从同项目历史确认案例里捞方向参考喂进对话，把人工标注反哺到实时分析
+        List<SimilarCase> similar = similarCaseRetriever.retrieve(request, version);
+        String refPrompt = promptBuilder.buildSimilarCasesPrompt(similar);
+        if (!isBlank(refPrompt)) {
+            messages.add(conversation.message("user", refPrompt));
+            progress.onStep("已带入 " + similar.size() + " 条同项目历史参考");
+            log.info("注入历史参考 projectId={} apiPath={} 命中{}条 {}", request.getProjectId(), request.getApiPath(),
+                    similar.size(), similarPaths(similar));
+        }
+        progress.onStep("已预取入口与调用链源码，开始分析");
+
+        List<Map<String, Object>> rounds = new ArrayList<Map<String, Object>>();
+        String finalReport = null;
+        int continuousFailures = 0;
+        int noNewKeyFactRounds = 0;
+        int toolNudges = 0;
+        boolean selfChecked = false;
+
+        int maxIterations = appProperties.getAgent().getMaxIterations();
+        for (int iteration = 1; iteration <= maxIterations; iteration++) {
+            String forceFinishReason = judge.resolveForceFinishReason(graph, rounds, noNewKeyFactRounds);
+            if (!isBlank(forceFinishReason)) {
+                messages.add(conversation.message("user", promptBuilder.buildForceFinishInstruction(forceFinishReason)));
+            }
+            AiToolCallResult aiResult = aiClient.chatWithMessages(messages, agentToolExecutor.toolSchemas());
+            List<AgentToolCall> calls = toolCallParser.parseToolCalls(aiResult);
+
+            // 强制收口：本轮只允许 finish
+            AgentToolCall finish = toolCallParser.findFinish(calls);
+            if (!isBlank(forceFinishReason) && finish == null) {
+                finish = toolCallParser.finishCall(reporter.buildForcedFinishReport(forceFinishReason, rounds));
+            }
+            if (finish != null) {
+                // 模型只用文字描述计划、没真发工具调用：先纠偏逼它走 tool_calls，几次无效再收口
+                if (finish.isDegraded() && isBlank(forceFinishReason) && toolNudges < MAX_TOOL_NUDGES) {
+                    toolNudges++;
+                    conversation.appendAssistantMessage(messages, aiResult);
+                    messages.add(conversation.message("user", promptBuilder.buildToolNudge()));
+                    progress.onStep("第" + iteration + "轮 · 模型只给了计划，提示其直接调用工具");
+                    continue;
+                }
+                // 模型自然收口（非强制、非兜底）时，先做一次对抗式自检，抓自洽幻觉
+                boolean canCritique = appProperties.getAgent().isSelfCritique()
+                        && !selfChecked && isBlank(forceFinishReason) && finish.getToolCallId() != null;
+                if (canCritique) {
+                    selfChecked = true;
+                    String report = finish.stringArg("report");
+                    String verdict = judge.runSelfCritique(report, rounds, initialEvidence);
+                    if (judge.isReviseVerdict(verdict)) {
+                        // 复核未通过：闭合本次全部 tool_call，把质疑塞回对话，要求补证后再收
+                        conversation.appendAssistantMessage(messages, aiResult);
+                        conversation.appendFinishHold(messages, aiResult, finish);
+                        messages.add(conversation.message("user", "对你的初步结论做了独立复核，未通过：" + judge.reviseReason(verdict)
+                                + " 请针对这一点补查证据，确认后再调用 finish。"));
+                        rounds.add(reporter.recordCritique(iteration, report, verdict));
+                        progress.onStep("第" + iteration + "轮 · 结论自检未通过，继续补证");
+                        continue;
+                    }
+                }
+                progress.onStep("证据足够，正在生成最终报告");
+                AgentToolResult finishResult = agentToolExecutor.execute(finish, toolContext);
+                rounds.add(reporter.recordRound(iteration, aiResult, finish, finishResult));
+                finalReport = finishResult.getEvidence();
+                break;
+            }
+
+            // 一轮内的多个查证工具并行执行，减少串行 LLM 往返
+            List<AgentToolResult> results = toolFanoutExecutor.executeAll(calls, toolContext);
+            // 先回填 assistant 的 tool_calls，再逐条回填 tool 结果，保证下一轮请求合法
+            conversation.appendAssistantMessage(messages, aiResult);
+            conversation.appendToolMessages(messages, aiResult, calls, results);
+            boolean anyOk = false;
+            boolean anyNewFact = false;
+            for (int i = 0; i < calls.size(); i++) {
+                AgentToolCall call = calls.get(i);
+                AgentToolResult toolResult = results.get(i);
+                boolean newKeyFact = judge.isNewKeyFact(rounds, call, toolResult);
+                rounds.add(reporter.recordRound(iteration, aiResult, call, toolResult));
+                progress.onStep("第" + iteration + "轮 · " + reporter.actionName(call.getAction()) + " · " + trim(safe(toolResult.getSummary()), 40));
+                anyOk = anyOk || toolResult.isOk();
+                anyNewFact = anyNewFact || newKeyFact;
+            }
+
+            if (anyOk) {
+                continuousFailures = 0;
+                noNewKeyFactRounds = anyNewFact ? 0 : noNewKeyFactRounds + 1;
+            } else {
+                continuousFailures++;
+            }
+            if (continuousFailures >= MAX_CONTINUOUS_FAILURES) {
+                finalReport = reporter.buildFailureReport(rounds);
+                break;
+            }
+        }
+
+        if (finalReport == null) {
+            // 到顶仍没收口：再逼模型基于已有证据产出一份完整报告，别甩一句话
+            finalReport = forceSynthesizeReport(messages, toolContext, rounds, maxIterations + 1);
+        }
+
+        String evidence = reporter.buildEvidenceLog(initialEvidence, rounds);
+        String confidence = judge.resolveConfidence(graph, rounds, finalReport);
+        // 确定性结论连库自动核对，验证通过的无需人工即可进飞轮
+        AnalysisAutoVerifier.Result autoVerify = analysisAutoVerifier.verify(safe(finalReport) + "\n" + evidence, datasource);
+        Long recordId = recordRepository.save(request, version, finalReport, confidence, evidence, autoVerify);
+
+        AnalysisResult result = new AnalysisResult();
+        result.setId(recordId);
+        result.setPlainAnswer(plainAnswerResolver.buildPlainAnswer(finalReport, evidence));
+        result.setConclusion(finalReport);
+        result.setConfidence(confidence);
+        result.setEvidenceJson(evidence);
+        result.setAutoVerify(autoVerify.getStatus());
+        return result;
+    }
+
+    /**
+     * 达到最大轮次仍没收口时，再发一次请求逼模型基于已有证据 finish 出完整报告；
+     * 模型仍不配合才退回本地汇总报告，保证给到的不是一句话。
+     */
+    private String forceSynthesizeReport(List<Map<String, Object>> messages, AgentToolExecutor.AgentToolContext toolContext,
+                                         List<Map<String, Object>> rounds, int iteration) {
+        try {
+            messages.add(conversation.message("user", "已达到最大分析轮次。现在必须基于以上全部证据调用 finish 输出最终报告，"
+                    + "report 要包含：通俗结论、问题结论、证据链路、关键代码/SQL/数据证据、根因类型、建议处理人、置信度；"
+                    + "证据不足就给出最可能的判断并说明剩余风险，不要再调用查证工具。"));
+            AiToolCallResult aiResult = aiClient.chatWithMessages(messages, agentToolExecutor.toolSchemas());
+            AgentToolCall finish = toolCallParser.findFinish(toolCallParser.parseToolCalls(aiResult));
+            if (finish != null && !isBlank(finish.stringArg("report"))) {
+                AgentToolResult finishResult = agentToolExecutor.execute(finish, toolContext);
+                rounds.add(reporter.recordRound(iteration, aiResult, finish, finishResult));
+                return finishResult.getEvidence();
+            }
+        } catch (Exception exception) {
+            // 兜底报告照样给，不让异常打断收尾
+        }
+        return reporter.buildMaxRoundReport(rounds);
+    }
+
+    private ProjectVersion resolveVersion(AnalysisRequest request) {
+        if (request.getVersionId() != null) {
+            return projectService.getVersion(request.getVersionId());
+        }
+        ProjectVersion version = projectService.latestReadyVersion(request.getProjectId());
+        if (version == null) {
+            throw new IllegalStateException("no indexed project version found");
+        }
+        return version;
+    }
+
+    /**
+     * 解析请求里的日志文本，抠出线索；堆栈/traceId/时间为空时用日志里的补上。
+     */
+    private LogClues enrichFromLog(AnalysisRequest request) {
+        // 优先用粘贴的 logText；没有就按 logId 去读上传保存的日志文件
+        String logText = request.getLogText();
+        if (isBlank(logText) && !isBlank(request.getLogId())) {
+            logText = logStorageService.read(request.getLogId());
+        }
+        LogClues clues = logEvidenceExtractor.extract(logText, request.getApiPath(), request.getUserDescription());
+        if (isBlank(request.getStackTrace()) && !isBlank(clues.getStackTrace())) {
+            request.setStackTrace(clues.getStackTrace());
+        }
+        if (isBlank(request.getTraceId()) && !isBlank(clues.getTraceId())) {
+            request.setTraceId(clues.getTraceId());
+        }
+        if (isBlank(request.getRequestTime()) && !isBlank(clues.getRequestTime())) {
+            request.setRequestTime(clues.getRequestTime());
+        }
+        return clues;
+    }
+
+    private String safe(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+
+    private String trim(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength) + "...";
+    }
+
+    /** 把命中的历史案例接口路径拼成日志串，便于排查带进来哪些参考。 */
+    private String similarPaths(List<SimilarCase> cases) {
+        List<String> paths = new ArrayList<String>();
+        for (SimilarCase similar : cases) {
+            paths.add(similar.getApiPath());
+        }
+        return String.join(", ", paths);
+    }
+}

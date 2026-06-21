@@ -1,7 +1,14 @@
 package com.tjc.bugagent.analysis;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tjc.bugagent.analysis.agent.AgentAnalysisService;
+import com.tjc.bugagent.analysis.agent.AgentAnalysisTaskService;
+import com.tjc.bugagent.analysis.agent.AgentAnalysisTaskStatus;
+import com.tjc.bugagent.analysis.agent.AgentAnalysisTaskSubmitResult;
+import com.tjc.bugagent.analysis.log.LogStorageService;
+import com.tjc.bugagent.analysis.log.ScreenshotStorageService;
 import com.tjc.bugagent.common.ApiResponse;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -12,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import javax.validation.Valid;
+import java.util.List;
 
 /**
  * Bug 分析接口。
@@ -25,6 +33,7 @@ public class AnalysisController {
     private final ScreenshotStorageService screenshotStorageService;
     private final AnalysisFeedbackService analysisFeedbackService;
     private final LogStorageService logStorageService;
+    private final AnalysisRecordService analysisRecordService;
     private final ObjectMapper objectMapper;
 
     public AnalysisController(AnalysisService analysisService,
@@ -33,6 +42,7 @@ public class AnalysisController {
                               ScreenshotStorageService screenshotStorageService,
                               AnalysisFeedbackService analysisFeedbackService,
                               LogStorageService logStorageService,
+                              AnalysisRecordService analysisRecordService,
                               ObjectMapper objectMapper) {
         this.analysisService = analysisService;
         this.agentAnalysisService = agentAnalysisService;
@@ -40,6 +50,7 @@ public class AnalysisController {
         this.screenshotStorageService = screenshotStorageService;
         this.analysisFeedbackService = analysisFeedbackService;
         this.logStorageService = logStorageService;
+        this.analysisRecordService = analysisRecordService;
         this.objectMapper = objectMapper;
     }
 
@@ -95,6 +106,14 @@ public class AnalysisController {
     }
 
     /**
+     * 提交异步接口讲解任务，只需 项目+版本+接口路径，轮询复用下方 poll 接口。
+     */
+    @PostMapping("/explain/tasks")
+    public ApiResponse<AgentAnalysisTaskSubmitResult> submitExplainTask(@Valid @RequestBody AnalysisRequest request) {
+        return ApiResponse.ok(agentAnalysisTaskService.submitExplain(request));
+    }
+
+    /**
      * 轮询异步 Agent 分析任务状态。
      */
     @PostMapping("/agent/tasks/{taskId}/poll")
@@ -112,10 +131,38 @@ public class AnalysisController {
     }
 
     /**
-     * 上传日志文件（限大小），保存后读出文本返回，供分析时自动抠堆栈、SQL、traceId。
+     * 上传日志文件（限大小），保存后返回 logId；分析时后端凭 logId 直接读文件，无需前端回传全文。
      */
     @PostMapping("/logs/upload")
     public ApiResponse<String> uploadLog(@RequestParam("file") MultipartFile file) throws Exception {
-        return ApiResponse.ok(logStorageService.saveAndRead(file));
+        return ApiResponse.ok(logStorageService.save(file));
+    }
+
+    /**
+     * 分析历史列表（按项目、接口筛，分页）。
+     */
+    @GetMapping("/records")
+    public ApiResponse<AnalysisRecordPage> listRecords(@RequestParam(required = false) Long projectId,
+                                                       @RequestParam(required = false) String apiPath,
+                                                       @RequestParam(defaultValue = "0") int page,
+                                                       @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.ok(analysisRecordService.list(projectId, apiPath, page, size));
+    }
+
+    /**
+     * 单条分析记录详情（含证据和已有标注）。
+     */
+    @GetMapping("/records/{recordId}")
+    public ApiResponse<AnalysisRecord> getRecord(@PathVariable Long recordId) {
+        return ApiResponse.ok(analysisRecordService.get(recordId));
+    }
+
+    /**
+     * 批量删除分析记录。
+     */
+    @PostMapping("/records/batch-delete")
+    public ApiResponse<String> batchDeleteRecords(@RequestBody List<Long> ids) {
+        analysisRecordService.deleteByIds(ids);
+        return ApiResponse.ok("ok");
     }
 }

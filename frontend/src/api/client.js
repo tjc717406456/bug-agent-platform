@@ -136,6 +136,10 @@ export function pollAgentAnalysisTask(taskId) {
   return request(`/analysis/agent/tasks/${encodeURIComponent(taskId)}/poll`, { method: 'POST' })
 }
 
+export function submitApiExplainTask(payload) {
+  return request('/analysis/explain/tasks', { method: 'POST', body: JSON.stringify(payload) })
+}
+
 export function submitAnalysisFeedback(recordId, payload) {
   return request(`/analysis/records/${encodeURIComponent(recordId)}/feedback`, { method: 'PUT', body: JSON.stringify(payload) })
 }
@@ -144,5 +148,23 @@ export function uploadLog(file) {
   const form = new FormData()
   form.append('file', file)
   return request('/analysis/logs/upload', { method: 'POST', body: form })
+}
+
+export function listAnalysisRecords(params = {}) {
+  const query = new URLSearchParams()
+  if (params.projectId) query.set('projectId', params.projectId)
+  if (params.apiPath) query.set('apiPath', params.apiPath)
+  if (params.page != null) query.set('page', params.page)
+  if (params.size != null) query.set('size', params.size)
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return request(`/analysis/records${suffix}`)
+}
+
+export function getAnalysisRecord(recordId) {
+  return request(`/analysis/records/${encodeURIComponent(recordId)}`)
+}
+
+export function batchDeleteAnalysisRecords(ids) {
+  return request('/analysis/records/batch-delete', { method: 'POST', body: JSON.stringify(ids) })
 }
 

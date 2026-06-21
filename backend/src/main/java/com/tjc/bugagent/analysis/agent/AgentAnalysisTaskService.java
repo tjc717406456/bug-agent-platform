@@ -1,5 +1,6 @@
-package com.tjc.bugagent.analysis;
+package com.tjc.bugagent.analysis.agent;
 
+import com.tjc.bugagent.analysis.AnalysisRequest;
 import org.springframework.stereotype.Service;
 
 import java.util.UUID;
@@ -28,6 +29,24 @@ public class AgentAnalysisTaskService {
         status.setMessage("任务已提交");
         taskStore.save(status);
         taskRunner.run(taskId, request, status);
+
+        AgentAnalysisTaskSubmitResult result = new AgentAnalysisTaskSubmitResult();
+        result.setTaskId(taskId);
+        result.setStatus(status.getStatus());
+        return result;
+    }
+
+    /**
+     * 提交异步接口讲解任务，复用同一套任务存储和轮询。
+     */
+    public AgentAnalysisTaskSubmitResult submitExplain(AnalysisRequest request) {
+        String taskId = UUID.randomUUID().toString();
+        AgentAnalysisTaskStatus status = new AgentAnalysisTaskStatus();
+        status.setTaskId(taskId);
+        status.setStatus("PENDING");
+        status.setMessage("任务已提交");
+        taskStore.save(status);
+        taskRunner.runExplain(taskId, request, status);
 
         AgentAnalysisTaskSubmitResult result = new AgentAnalysisTaskSubmitResult();
         result.setTaskId(taskId);

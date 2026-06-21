@@ -40,6 +40,9 @@ public class DatabaseMigrationService {
         addColumnIfMissing("analysis_record", "expect_keywords", "varchar(1024) comment '正确结论必须命中的关键词JSON' after actual_root_cause");
         addColumnIfMissing("analysis_record", "feedback_note", "varchar(512) comment '反馈备注' after expect_keywords");
         addColumnIfMissing("analysis_record", "feedback_at", "datetime comment '反馈时间' after feedback_note");
+        // 机器自动验证结果：确定性结论(字段/表不存在)连库核对，无需人工
+        addColumnIfMissing("analysis_record", "auto_verify", "varchar(16) comment '自动验证(CONFIRMED/REFUTED/UNVERIFIABLE)' after feedback_at");
+        addColumnIfMissing("analysis_record", "auto_verify_keywords", "varchar(512) comment '自动验证得出的期望关键词JSON' after auto_verify");
     }
 
     private boolean tableExists(String tableName) {

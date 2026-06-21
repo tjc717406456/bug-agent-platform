@@ -19,6 +19,11 @@ public class AppProperties {
     private final Agent agent = new Agent();
     private final Eval eval = new Eval();
     private final Log log = new Log();
+    private final Ai ai = new Ai();
+
+    public Ai getAi() {
+        return ai;
+    }
 
     public Dbhub getDbhub() {
         return dbhub;
@@ -90,6 +95,22 @@ public class AppProperties {
     }
 
     /**
+     * AI 调用参数。流式开关出问题可一键关掉退回整段收取。
+     */
+    public static class Ai {
+        // 开启 SSE 流式收取，逐块到达不再整段干等，治慢网关读超时；与某中转不兼容时配 false 退回非流式
+        private boolean streamEnabled = true;
+
+        public boolean isStreamEnabled() {
+            return streamEnabled;
+        }
+
+        public void setStreamEnabled(boolean streamEnabled) {
+            this.streamEnabled = streamEnabled;
+        }
+    }
+
+    /**
      * 业务库（dbhub 取证）连接池参数，按需调大并发或缩短失败等待。
      */
     public static class Dbhub {
@@ -126,12 +147,72 @@ public class AppProperties {
      * Agent 分析的轮次与 token 上限，控制单次分析的延迟和成本。
      */
     public static class Agent {
-        private int maxIterations = 6;
+        private int maxIterations = 32;
         private int initialEvidenceLimit = 12000;
         private int sqlTextLimit = 2000;
         private int toolResultLimit = 4000;
         // 收口前是否做一次对抗式自检，抓"看着对"的幻觉结论；关掉可省一次 LLM 调用
         private boolean selfCritique = true;
+        // 单个查证工具最长执行时间（秒），超时按失败处理，避免卡死拖垮整轮
+        private int toolTimeoutSeconds = 60;
+        // 一轮内并行查证工具的线程池大小
+        private int toolFanoutPoolSize = 8;
+        // 是否把同项目历史确认案例当方向参考喂回分析，总开关，关掉退回从零分析
+        private boolean enableSimilarCase = true;
+        // 注入的相似案例条数
+        private int similarCaseTopK = 3;
+        // 相似案例参考文本的总字数上限，防止挤占证据
+        private int similarCaseLimit = 1500;
+        // 相似度低于此分的案例不注入，默认至少 api_path 沾边
+        private int similarCaseMinScore = 1;
+
+        public boolean isEnableSimilarCase() {
+            return enableSimilarCase;
+        }
+
+        public void setEnableSimilarCase(boolean enableSimilarCase) {
+            this.enableSimilarCase = enableSimilarCase;
+        }
+
+        public int getSimilarCaseTopK() {
+            return similarCaseTopK;
+        }
+
+        public void setSimilarCaseTopK(int similarCaseTopK) {
+            this.similarCaseTopK = similarCaseTopK;
+        }
+
+        public int getSimilarCaseLimit() {
+            return similarCaseLimit;
+        }
+
+        public void setSimilarCaseLimit(int similarCaseLimit) {
+            this.similarCaseLimit = similarCaseLimit;
+        }
+
+        public int getSimilarCaseMinScore() {
+            return similarCaseMinScore;
+        }
+
+        public void setSimilarCaseMinScore(int similarCaseMinScore) {
+            this.similarCaseMinScore = similarCaseMinScore;
+        }
+
+        public int getToolTimeoutSeconds() {
+            return toolTimeoutSeconds;
+        }
+
+        public void setToolTimeoutSeconds(int toolTimeoutSeconds) {
+            this.toolTimeoutSeconds = toolTimeoutSeconds;
+        }
+
+        public int getToolFanoutPoolSize() {
+            return toolFanoutPoolSize;
+        }
+
+        public void setToolFanoutPoolSize(int toolFanoutPoolSize) {
+            this.toolFanoutPoolSize = toolFanoutPoolSize;
+        }
 
         public boolean isSelfCritique() {
             return selfCritique;

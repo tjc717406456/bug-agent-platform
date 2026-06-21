@@ -98,6 +98,59 @@ public class DbhubQueryService {
     }
 
     /**
+     * 字段是否存在，用于自动验证"字段不存在"这类确定性结论。出错返回 null（无法判断）。
+     */
+    public Boolean columnExists(String datasourceKey, String table, String column) {
+        DbhubDatasourceConfig config = datasourceService.getDatasourceConfig(datasourceKey);
+        if (config == null) {
+            return null;
+        }
+        try (Connection connection = getConnection(config);
+             PreparedStatement statement = connection.prepareStatement(
+                     "select count(*) from information_schema.columns where table_schema = ? and table_name = ? and column_name = ?")) {
+            statement.setString(1, config.getDatabase());
+            statement.setString(2, cleanIdentifier(table));
+            statement.setString(3, column);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() && resultSet.getInt(1) > 0;
+            }
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
+    /**
+     * 表是否存在，用于自动验证"表不存在"。出错返回 null。
+     */
+    public Boolean tableExists(String datasourceKey, String table) {
+        DbhubDatasourceConfig config = datasourceService.getDatasourceConfig(datasourceKey);
+        if (config == null) {
+            return null;
+        }
+        try (Connection connection = getConnection(config);
+             PreparedStatement statement = connection.prepareStatement(
+                     "select count(*) from information_schema.tables where table_schema = ? and table_name = ?")) {
+            statement.setString(1, config.getDatabase());
+            statement.setString(2, cleanIdentifier(table));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() && resultSet.getInt(1) > 0;
+            }
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
+    /** 去掉反引号、库前缀，取出纯表名。 */
+    private String cleanIdentifier(String identifier) {
+        if (identifier == null) {
+            return "";
+        }
+        String clean = identifier.replace("`", "").trim();
+        int dot = clean.lastIndexOf('.');
+        return dot >= 0 ? clean.substring(dot + 1) : clean;
+    }
+
+    /**
      * 清理缓存的数据源。
      */
     public void evictDatasource(String key) {

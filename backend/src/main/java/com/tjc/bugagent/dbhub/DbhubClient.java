@@ -29,6 +29,14 @@ public class DbhubClient {
         return queryService.queryReadonly(dbhubKey, sql);
     }
 
+    public Boolean columnExists(String dbhubKey, String table, String column) {
+        return queryService.columnExists(dbhubKey, table, column);
+    }
+
+    public Boolean tableExists(String dbhubKey, String table) {
+        return queryService.tableExists(dbhubKey, table);
+    }
+
     /**
      * 查询 bridge 数据源配置列表。
      */

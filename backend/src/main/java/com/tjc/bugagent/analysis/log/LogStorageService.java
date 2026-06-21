@@ -1,4 +1,4 @@
-package com.tjc.bugagent.analysis;
+package com.tjc.bugagent.analysis.log;
 
 import com.tjc.bugagent.config.AppProperties;
 import org.slf4j.Logger;
@@ -29,9 +29,9 @@ public class LogStorageService {
     }
 
     /**
-     * 保存日志文件（超过大小上限直接拒绝），返回读出的文本。
+     * 保存日志文件（超过大小上限直接拒绝），返回 logId（文件名），分析时凭它再读。
      */
-    public String saveAndRead(MultipartFile file) throws IOException {
+    public String save(MultipartFile file) throws IOException {
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("日志文件为空");
         }
@@ -41,9 +41,32 @@ public class LogStorageService {
         }
         Path dir = Paths.get(appProperties.getLog().getDir()).toAbsolutePath().normalize();
         Files.createDirectories(dir);
-        Path target = dir.resolve(UUID.randomUUID() + ".log");
-        file.transferTo(target.toFile());
-        return new String(Files.readAllBytes(target), StandardCharsets.UTF_8);
+        String logId = UUID.randomUUID() + ".log";
+        file.transferTo(dir.resolve(logId).toFile());
+        return logId;
+    }
+
+    /**
+     * 按 logId 读出保存的日志文本，分析时调用。文件不存在或非法 logId 返回 null。
+     */
+    public String read(String logId) {
+        if (logId == null || logId.trim().isEmpty()) {
+            return null;
+        }
+        // 防目录穿越：logId 只能是纯文件名
+        if (logId.contains("/") || logId.contains("\\") || logId.contains("..")) {
+            return null;
+        }
+        Path path = Paths.get(appProperties.getLog().getDir()).toAbsolutePath().normalize().resolve(logId);
+        if (!Files.exists(path)) {
+            return null;
+        }
+        try {
+            return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        } catch (Exception exception) {
+            log.warn("read log file failed: {}", logId, exception);
+            return null;
+        }
     }
 
     /**

@@ -1,4 +1,4 @@
-package com.tjc.bugagent.analysis;
+package com.tjc.bugagent.analysis.log;
 
 import org.springframework.stereotype.Service;
 
@@ -28,11 +28,15 @@ public class LogEvidenceExtractor {
     private static final int MAX_SQL_LINES = 20;
     private static final int MAX_ERROR_LINES = 15;
     private static final int MAX_STACK_LINES = 80;
+    private static final int MAX_RELEVANT_LINES = 40;
+    // 关键词最短长度，过滤掉"的""了"这类无意义短词，只留货架号/单号这种有区分度的
+    private static final int MIN_HINT_LENGTH = 5;
 
     /**
      * 解析日志文本，抠出各类线索。文本为空返回空线索。
+     * apiPath 和用户描述用来按接口名/关键词捞相关业务日志行，补上异常/SQL 抓不到的 INFO 证据。
      */
-    public LogClues extract(String logText) {
+    public LogClues extract(String logText, String apiPath, String userDescription) {
         LogClues clues = new LogClues();
         if (logText == null || logText.trim().isEmpty()) {
             return clues;
@@ -42,7 +46,52 @@ public class LogEvidenceExtractor {
         clues.setRequestTime(firstTimestamp(logText));
         clues.setStackTrace(extractStack(lines));
         collectSqlAndErrors(lines, clues);
+        collectRelevantLines(lines, apiPath, userDescription, clues);
         return clues;
+    }
+
+    /**
+     * 按接口名（路径末段）和用户描述里的关键词，从日志里捞包含它们的行。
+     * 业务日志（如 result=false）多藏在这里，异常/SQL 提取器抓不到。
+     */
+    private void collectRelevantLines(String[] lines, String apiPath, String userDescription, LogClues clues) {
+        Set<String> hints = new LinkedHashSet<String>();
+        String endpoint = lastSegment(apiPath);
+        if (endpoint.length() >= 3) {
+            hints.add(endpoint.toLowerCase());
+        }
+        if (userDescription != null) {
+            for (String token : userDescription.split("[\\s,，。；;：:\"'（）()\\[\\]]+")) {
+                if (token.length() >= MIN_HINT_LENGTH) {
+                    hints.add(token.toLowerCase());
+                }
+            }
+        }
+        if (hints.isEmpty()) {
+            return;
+        }
+        List<String> relevant = new ArrayList<String>();
+        for (String line : lines) {
+            String lower = line.toLowerCase();
+            for (String hint : hints) {
+                if (lower.contains(hint)) {
+                    relevant.add(line.trim());
+                    break;
+                }
+            }
+            if (relevant.size() >= MAX_RELEVANT_LINES) {
+                break;
+            }
+        }
+        clues.setRelevantLines(relevant);
+    }
+
+    private String lastSegment(String apiPath) {
+        if (apiPath == null) {
+            return "";
+        }
+        String[] parts = apiPath.split("/");
+        return parts.length == 0 ? "" : parts[parts.length - 1].trim();
     }
 
     private String firstTraceId(String logText) {

@@ -20,6 +20,7 @@ public class AnalysisRequest {
     private String traceId;
     private String requestTime;
     private String logText;
+    private String logId;
 
     public String getLogText() {
         return logText;
@@ -27,6 +28,14 @@ public class AnalysisRequest {
 
     public void setLogText(String logText) {
         this.logText = logText;
+    }
+
+    public String getLogId() {
+        return logId;
+    }
+
+    public void setLogId(String logId) {
+        this.logId = logId;
     }
 
     public Long getProjectId() {

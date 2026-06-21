@@ -1,4 +1,4 @@
-package com.tjc.bugagent.analysis;
+package com.tjc.bugagent.analysis.agent;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -11,6 +11,8 @@ public class AgentToolCall {
     private String action;
     // 对应 OpenAI tool_call 的 id，多轮回填 tool 结果时按它配对
     private String toolCallId;
+    // 模型没按协议给工具调用、被迫从文本兜底成的 finish；循环可据此先纠偏重试再决定是否收口
+    private boolean degraded;
     private Map<String, Object> arguments = new LinkedHashMap<String, Object>();
 
     public String getToolCallId() {
@@ -19,6 +21,14 @@ public class AgentToolCall {
 
     public void setToolCallId(String toolCallId) {
         this.toolCallId = toolCallId;
+    }
+
+    public boolean isDegraded() {
+        return degraded;
+    }
+
+    public void setDegraded(boolean degraded) {
+        this.degraded = degraded;
     }
 
     public String getThought() {

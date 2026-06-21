@@ -1,4 +1,4 @@
-package com.tjc.bugagent.analysis;
+package com.tjc.bugagent.analysis.agent;
 
 import com.tjc.bugagent.codegraph.CodeGraphQueryResult;
 import com.tjc.bugagent.codegraph.CodeGraphQueryService;
@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * 执行 Agent 可调用的只读分析工具。
@@ -307,46 +308,75 @@ public class AgentToolExecutor {
         }
         try {
             Path path = resolveSourcePath(node.getFilePath(), node.getQualifiedName(), context);
-            List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+            // 只读定位窗口内的行，避免大文件一次性读入内存撑爆堆
             int start = Math.max(0, node.getLineNo() - 8);
-            int end = Math.min(lines.size(), start + maxLines);
             StringBuilder snippet = new StringBuilder();
-            for (int index = start; index < end; index++) {
-                snippet.append(index + 1).append(": ").append(lines.get(index)).append("\n");
+            try (Stream<String> stream = Files.lines(path, StandardCharsets.UTF_8)) {
+                List<String> window = stream.skip(start).limit(maxLines).collect(Collectors.toList());
+                for (int index = 0; index < window.size(); index++) {
+                    snippet.append(start + index + 1).append(": ").append(window.get(index)).append("\n");
+                }
             }
-            return snippet.toString();
+            return snippet.length() == 0 ? "无源码内容" : snippet.toString();
         } catch (Exception exception) {
             return "读取源码失败: " + exception.getMessage();
         }
     }
 
     private Path resolveSourcePath(String filePath, String qualifiedName, AgentToolContext context) throws IOException {
+        // 收集本次允许触达的根目录，任何解析结果都必须落在其中，杜绝路径遍历
+        List<Path> allowedRoots = allowedRoots(context);
+
         Path directPath = resolveExistingPath(filePath);
-        if (directPath != null) {
+        if (directPath != null && isWithinAny(allowedRoots, directPath)) {
             return directPath;
         }
         ProjectVersion version = projectService.getVersion(context.getVersionId());
         if (version != null && !isBlank(version.getSourcePath())) {
             Path sourceRoot = Paths.get(version.getSourcePath()).toAbsolutePath().normalize();
             Path fromVersionRoot = resolveFromSourceRoot(sourceRoot, filePath, qualifiedName);
-            if (fromVersionRoot != null) {
+            if (fromVersionRoot != null && isWithin(sourceRoot, fromVersionRoot)) {
                 return fromVersionRoot;
             }
         }
-        Path backendPath = Paths.get("backend").resolve(filePath).toAbsolutePath().normalize();
-        if (Files.exists(backendPath)) {
+        Path backendRoot = Paths.get("backend").toAbsolutePath().normalize();
+        Path backendPath = backendRoot.resolve(filePath).normalize();
+        if (Files.exists(backendPath) && isWithin(backendRoot, backendPath)) {
             return backendPath;
         }
         throw new IOException("无法定位源码文件: " + filePath);
     }
 
+    /**
+     * 本次执行允许读取的源码根目录：项目版本源码目录 + backend 自身目录。
+     */
+    private List<Path> allowedRoots(AgentToolContext context) {
+        List<Path> roots = new ArrayList<Path>();
+        ProjectVersion version = projectService.getVersion(context.getVersionId());
+        if (version != null && !isBlank(version.getSourcePath())) {
+            roots.add(Paths.get(version.getSourcePath()).toAbsolutePath().normalize());
+        }
+        roots.add(Paths.get("backend").toAbsolutePath().normalize());
+        return roots;
+    }
+
+    private boolean isWithinAny(List<Path> roots, Path target) {
+        for (Path root : roots) {
+            if (isWithin(root, target)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isWithin(Path root, Path target) {
+        return target.toAbsolutePath().normalize().startsWith(root.toAbsolutePath().normalize());
+    }
+
     private Path resolveExistingPath(String filePath) {
         try {
             Path path = Paths.get(filePath);
-            if (path.isAbsolute()) {
-                return Files.exists(path) ? path.normalize() : null;
-            }
-            Path absolute = path.toAbsolutePath().normalize();
+            Path absolute = path.isAbsolute() ? path.normalize() : path.toAbsolutePath().normalize();
             return Files.exists(absolute) ? absolute : null;
         } catch (InvalidPathException ignored) {
             return null;

@@ -1,4 +1,4 @@
-package com.tjc.bugagent.analysis;
+package com.tjc.bugagent.analysis.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tjc.bugagent.config.AppProperties;

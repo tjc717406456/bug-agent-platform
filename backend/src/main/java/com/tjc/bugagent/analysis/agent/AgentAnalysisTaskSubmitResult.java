@@ -1,4 +1,4 @@
-package com.tjc.bugagent.analysis;
+package com.tjc.bugagent.analysis.agent;
 
 /**
  * Agent 分析任务提交结果。

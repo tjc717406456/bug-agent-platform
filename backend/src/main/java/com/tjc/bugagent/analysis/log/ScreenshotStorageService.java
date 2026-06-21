@@ -1,4 +1,4 @@
-package com.tjc.bugagent.analysis;
+package com.tjc.bugagent.analysis.log;
 
 import com.tjc.bugagent.config.AppProperties;
 import org.springframework.stereotype.Service;

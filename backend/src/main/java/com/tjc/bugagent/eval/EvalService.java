@@ -2,7 +2,7 @@ package com.tjc.bugagent.eval;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.tjc.bugagent.analysis.AgentAnalysisService;
+import com.tjc.bugagent.analysis.agent.AgentAnalysisService;
 import com.tjc.bugagent.analysis.AnalysisRequest;
 import com.tjc.bugagent.analysis.AnalysisResult;
 import com.tjc.bugagent.config.AppProperties;
@@ -175,10 +175,13 @@ public class EvalService {
      * 从带反馈的分析记录构造用例：输入沿用当时记录的入参，期望关键词用人工标注的。
      */
     private List<EvalCase> loadFromFeedback() {
+        // 进飞轮的两种来源：人工标注过的，或机器自动验证确认正确的；都没有的不进，避免拿没把握的当基准
         return jdbcTemplate.query(
                 "select id, project_id, version_id, api_path, user_description, request_body, response_body, "
-                        + "stack_trace, trace_id, request_time, expect_keywords from analysis_record "
-                        + "where feedback_verdict is not null and expect_keywords is not null and expect_keywords <> '' and expect_keywords <> '[]'",
+                        + "stack_trace, trace_id, request_time, "
+                        + "coalesce(nullif(expect_keywords, ''), auto_verify_keywords) as expect_keywords from analysis_record "
+                        + "where (feedback_verdict is not null and expect_keywords is not null and expect_keywords <> '' and expect_keywords <> '[]') "
+                        + "   or (auto_verify = 'CONFIRMED' and auto_verify_keywords is not null and auto_verify_keywords <> '')",
                 (rs, rowNum) -> {
                     EvalCase evalCase = new EvalCase();
                     evalCase.setName("record#" + rs.getLong("id") + " " + safe(rs.getString("api_path")));
