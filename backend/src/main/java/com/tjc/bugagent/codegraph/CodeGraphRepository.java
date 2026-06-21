@@ -106,6 +106,16 @@ public class CodeGraphRepository {
                 CodeNodeMapper.INSTANCE, buildOutboundParams(fromNodeId));
     }
 
+    /** 反向查询沿可遍历边类型指向某节点的上游节点（调用者）。 */
+    public List<CodeNode> findInboundNodes(Long toNodeId) {
+        String placeholders = placeholders(TRAVERSE_EDGE_TYPES.length);
+        return jdbcTemplate.query(
+                "select n.id, n.node_type, n.name, n.qualified_name, n.file_path, n.line_no, n.metadata_json "
+                        + "from code_edge e join code_node n on e.from_node_id = n.id "
+                        + "where e.to_node_id = ? and e.edge_type in (" + placeholders + ") limit 80",
+                CodeNodeMapper.INSTANCE, buildOutboundParams(toNodeId));
+    }
+
     /** 批量读取一批 SQL 节点的 metadata_json。 */
     public List<String> findSqlMetadata(List<Long> nodeIds) {
         if (nodeIds.isEmpty()) {

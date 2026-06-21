@@ -107,11 +107,13 @@ public class AgentAnalysisService {
         ProjectVersion version = resolveVersion(request);
         CodeGraphQueryResult graph = codeGraphQueryService.queryByApiPath(request.getProjectId(), version.getId(), request.getApiPath());
         ProjectDatasource datasource = projectService.firstEnabledDatasource(request.getProjectId());
+        // 日志原文解析一次，既喂给上下文供 search_log 深挖，也交给线索抽取
+        String logText = resolveLogText(request);
         AgentToolExecutor.AgentToolContext toolContext = new AgentToolExecutor.AgentToolContext(
-                request.getProjectId(), version.getId(), request.getApiPath(), datasource);
+                request.getProjectId(), version.getId(), request.getApiPath(), datasource, logText);
 
         // 有日志就先抠出堆栈、SQL、traceId、时间，缺啥补啥，让后续流程自动用上
-        LogClues logClues = enrichFromLog(request);
+        LogClues logClues = enrichFromLog(request, logText);
         String initialEvidence = initialEvidenceBuilder.buildInitialEvidence(request, version, graph, datasource, toolContext, logClues);
         // 维护一条完整 OpenAI 对话，历轮工具结果按协议回填，模型每轮都能看到上下文全貌
         List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
@@ -270,12 +272,7 @@ public class AgentAnalysisService {
     /**
      * 解析请求里的日志文本，抠出线索；堆栈/traceId/时间为空时用日志里的补上。
      */
-    private LogClues enrichFromLog(AnalysisRequest request) {
-        // 优先用粘贴的 logText；没有就按 logId 去读上传保存的日志文件
-        String logText = request.getLogText();
-        if (isBlank(logText) && !isBlank(request.getLogId())) {
-            logText = logStorageService.read(request.getLogId());
-        }
+    private LogClues enrichFromLog(AnalysisRequest request, String logText) {
         LogClues clues = logEvidenceExtractor.extract(logText, request.getApiPath(), request.getUserDescription());
         if (isBlank(request.getStackTrace()) && !isBlank(clues.getStackTrace())) {
             request.setStackTrace(clues.getStackTrace());
@@ -287,6 +284,15 @@ public class AgentAnalysisService {
             request.setRequestTime(clues.getRequestTime());
         }
         return clues;
+    }
+
+    /** 解析本次请求的日志原文：优先粘贴的 logText，没有再按 logId 读上传的日志文件。 */
+    private String resolveLogText(AnalysisRequest request) {
+        String logText = request.getLogText();
+        if (isBlank(logText) && !isBlank(request.getLogId())) {
+            logText = logStorageService.read(request.getLogId());
+        }
+        return logText;
     }
 
     private String safe(Object value) {

@@ -91,6 +91,11 @@ public class CodeGraphQueryService {
         return codeGraphRepository.getNode(projectId, versionId, nodeId);
     }
 
+    /** 反向查某节点的上游调用者，用于从某方法往上回溯根因。 */
+    public List<CodeNode> findCallers(Long nodeId) {
+        return codeGraphRepository.findInboundNodes(nodeId);
+    }
+
     /** 搜索 SQL 节点，用于 Agent 根据表名、字段名或 Mapper 方法继续追证据。 */
     public List<CodeNode> searchSqlNodes(Long projectId, Long versionId, String keyword) {
         return codeGraphRepository.searchNodesByMetadata(projectId, versionId, keyword, SQL_LIKE_TYPES, 20);

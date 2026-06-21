@@ -30,6 +30,10 @@ import java.util.stream.Stream;
 @Service
 public class AgentToolExecutor {
     private static final int MAX_SNIPPET_LINES = 80;
+    // grep 原始源码的护栏：单次最多回多少处命中、单行截多长、跳过多大的文件
+    private static final int GREP_MAX_MATCHES = 40;
+    private static final int GREP_MAX_LINE_LENGTH = 200;
+    private static final long GREP_MAX_FILE_BYTES = 1_000_000;
     private final CodeGraphQueryService codeGraphQueryService;
     private final DbhubClient dbhubClient;
     private final ProjectService projectService;
@@ -60,6 +64,15 @@ public class AgentToolExecutor {
         if ("search_sql".equals(action)) {
             return searchSql(call, context);
         }
+        if ("grep_source".equals(action)) {
+            return grepSource(call, context);
+        }
+        if ("find_callers".equals(action)) {
+            return findCallers(call, context);
+        }
+        if ("search_log".equals(action)) {
+            return searchLog(call, context);
+        }
         if ("describe_tables".equals(action)) {
             return describeTables(call, context);
         }
@@ -81,6 +94,9 @@ public class AgentToolExecutor {
         tools.add(toolSchema("get_code_detail", "读取关键源码片段，可按 nodeId 或 className/methodName 查询", properties("nodeId", "className", "methodName"), required()));
         tools.add(toolSchema("trace_call_chain", "按接口路径重新追调用链、SQL 和表", properties("apiPath"), required()));
         tools.add(toolSchema("search_sql", "搜索 SQL 或 Mapper 节点", properties("keyword"), required("keyword")));
+        tools.add(toolSchema("grep_source", "在原始源码全文里 grep 关键词，能命中字符串字面量、枚举值、常量、注解、配置等代码图谱搜不到的内容（如错误提示文案、ResultEnum、魔法值）", properties("keyword"), required("keyword")));
+        tools.add(toolSchema("find_callers", "反向查谁调用了某个方法/节点（上游调用者），用于从某方法往上回溯根因，nodeId 来自 search_code/get_code_detail 的结果", properties("nodeId"), required("nodeId")));
+        tools.add(toolSchema("search_log", "在本次上传的日志原文里按关键词/traceId 检索匹配行（含上下文），用于深挖初始证据里被截断的日志细节", properties("keyword"), required("keyword")));
         tools.add(toolSchema("describe_tables", "查询表结构、数据量和最近样例", properties("tables"), required("tables")));
         tools.add(toolSchema("query_database", "执行只读 SQL，只允许 SELECT、SHOW、DESC、DESCRIBE、EXPLAIN", properties("sql"), required("sql")));
         tools.add(toolSchema("finish", "证据足够后输出最终定位报告，报告包含问题结论、证据链路、关键代码/SQL/数据证据、根因类型、建议处理人、置信度", properties("report"), required("report")));
@@ -212,6 +228,127 @@ public class AgentToolExecutor {
             return AgentToolResult.fail("search_sql", "未找到 SQL 节点: " + keyword);
         }
         return AgentToolResult.ok("search_sql", "找到 " + nodes.size() + " 个 SQL/Mapper 节点", formatNodes(nodes));
+    }
+
+    /**
+     * 在版本源码目录下全文 grep 关键词，补代码图谱的盲区（字面量、枚举、常量、注解、配置）。
+     * 只扫源码类文本、限文件大小、限命中条数，避免把堆撑爆或回一大坨。
+     */
+    private AgentToolResult grepSource(AgentToolCall call, AgentToolContext context) {
+        String keyword = call.stringArg("keyword");
+        if (isBlank(keyword)) {
+            return AgentToolResult.fail("grep_source", "缺少 keyword");
+        }
+        ProjectVersion version = projectService.getVersion(context.getVersionId());
+        if (version == null || isBlank(version.getSourcePath())) {
+            return AgentToolResult.fail("grep_source", "项目源码路径不可用");
+        }
+        Path root = Paths.get(version.getSourcePath()).toAbsolutePath().normalize();
+        if (!Files.exists(root)) {
+            return AgentToolResult.fail("grep_source", "源码目录不存在");
+        }
+        List<Path> files;
+        try (Stream<Path> walk = Files.walk(root)) {
+            files = walk.filter(Files::isRegularFile).filter(this::isSearchableSource).collect(Collectors.toList());
+        } catch (IOException exception) {
+            return AgentToolResult.fail("grep_source", "扫描源码失败: " + exception.getMessage());
+        }
+        String needle = keyword.toLowerCase();
+        StringBuilder evidence = new StringBuilder();
+        int matched = 0;
+        for (Path file : files) {
+            List<String> lines;
+            try {
+                lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+            } catch (Exception exception) {
+                // 读不了（编码异常/二进制）就跳过这个文件
+                continue;
+            }
+            String relative = root.relativize(file).toString().replace('\\', '/');
+            for (int index = 0; index < lines.size(); index++) {
+                if (!lines.get(index).toLowerCase().contains(needle)) {
+                    continue;
+                }
+                evidence.append(relative).append(':').append(index + 1).append(": ")
+                        .append(trimLine(lines.get(index).trim())).append('\n');
+                if (++matched >= GREP_MAX_MATCHES) {
+                    evidence.append("...（命中超过 ").append(GREP_MAX_MATCHES).append(" 处已截断，请用更精确的关键词）\n");
+                    return AgentToolResult.ok("grep_source", "grep 命中 " + matched + " 处（已截断）", evidence.toString());
+                }
+            }
+        }
+        if (matched == 0) {
+            return AgentToolResult.fail("grep_source", "源码里未匹配到: " + keyword);
+        }
+        return AgentToolResult.ok("grep_source", "grep 命中 " + matched + " 处", evidence.toString());
+    }
+
+    /**
+     * 反向查某节点的上游调用者。空结果不算失败——说明它是入口或没有被索引到的调用方，这本身就是有用信息。
+     */
+    private AgentToolResult findCallers(AgentToolCall call, AgentToolContext context) {
+        Long nodeId = call.longArg("nodeId");
+        if (nodeId == null) {
+            return AgentToolResult.fail("find_callers", "缺少 nodeId");
+        }
+        CodeNode node = codeGraphQueryService.getNode(context.getProjectId(), context.getVersionId(), nodeId);
+        if (node == null) {
+            return AgentToolResult.fail("find_callers", "未找到节点: " + nodeId);
+        }
+        List<CodeNode> callers = codeGraphQueryService.findCallers(nodeId);
+        if (callers.isEmpty()) {
+            return AgentToolResult.ok("find_callers", node.getName() + " 没有已知调用者（可能是入口或调用未被索引）", "无");
+        }
+        return AgentToolResult.ok("find_callers", "找到 " + callers.size() + " 个调用者: " + node.getName(), formatNodes(callers));
+    }
+
+    /**
+     * 在本次日志原文里按关键词检索匹配行，深挖初始证据里被截断的日志细节。
+     */
+    private AgentToolResult searchLog(AgentToolCall call, AgentToolContext context) {
+        String keyword = call.stringArg("keyword");
+        if (isBlank(keyword)) {
+            return AgentToolResult.fail("search_log", "缺少 keyword");
+        }
+        if (isBlank(context.getLogText())) {
+            return AgentToolResult.fail("search_log", "本次分析未提供日志");
+        }
+        String[] lines = context.getLogText().split("\\r?\\n");
+        String needle = keyword.toLowerCase();
+        StringBuilder evidence = new StringBuilder();
+        int matched = 0;
+        for (int index = 0; index < lines.length; index++) {
+            if (!lines[index].toLowerCase().contains(needle)) {
+                continue;
+            }
+            evidence.append('L').append(index + 1).append(": ").append(trimLine(lines[index].trim())).append('\n');
+            if (++matched >= GREP_MAX_MATCHES) {
+                evidence.append("...（命中超过 ").append(GREP_MAX_MATCHES).append(" 行已截断，请用更精确的关键词）\n");
+                return AgentToolResult.ok("search_log", "日志命中 " + matched + " 行（已截断）", evidence.toString());
+            }
+        }
+        if (matched == 0) {
+            return AgentToolResult.fail("search_log", "日志里未匹配到: " + keyword);
+        }
+        return AgentToolResult.ok("search_log", "日志命中 " + matched + " 行", evidence.toString());
+    }
+
+    private boolean isSearchableSource(Path path) {
+        String name = path.getFileName().toString().toLowerCase();
+        boolean source = name.endsWith(".java") || name.endsWith(".xml") || name.endsWith(".yml")
+                || name.endsWith(".yaml") || name.endsWith(".properties") || name.endsWith(".sql");
+        if (!source) {
+            return false;
+        }
+        try {
+            return Files.size(path) <= GREP_MAX_FILE_BYTES;
+        } catch (IOException exception) {
+            return false;
+        }
+    }
+
+    private String trimLine(String line) {
+        return line.length() > GREP_MAX_LINE_LENGTH ? line.substring(0, GREP_MAX_LINE_LENGTH) + "..." : line;
     }
 
     private AgentToolResult describeTables(AgentToolCall call, AgentToolContext context) {
@@ -456,12 +593,19 @@ public class AgentToolExecutor {
         private final Long versionId;
         private final String apiPath;
         private final ProjectDatasource datasource;
+        // 本次分析的完整日志原文，供 search_log 深挖（接口讲解等无日志场景为空）
+        private final String logText;
 
         public AgentToolContext(Long projectId, Long versionId, String apiPath, ProjectDatasource datasource) {
+            this(projectId, versionId, apiPath, datasource, null);
+        }
+
+        public AgentToolContext(Long projectId, Long versionId, String apiPath, ProjectDatasource datasource, String logText) {
             this.projectId = projectId;
             this.versionId = versionId;
             this.apiPath = apiPath;
             this.datasource = datasource;
+            this.logText = logText;
         }
 
         public Long getProjectId() {
@@ -478,6 +622,10 @@ public class AgentToolExecutor {
 
         public ProjectDatasource getDatasource() {
             return datasource;
+        }
+
+        public String getLogText() {
+            return logText;
         }
     }
 }
