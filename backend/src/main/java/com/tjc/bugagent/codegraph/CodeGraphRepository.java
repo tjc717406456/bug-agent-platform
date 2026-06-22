@@ -92,7 +92,7 @@ public class CodeGraphRepository {
     public List<CodeNode> findRouteNodes(Long projectId, Long versionId, String apiPathLike, int limit) {
         return jdbcTemplate.query(
                 "select id, node_type, name, qualified_name, file_path, line_no, metadata_json from code_node "
-                        + "where project_id = ? and version_id = ? and node_type = 'API_ROUTE' and name like ? limit " + limit,
+                        + "where project_id = ? and version_id = ? and node_type = 'API_ROUTE' and name like ? order by name limit " + limit,
                 CodeNodeMapper.INSTANCE, projectId, versionId, apiPathLike);
     }
 

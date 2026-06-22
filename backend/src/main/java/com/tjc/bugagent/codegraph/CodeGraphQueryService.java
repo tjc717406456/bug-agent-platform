@@ -72,8 +72,9 @@ public class CodeGraphQueryService {
 
     /** 查询指定版本已索引的接口路由。 */
     public List<ApiRouteOption> listApiRoutes(Long projectId, Long versionId, String keyword) {
+        // 下拉要列全项目接口，大工程路由轻松上几百条，上限放到 1000 兜底全量；配合关键词远程搜索按需收窄
         List<CodeNode> routes = codeGraphRepository.findRouteNodes(
-                projectId, versionId, "%" + (keyword == null ? "" : keyword.trim()) + "%", 100);
+                projectId, versionId, "%" + (keyword == null ? "" : keyword.trim()) + "%", 1000);
         List<ApiRouteOption> options = new ArrayList<ApiRouteOption>(routes.size());
         for (CodeNode route : routes) {
             ApiRouteOption option = new ApiRouteOption();
