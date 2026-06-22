@@ -165,6 +165,56 @@ public class AppProperties {
         private int similarCaseLimit = 1500;
         // 相似度低于此分的案例不注入，默认至少 api_path 沾边
         private int similarCaseMinScore = 1;
+        // 多假设并行模式：OFF 单链；ON 有多候选就并行；AUTO 仅在候选歧义时才并行
+        private String hypothesisMode = "AUTO";
+        // 并行验证的假设条数上限
+        private int hypothesisMaxBranches = 2;
+        // AUTO 判歧义：头名与次名置信分差小于此值才算歧义、才 fan out
+        private int hypothesisMinScoreGap = 25;
+        // 每条假设分支的轮次上限（聚焦单一假设，比单链 maxIterations 小，控成本）
+        private int hypothesisChainIterations = 12;
+        // 假设分支并行线程池大小，控并发别撞模型限流
+        private int hypothesisPoolSize = 2;
+
+        public String getHypothesisMode() {
+            return hypothesisMode;
+        }
+
+        public void setHypothesisMode(String hypothesisMode) {
+            this.hypothesisMode = hypothesisMode;
+        }
+
+        public int getHypothesisMaxBranches() {
+            return hypothesisMaxBranches;
+        }
+
+        public void setHypothesisMaxBranches(int hypothesisMaxBranches) {
+            this.hypothesisMaxBranches = hypothesisMaxBranches;
+        }
+
+        public int getHypothesisMinScoreGap() {
+            return hypothesisMinScoreGap;
+        }
+
+        public void setHypothesisMinScoreGap(int hypothesisMinScoreGap) {
+            this.hypothesisMinScoreGap = hypothesisMinScoreGap;
+        }
+
+        public int getHypothesisChainIterations() {
+            return hypothesisChainIterations;
+        }
+
+        public void setHypothesisChainIterations(int hypothesisChainIterations) {
+            this.hypothesisChainIterations = hypothesisChainIterations;
+        }
+
+        public int getHypothesisPoolSize() {
+            return hypothesisPoolSize;
+        }
+
+        public void setHypothesisPoolSize(int hypothesisPoolSize) {
+            this.hypothesisPoolSize = hypothesisPoolSize;
+        }
 
         public boolean isEnableSimilarCase() {
             return enableSimilarCase;

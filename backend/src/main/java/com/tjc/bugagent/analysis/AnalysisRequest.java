@@ -21,6 +21,16 @@ public class AnalysisRequest {
     private String requestTime;
     private String logText;
     private String logId;
+    // 本次是否强制走深度模式（多假设并行）；null 时按全局 hypothesis-mode 配置
+    private Boolean deepMode;
+
+    public Boolean getDeepMode() {
+        return deepMode;
+    }
+
+    public void setDeepMode(Boolean deepMode) {
+        this.deepMode = deepMode;
+    }
 
     public String getLogText() {
         return logText;

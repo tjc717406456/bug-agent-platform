@@ -46,6 +46,36 @@ public class AgentPromptBuilder {
         return "【初始证据】\n" + initialEvidence + "\n现在开始第 1 轮：基于已有证据决定下一步，继续查证或调用 finish 收敛。";
     }
 
+    /**
+     * 侦察轮：让模型只基于初始证据列出候选根因和各自置信分，不查证、不收口，纯产出方向清单。
+     * 强约束只回 JSON 数组，便于代码解析后判歧义。
+     */
+    public String buildHypothesisScoutPrompt(String initialEvidence, int maxCount) {
+        return "【初始证据】\n" + initialEvidence + "\n\n"
+                + "先不要查证、不要调用工具。只基于以上证据，列出最多 " + maxCount + " 个最可能的根因假设，"
+                + "每个给一句简短描述和 0-100 的置信分（越确定越高）。\n"
+                + "只回纯 JSON 数组，不要任何多余文字、不要 Markdown，格式：\n"
+                + "[{\"cause\":\"根因一句话\",\"score\":85},{\"cause\":\"另一个可能\",\"score\":50}]";
+    }
+
+    /**
+     * 假设分支的引导语：让这条链聚焦核验某一个候选根因，确认或排除，别发散。
+     */
+    public String buildHypothesisHintPrompt(String cause) {
+        return "【本次重点核验的假设】" + cause + "\n"
+                + "请优先围绕这个假设取证：用工具确认它成立还是排除它。若证据推翻了它，如实说明并指出更可能的根因，不要硬凑。";
+    }
+
+    /**
+     * 汇总裁判：给模型几条针对不同假设的调查结论，让它基于各自证据挑出最可能的真根因，产出最终报告。
+     */
+    public String buildHypothesisSynthesisPrompt(String branchReports) {
+        return "下面是针对同一个 Bug、几个不同根因假设各自独立调查得出的结论：\n\n" + branchReports + "\n\n"
+                + "基于各结论给出的证据强度，判断哪个才是真正的根因（证据最直接、链路最完整的胜出），"
+                + "必要时融合多条线索。输出一份最终定位报告，包含：通俗结论、问题结论、证据链路、"
+                + "关键代码/SQL/数据证据、根因类型、建议处理人、置信度。直接给报告正文，不要复述各假设。";
+    }
+
     public String buildForceFinishInstruction(String forceFinishReason) {
         return "【强制收口要求】当前触发收口条件：" + forceFinishReason + "。本轮必须调用 finish，不要再调用查证工具。";
     }
