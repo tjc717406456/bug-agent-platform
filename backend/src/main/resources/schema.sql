@@ -54,6 +54,7 @@ create table if not exists ai_provider_config (
   api_key_cipher text not null comment 'API Key密文',
   timeout_seconds int not null comment '超时时间秒数',
   enabled tinyint not null comment '是否启用',
+  supports_vision tinyint not null default 0 comment '模型是否支持视觉多模态',
   created_at datetime not null comment '创建时间',
   updated_at datetime not null comment '更新时间'
 );

@@ -118,7 +118,15 @@ public class AgentAnalysisService {
         // 维护一条完整 OpenAI 对话，历轮工具结果按协议回填，模型每轮都能看到上下文全貌
         List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
         messages.add(conversation.message("system", promptBuilder.buildSystemPrompt()));
-        messages.add(conversation.message("user", promptBuilder.buildInitialUserPrompt(initialEvidence)));
+        // 当前启用模型支持视觉且本次带了截图，就把报错图随初始证据一起喂进去让模型直接识读；否则走纯文本
+        String initialUserPrompt = promptBuilder.buildInitialUserPrompt(initialEvidence);
+        List<String> screenshots = parseScreenshotPaths(request.getScreenshotPaths());
+        if (aiClient.currentModelSupportsVision() && !screenshots.isEmpty()) {
+            messages.add(conversation.userMessageWithImages(initialUserPrompt, screenshots));
+            progress.onStep("已附带 " + screenshots.size() + " 张报错截图供模型识读");
+        } else {
+            messages.add(conversation.message("user", initialUserPrompt));
+        }
         // 从同项目历史确认案例里捞方向参考喂进对话，把人工标注反哺到实时分析
         List<SimilarCase> similar = similarCaseRetriever.retrieve(request, version);
         String refPrompt = promptBuilder.buildSimilarCasesPrompt(similar);
@@ -299,6 +307,20 @@ public class AgentAnalysisService {
             logText = logStorageService.read(request.getLogId());
         }
         return logText;
+    }
+
+    /** 拆分截图路径：存储按换行拼接，顺带兼容逗号分隔，去空。 */
+    private List<String> parseScreenshotPaths(String screenshotPaths) {
+        List<String> paths = new ArrayList<String>();
+        if (isBlank(screenshotPaths)) {
+            return paths;
+        }
+        for (String path : screenshotPaths.split("[\\r\\n,]+")) {
+            if (!isBlank(path)) {
+                paths.add(path.trim());
+            }
+        }
+        return paths;
     }
 
     private String safe(Object value) {

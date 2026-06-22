@@ -25,7 +25,16 @@ public class DatabaseMigrationService {
         ensureDefaultDbhubDatasources();
         ensureAnalysisScreenshotColumn();
         ensureAnalysisFeedbackColumns();
+        ensureAiVisionColumn();
         ensureTableComments();
+    }
+
+    /** 给 AI 配置补"是否支持视觉"列，旧库切到多模态版本不至于查列报错。 */
+    private void ensureAiVisionColumn() {
+        if (!tableExists("ai_provider_config")) {
+            return;
+        }
+        addColumnIfMissing("ai_provider_config", "supports_vision", "tinyint not null default 0 comment '模型是否支持视觉多模态' after enabled");
     }
 
     /**

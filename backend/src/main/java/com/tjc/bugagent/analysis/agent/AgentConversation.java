@@ -4,11 +4,17 @@ import com.tjc.bugagent.ai.AiToolCallResult;
 import com.tjc.bugagent.config.AppProperties;
 import org.springframework.stereotype.Component;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static com.tjc.bugagent.analysis.agent.AgentTextUtils.isBlank;
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.safe;
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.trim;
 
@@ -25,11 +31,83 @@ public class AgentConversation {
         this.appProperties = appProperties;
     }
 
+    // 多模态发图护栏：单次最多带几张、单张最大多少字节，防 base64 撑爆 token
+    private static final int MAX_VISION_IMAGES = 3;
+    private static final long MAX_VISION_IMAGE_BYTES = 5L * 1024 * 1024;
+
     public Map<String, Object> message(String role, String content) {
         Map<String, Object> message = new LinkedHashMap<String, Object>();
         message.put("role", role);
         message.put("content", content);
         return message;
+    }
+
+    /**
+     * 构造带截图的多模态 user 消息：文本 + 若干 image_url(base64 data url)，给支持视觉的模型直接识读报错图。
+     * 读不到/超限/格式不对的图自动跳过；一张有效图都没有就退回纯文本消息，不影响纯文本模型。
+     */
+    public Map<String, Object> userMessageWithImages(String text, List<String> imagePaths) {
+        List<Map<String, Object>> parts = new ArrayList<Map<String, Object>>();
+        Map<String, Object> textPart = new LinkedHashMap<String, Object>();
+        textPart.put("type", "text");
+        textPart.put("text", safe(text));
+        parts.add(textPart);
+
+        int used = 0;
+        for (String path : imagePaths) {
+            if (used >= MAX_VISION_IMAGES) {
+                break;
+            }
+            String dataUrl = toDataUrl(path);
+            if (dataUrl == null) {
+                continue;
+            }
+            Map<String, Object> imagePart = new LinkedHashMap<String, Object>();
+            imagePart.put("type", "image_url");
+            Map<String, Object> imageUrl = new LinkedHashMap<String, Object>();
+            imageUrl.put("url", dataUrl);
+            imagePart.put("image_url", imageUrl);
+            parts.add(imagePart);
+            used++;
+        }
+        if (used == 0) {
+            return message("user", text);
+        }
+        Map<String, Object> message = new LinkedHashMap<String, Object>();
+        message.put("role", "user");
+        message.put("content", parts);
+        return message;
+    }
+
+    /** 把本地截图读成 OpenAI 视觉接口要的 base64 data url，读不了或超限返回 null。 */
+    private String toDataUrl(String path) {
+        if (isBlank(path)) {
+            return null;
+        }
+        try {
+            Path file = Paths.get(path.trim());
+            if (!Files.exists(file) || Files.size(file) > MAX_VISION_IMAGE_BYTES) {
+                return null;
+            }
+            String base64 = Base64.getEncoder().encodeToString(Files.readAllBytes(file));
+            return "data:" + mimeOf(path) + ";base64," + base64;
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
+    private String mimeOf(String path) {
+        String lower = path.toLowerCase();
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
+            return "image/jpeg";
+        }
+        if (lower.endsWith(".webp")) {
+            return "image/webp";
+        }
+        if (lower.endsWith(".gif")) {
+            return "image/gif";
+        }
+        return "image/png";
     }
 
     /**

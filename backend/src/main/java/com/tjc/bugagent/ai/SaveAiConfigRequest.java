@@ -16,6 +16,8 @@ public class SaveAiConfigRequest {
     private String apiKey;
     private Integer timeoutSeconds = 60;
     private boolean enabled = true;
+    // 该模型是否支持视觉(多模态)，支持才会把报错截图喂图识读
+    private boolean supportsVision = false;
 
     public String getProvider() {
         return provider;
@@ -63,6 +65,14 @@ public class SaveAiConfigRequest {
 
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
+    }
+
+    public boolean isSupportsVision() {
+        return supportsVision;
+    }
+
+    public void setSupportsVision(boolean supportsVision) {
+        this.supportsVision = supportsVision;
     }
 }
 

@@ -5,6 +5,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -34,6 +35,12 @@ public class AiConfigController {
     @PostMapping
     public ApiResponse<Void> create(@Valid @RequestBody SaveAiConfigRequest request) {
         aiConfigService.create(request);
+        return ApiResponse.ok(null);
+    }
+
+    @PutMapping("/{id}")
+    public ApiResponse<Void> update(@PathVariable Long id, @RequestBody SaveAiConfigRequest request) {
+        aiConfigService.update(id, request);
         return ApiResponse.ok(null);
     }
 

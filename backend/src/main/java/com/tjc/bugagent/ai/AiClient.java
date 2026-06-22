@@ -54,6 +54,14 @@ public class AiClient {
     }
 
     /**
+     * 当前启用的模型是否支持视觉(多模态)。决定要不要把报错截图喂图，避免给纯文本模型发图。
+     */
+    public boolean currentModelSupportsVision() {
+        AiConfig config = aiConfigService.getEnabledConfig();
+        return config != null && config.isSupportsVision();
+    }
+
+    /**
      * 发送普通对话请求，保留给 AI 配置测试和旧分析流程使用。
      */
     public String chat(String prompt) {
