@@ -14,6 +14,7 @@ import java.util.Set;
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.isBlank;
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.safe;
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.trim;
+import static com.tjc.bugagent.analysis.agent.AgentTextUtils.trimHeadTail;
 
 /**
  * Agent 收敛与可信度判定：用结构化信号决定何时强制收口、初步结论要不要复核、最终置信度评级。
@@ -169,7 +170,8 @@ public class AgentConvergenceJudge {
      * 用单独的会话（不污染主对话），结论站得住返回含 CONFIRM 的文本，有问题返回 REVISE。
      */
     public String runSelfCritique(String report, List<Map<String, Object>> rounds, String initialEvidence) {
-        String evidence = trim(roundReporter.buildEvidenceLog(initialEvidence, rounds), appProperties.getAgent().getInitialEvidenceLimit());
+        // 自检证据保头留尾：头是入口/堆栈/路由定位，尾是末轮根因查证，超限时挖掉中间探索轮
+        String evidence = trimHeadTail(roundReporter.buildEvidenceLog(initialEvidence, rounds), appProperties.getAgent().getInitialEvidenceLimit());
         StringBuilder prompt = new StringBuilder();
         prompt.append("你是严格的代码评审，专挑 Bug 定位结论的毛病。只基于下面的证据反驳这个初步结论：\n");
         prompt.append("1. 根因判断是否被证据直接支持，有没有臆测？\n");

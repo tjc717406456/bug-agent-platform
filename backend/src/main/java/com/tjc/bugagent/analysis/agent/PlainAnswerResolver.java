@@ -164,7 +164,7 @@ public class PlainAnswerResolver {
             return null;
         }
         for (String line : report.split("\\r?\\n")) {
-            String trimmed = line.trim();
+            String trimmed = stripMarkdown(line.trim());
             if (trimmed.length() >= 6) {
                 return trim(trimmed, 120);
             }
@@ -180,13 +180,43 @@ public class PlainAnswerResolver {
         if (start < 0) {
             return null;
         }
-        // 分隔符兼容三种写法：通俗结论：xxx、通俗结论:xxx、【通俗说明】xxx
-        int delimiter = firstIndexOf(report, start + sectionName.length(), '：', ':', '】');
-        if (delimiter < 0) {
-            return null;
+        int afterName = start + sectionName.length();
+        int lineEnd = report.indexOf('\n', afterName);
+        if (lineEnd < 0) {
+            lineEnd = report.length();
         }
-        int end = report.indexOf('\n', delimiter + 1);
-        return report.substring(delimiter + 1, end < 0 ? report.length() : end).trim();
+        // 行内写法：通俗结论：xxx、通俗结论:xxx、【通俗说明】xxx —— 分隔符必须落在本行，别跨到后面段落的冒号
+        int delimiter = firstIndexOf(report, afterName, '：', ':', '】');
+        if (delimiter >= 0 && delimiter < lineEnd) {
+            String inline = stripMarkdown(report.substring(delimiter + 1, lineEnd).trim());
+            if (!inline.isEmpty()) {
+                return inline;
+            }
+        }
+        // markdown 标题写法（## 通俗结论 换行 内容）：本行没分隔符，取标题行之后的下一非空行
+        return nextNonEmptyLine(report, lineEnd);
+    }
+
+    /** 取 from 之后第一行非空内容，剥掉 markdown 记号。 */
+    private String nextNonEmptyLine(String report, int from) {
+        int index = from;
+        while (index < report.length()) {
+            int end = report.indexOf('\n', index);
+            if (end < 0) {
+                end = report.length();
+            }
+            String line = stripMarkdown(report.substring(index, end).trim());
+            if (!line.isEmpty()) {
+                return line;
+            }
+            index = end + 1;
+        }
+        return null;
+    }
+
+    /** 剥掉开头的 # > * - 等 markdown 记号和多余空白。 */
+    private String stripMarkdown(String text) {
+        return text == null ? "" : text.replaceFirst("^[#>*\\-\\s]+", "").trim();
     }
 
     private int firstIndexOf(String text, int from, char... chars) {

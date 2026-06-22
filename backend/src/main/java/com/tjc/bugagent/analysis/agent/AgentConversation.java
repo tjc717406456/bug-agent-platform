@@ -74,7 +74,9 @@ public class AgentConversation {
 
     private String toolResultContent(AgentToolResult result) {
         StringBuilder content = new StringBuilder();
-        content.append(result.isOk() ? "成功" : "失败").append(": ").append(safe(result.getSummary()));
+        // 区分三态：成功 / 真失败 / 查无结果(让模型知道是该换思路而非工具坏了)
+        String status = result.isOk() ? "成功" : (result.isHardFailure() ? "失败" : "无结果");
+        content.append(status).append(": ").append(safe(result.getSummary()));
         String evidence = safe(result.getEvidence());
         if (!evidence.isEmpty()) {
             content.append("\n").append(trim(evidence, appProperties.getAgent().getToolResultLimit()));

@@ -129,14 +129,21 @@ public class ApiExplainService {
             conversation.appendAssistantMessage(messages, aiResult);
             conversation.appendToolMessages(messages, aiResult, calls, results);
             boolean anyOk = false;
+            boolean anyHardFailure = false;
             for (int i = 0; i < calls.size(); i++) {
                 AgentToolCall call = calls.get(i);
                 AgentToolResult toolResult = results.get(i);
                 rounds.add(reporter.recordRound(iteration, aiResult, call, toolResult));
                 progress.onStep("第" + iteration + "轮 · " + reporter.actionName(call.getAction()) + " · " + trim(safe(toolResult.getSummary()), 40));
                 anyOk = anyOk || toolResult.isOk();
+                anyHardFailure = anyHardFailure || toolResult.isHardFailure();
             }
-            continuousFailures = anyOk ? 0 : continuousFailures + 1;
+            // 查无结果是正常探索，只有真错误才计入掐断
+            if (anyOk) {
+                continuousFailures = 0;
+            } else if (anyHardFailure) {
+                continuousFailures++;
+            }
             if (continuousFailures >= MAX_CONTINUOUS_FAILURES) {
                 finalReport = reporter.buildFailureReport(rounds);
                 break;

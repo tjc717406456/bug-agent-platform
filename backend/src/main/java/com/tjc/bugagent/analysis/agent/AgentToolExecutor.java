@@ -172,7 +172,7 @@ public class AgentToolExecutor {
         }
         List<CodeNode> nodes = codeGraphQueryService.searchNodesByName(context.getProjectId(), context.getVersionId(), keyword);
         if (nodes.isEmpty()) {
-            return AgentToolResult.fail("search_code", "未找到代码节点: " + keyword);
+            return AgentToolResult.empty("search_code", "未找到代码节点: " + keyword + "（可换关键词，或用 grep_source 全文搜字面量/枚举/常量）");
         }
         return AgentToolResult.ok("search_code", "找到 " + nodes.size() + " 个代码节点", formatNodes(nodes));
     }
@@ -199,7 +199,7 @@ public class AgentToolExecutor {
             }
         }
         if (node == null) {
-            return AgentToolResult.fail("get_code_detail", "未找到源码节点");
+            return AgentToolResult.empty("get_code_detail", "未找到源码节点（确认 nodeId 或类名/方法名，或先用 search_code 定位）");
         }
         return AgentToolResult.ok("get_code_detail", "读取源码: " + node.getName(), formatNodeWithSnippet(node, context));
     }
@@ -225,7 +225,7 @@ public class AgentToolExecutor {
         }
         List<CodeNode> nodes = codeGraphQueryService.searchSqlNodes(context.getProjectId(), context.getVersionId(), keyword);
         if (nodes.isEmpty()) {
-            return AgentToolResult.fail("search_sql", "未找到 SQL 节点: " + keyword);
+            return AgentToolResult.empty("search_sql", "未找到 SQL 节点: " + keyword + "（可换关键词，或用 grep_source 在 mapper xml 里搜）");
         }
         return AgentToolResult.ok("search_sql", "找到 " + nodes.size() + " 个 SQL/Mapper 节点", formatNodes(nodes));
     }
@@ -278,7 +278,7 @@ public class AgentToolExecutor {
             }
         }
         if (matched == 0) {
-            return AgentToolResult.fail("grep_source", "源码里未匹配到: " + keyword);
+            return AgentToolResult.empty("grep_source", "源码里未匹配到: " + keyword);
         }
         return AgentToolResult.ok("grep_source", "grep 命中 " + matched + " 处", evidence.toString());
     }
@@ -293,7 +293,7 @@ public class AgentToolExecutor {
         }
         CodeNode node = codeGraphQueryService.getNode(context.getProjectId(), context.getVersionId(), nodeId);
         if (node == null) {
-            return AgentToolResult.fail("find_callers", "未找到节点: " + nodeId);
+            return AgentToolResult.empty("find_callers", "未找到节点: " + nodeId + "（nodeId 应来自 search_code/get_code_detail 的结果）");
         }
         List<CodeNode> callers = codeGraphQueryService.findCallers(nodeId);
         if (callers.isEmpty()) {
@@ -311,7 +311,7 @@ public class AgentToolExecutor {
             return AgentToolResult.fail("search_log", "缺少 keyword");
         }
         if (isBlank(context.getLogText())) {
-            return AgentToolResult.fail("search_log", "本次分析未提供日志");
+            return AgentToolResult.empty("search_log", "本次分析未提供日志");
         }
         String[] lines = context.getLogText().split("\\r?\\n");
         String needle = keyword.toLowerCase();
@@ -328,7 +328,7 @@ public class AgentToolExecutor {
             }
         }
         if (matched == 0) {
-            return AgentToolResult.fail("search_log", "日志里未匹配到: " + keyword);
+            return AgentToolResult.empty("search_log", "日志里未匹配到: " + keyword);
         }
         return AgentToolResult.ok("search_log", "日志命中 " + matched + " 行", evidence.toString());
     }

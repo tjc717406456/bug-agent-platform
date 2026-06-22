@@ -192,6 +192,7 @@ public class AgentAnalysisService {
             conversation.appendToolMessages(messages, aiResult, calls, results);
             boolean anyOk = false;
             boolean anyNewFact = false;
+            boolean anyHardFailure = false;
             for (int i = 0; i < calls.size(); i++) {
                 AgentToolCall call = calls.get(i);
                 AgentToolResult toolResult = results.get(i);
@@ -200,13 +201,18 @@ public class AgentAnalysisService {
                 progress.onStep("第" + iteration + "轮 · " + reporter.actionName(call.getAction()) + " · " + trim(safe(toolResult.getSummary()), 40));
                 anyOk = anyOk || toolResult.isOk();
                 anyNewFact = anyNewFact || newKeyFact;
+                anyHardFailure = anyHardFailure || toolResult.isHardFailure();
             }
 
             if (anyOk) {
                 continuousFailures = 0;
                 noNewKeyFactRounds = anyNewFact ? 0 : noNewKeyFactRounds + 1;
-            } else {
+            } else if (anyHardFailure) {
+                // 真错误(参数/数据源/异常)才计入掐断
                 continuousFailures++;
+            } else {
+                // 整轮都是"查无结果"：正常探索，不算失败；但没新事实，推进收敛兜底防空转
+                noNewKeyFactRounds++;
             }
             if (continuousFailures >= MAX_CONTINUOUS_FAILURES) {
                 finalReport = reporter.buildFailureReport(rounds);
