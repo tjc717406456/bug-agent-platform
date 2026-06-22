@@ -95,6 +95,10 @@ export function createAiConfig(payload) {
   return request('/ai-config', { method: 'POST', body: JSON.stringify(payload) })
 }
 
+export function updateAiConfig(id, payload) {
+  return request(`/ai-config/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) })
+}
+
 export function activateAiConfig(id) {
   return request(`/ai-config/${encodeURIComponent(id)}/activate`, { method: 'POST' })
 }

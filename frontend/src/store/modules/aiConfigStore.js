@@ -1,12 +1,14 @@
 import { ref, reactive } from 'vue'
 import { message } from 'ant-design-vue'
-import { listAiConfigs, createAiConfig, activateAiConfig, deleteAiConfig, testAiConfig } from '../../api/client'
+import { listAiConfigs, createAiConfig, updateAiConfig, activateAiConfig, deleteAiConfig, testAiConfig } from '../../api/client'
 import { confirm } from '../core'
 
 export const aiConfigs = ref([])
 export const selectedAiConfigId = ref(null)
 export const aiDialogVisible = ref(false)
-export const aiForm = reactive({ provider: 'openai-compatible', baseUrl: '', modelName: '', apiKey: '', timeoutSeconds: 60, enabled: true })
+// 编辑中的配置 id，null 表示新增
+export const editingAiId = ref(null)
+export const aiForm = reactive({ provider: 'openai-compatible', baseUrl: '', modelName: '', apiKey: '', timeoutSeconds: 60, enabled: true, supportsVision: false })
 
 export async function loadAiConfigs() {
   aiConfigs.value = await listAiConfigs().catch(() => [])
@@ -19,17 +21,43 @@ export async function loadAiConfigs() {
 }
 
 export function openAiDialog() {
-  Object.assign(aiForm, { provider: 'openai-compatible', baseUrl: '', modelName: '', apiKey: '', timeoutSeconds: 60, enabled: true })
+  editingAiId.value = null
+  Object.assign(aiForm, { provider: 'openai-compatible', baseUrl: '', modelName: '', apiKey: '', timeoutSeconds: 60, enabled: true, supportsVision: false })
+  aiDialogVisible.value = true
+}
+
+// 编辑：用行数据回填表单，API Key 列表是脱敏的，置空表示不修改
+export function openEditAiDialog(row) {
+  editingAiId.value = row.id
+  Object.assign(aiForm, {
+    provider: row.provider,
+    baseUrl: row.baseUrl,
+    modelName: row.modelName,
+    apiKey: '',
+    timeoutSeconds: row.timeoutSeconds,
+    enabled: row.enabled,
+    supportsVision: !!row.supportsVision,
+  })
   aiDialogVisible.value = true
 }
 
 export async function saveAiAction() {
-  if (!aiForm.baseUrl || !aiForm.modelName || !aiForm.apiKey) {
-    message.warning('Base URL、Model、API Key 不能为空')
+  if (!aiForm.baseUrl || !aiForm.modelName) {
+    message.warning('Base URL、Model 不能为空')
     return
   }
-  await createAiConfig(aiForm)
-  message.success('AI 配置已新增')
+  // 新增必须填 API Key；编辑留空表示沿用原值
+  if (!editingAiId.value && !aiForm.apiKey) {
+    message.warning('API Key 不能为空')
+    return
+  }
+  if (editingAiId.value) {
+    await updateAiConfig(editingAiId.value, aiForm)
+    message.success('AI 配置已保存')
+  } else {
+    await createAiConfig(aiForm)
+    message.success('AI 配置已新增')
+  }
   aiDialogVisible.value = false
   await loadAiConfigs()
 }

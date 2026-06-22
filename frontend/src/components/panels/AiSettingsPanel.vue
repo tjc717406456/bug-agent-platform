@@ -17,9 +17,16 @@
       <a-table-column title="Provider" data-index="provider" :width="160" />
       <a-table-column title="Model" data-index="modelName" :width="170" />
       <a-table-column title="Base URL" data-index="baseUrl" :ellipsis="true" />
-      <a-table-column title="超时秒" data-index="timeoutSeconds" :width="90" />
-      <a-table-column title="操作" :width="90">
+      <a-table-column title="超时秒" data-index="timeoutSeconds" :width="80" />
+      <a-table-column title="视觉" :width="70">
         <template #default="{ record }">
+          <a-tag v-if="record.supportsVision" color="green">支持</a-tag>
+          <span v-else style="color:#aaa">—</span>
+        </template>
+      </a-table-column>
+      <a-table-column title="操作" :width="120">
+        <template #default="{ record }">
+          <a-button type="link" size="small" @click="openEditAiDialog(record)">编辑</a-button>
           <a-button type="link" danger size="small" @click="deleteAiAction(record)">删除</a-button>
         </template>
       </a-table-column>
@@ -31,5 +38,5 @@
 import { ApiOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { useAppStore } from '../../store/useAppStore'
 
-const { testAiAction, openAiDialog, aiConfigs, selectedAiConfigId, activateAiAction, deleteAiAction } = useAppStore()
+const { testAiAction, openAiDialog, openEditAiDialog, aiConfigs, selectedAiConfigId, activateAiAction, deleteAiAction } = useAppStore()
 </script>
