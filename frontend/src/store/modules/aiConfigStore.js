@@ -8,7 +8,7 @@ export const selectedAiConfigId = ref(null)
 export const aiDialogVisible = ref(false)
 // 编辑中的配置 id，null 表示新增
 export const editingAiId = ref(null)
-export const aiForm = reactive({ provider: 'openai-compatible', baseUrl: '', modelName: '', apiKey: '', timeoutSeconds: 60, enabled: true, supportsVision: false })
+export const aiForm = reactive({ provider: 'openai-compatible', baseUrl: '', modelName: '', apiKey: '', timeoutSeconds: 60, enabled: true, supportsVision: false, role: 'PRIMARY' })
 
 export async function loadAiConfigs() {
   aiConfigs.value = await listAiConfigs().catch(() => [])
@@ -22,7 +22,7 @@ export async function loadAiConfigs() {
 
 export function openAiDialog() {
   editingAiId.value = null
-  Object.assign(aiForm, { provider: 'openai-compatible', baseUrl: '', modelName: '', apiKey: '', timeoutSeconds: 60, enabled: true, supportsVision: false })
+  Object.assign(aiForm, { provider: 'openai-compatible', baseUrl: '', modelName: '', apiKey: '', timeoutSeconds: 60, enabled: true, supportsVision: false, role: 'PRIMARY' })
   aiDialogVisible.value = true
 }
 
@@ -37,6 +37,7 @@ export function openEditAiDialog(row) {
     timeoutSeconds: row.timeoutSeconds,
     enabled: row.enabled,
     supportsVision: !!row.supportsVision,
+    role: row.role || 'PRIMARY',
   })
   aiDialogVisible.value = true
 }

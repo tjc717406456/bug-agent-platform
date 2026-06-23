@@ -7,6 +7,8 @@
           <a-tag v-if="analysisResult?.autoVerify === 'CONFIRMED'" color="green">✓ 已连库验证</a-tag>
           <a-tag v-else-if="analysisResult?.autoVerify === 'REFUTED'" color="orange">⚠ 验证存疑</a-tag>
           <a-tag v-if="analysisResult" color="blue">{{ analysisResult.confidence }}</a-tag>
+          <a-tag v-if="analysisResult?.totalTokens" color="gold">{{ analysisResult.totalTokens }} tokens</a-tag>
+          <a-tag v-if="analysisResult?.elapsedMs" color="cyan">{{ (analysisResult.elapsedMs / 1000).toFixed(1) }}s</a-tag>
         </span>
       </div>
     </template>

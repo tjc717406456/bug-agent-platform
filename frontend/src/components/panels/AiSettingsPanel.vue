@@ -18,6 +18,11 @@
       <a-table-column title="Model" data-index="modelName" :width="170" />
       <a-table-column title="Base URL" data-index="baseUrl" :ellipsis="true" />
       <a-table-column title="超时秒" data-index="timeoutSeconds" :width="80" />
+      <a-table-column title="角色" :width="80">
+        <template #default="{ record }">
+          <a-tag :color="record.role === 'UTILITY' ? 'blue' : 'purple'">{{ record.role === 'UTILITY' ? '辅助' : '主分析' }}</a-tag>
+        </template>
+      </a-table-column>
       <a-table-column title="视觉" :width="70">
         <template #default="{ record }">
           <a-tag v-if="record.supportsVision" color="green">支持</a-tag>

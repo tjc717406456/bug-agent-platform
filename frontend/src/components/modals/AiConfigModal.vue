@@ -9,6 +9,12 @@
       <a-form-item>
         <a-checkbox v-model:checked="aiForm.supportsVision">该模型支持视觉(多模态)，分析时把报错截图喂图识读</a-checkbox>
       </a-form-item>
+      <a-form-item label="角色">
+        <a-radio-group v-model:value="aiForm.role">
+          <a-radio value="PRIMARY">主分析(bug 定位/自检)</a-radio>
+          <a-radio value="UTILITY">辅助(接口讲解/侦察，便宜模型)</a-radio>
+        </a-radio-group>
+      </a-form-item>
     </a-form>
   </a-modal>
 </template>
