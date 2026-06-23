@@ -117,6 +117,26 @@ public class AppProperties {
         private int maxPoolSize = 3;
         private int minIdle = 0;
         private long connectionTimeoutMs = 10000;
+        // 只读取证查询的行数上限，防止 select * 大表把后端堆撑爆；超出按截断处理并提示模型缩小范围
+        private int maxRows = 500;
+        // 单条只读 SQL 的执行超时（秒），防止慢查询占住连接拖垮服务
+        private int queryTimeoutSeconds = 15;
+
+        public int getMaxRows() {
+            return maxRows;
+        }
+
+        public void setMaxRows(int maxRows) {
+            this.maxRows = maxRows;
+        }
+
+        public int getQueryTimeoutSeconds() {
+            return queryTimeoutSeconds;
+        }
+
+        public void setQueryTimeoutSeconds(int queryTimeoutSeconds) {
+            this.queryTimeoutSeconds = queryTimeoutSeconds;
+        }
 
         public int getMaxPoolSize() {
             return maxPoolSize;

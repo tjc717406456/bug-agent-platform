@@ -3,6 +3,8 @@ package com.tjc.bugagent.dbhub;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tjc.bugagent.config.AppProperties;
 import com.zaxxer.hikari.HikariDataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PreDestroy;
@@ -24,6 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Service
 public class DbhubQueryService {
+    private static final Logger log = LoggerFactory.getLogger(DbhubQueryService.class);
     private final DbhubDatasourceService datasourceService;
     private final ObjectMapper objectMapper;
     private final AppProperties appProperties;
@@ -45,7 +48,8 @@ public class DbhubQueryService {
              ResultSet resultSet = statement.executeQuery("select 1 as ok")) {
             return resultSet.next() && resultSet.getInt("ok") == 1 ? "ok" : "failed";
         } catch (Exception exception) {
-            throw new IllegalStateException(exception.getMessage(), exception);
+            log.warn("dbhub testDatasource failed, key={}", actualConfig == null ? null : actualConfig.getKey(), exception);
+            throw new IllegalStateException(sanitize(exception), exception);
         }
     }
 
@@ -69,7 +73,8 @@ public class DbhubQueryService {
                 result.put(tableName, describeTable(connection, config.getDatabase(), tableName));
             }
         } catch (Exception exception) {
-            return "dbhub call failed: " + exception.getMessage();
+            log.warn("dbhub describeTables failed, datasource={}, tables={}", datasourceKey, tables, exception);
+            return "dbhub call failed: " + sanitize(exception);
         }
         return wrapResult(result);
     }
@@ -88,12 +93,29 @@ public class DbhubQueryService {
         if (config == null) {
             return "Unknown datasource: " + datasourceKey;
         }
+        AppProperties.Dbhub dbhub = appProperties.getDbhub();
+        int maxRows = dbhub.getMaxRows();
         try (Connection connection = getConnection(config);
-             Statement statement = connection.createStatement();
-             ResultSet resultSet = statement.executeQuery(sql)) {
-            return wrapResult(rowsToList(resultSet));
+             Statement statement = connection.createStatement()) {
+            statement.setQueryTimeout(dbhub.getQueryTimeoutSeconds());
+            // 多取一行用来判断是否被截断，让模型知道结果不完整、该加 WHERE/LIMIT
+            statement.setMaxRows(maxRows + 1);
+            try (ResultSet resultSet = statement.executeQuery(sql)) {
+                List<Map<String, Object>> rows = rowsToList(resultSet);
+                boolean truncated = rows.size() > maxRows;
+                if (truncated) {
+                    rows = new ArrayList<Map<String, Object>>(rows.subList(0, maxRows));
+                }
+                Map<String, Object> wrapper = new LinkedHashMap<String, Object>();
+                wrapper.put("result", rows);
+                if (truncated) {
+                    wrapper.put("truncated", "结果超过 " + maxRows + " 行，仅返回前 " + maxRows + " 行，请加 WHERE/LIMIT 缩小范围");
+                }
+                return serialize(wrapper);
+            }
         } catch (Exception exception) {
-            return "dbhub readonly query failed: " + exception.getMessage();
+            log.warn("dbhub readonly query failed, datasource={}, sql={}", datasourceKey, sql, exception);
+            return "dbhub readonly query failed: " + sanitize(exception);
         }
     }
 
@@ -177,11 +199,32 @@ public class DbhubQueryService {
     private String wrapResult(Object data) {
         Map<String, Object> wrapper = new LinkedHashMap<String, Object>();
         wrapper.put("result", data);
+        return serialize(wrapper);
+    }
+
+    private String serialize(Map<String, Object> wrapper) {
         try {
             return objectMapper.writeValueAsString(wrapper);
         } catch (Exception exception) {
-            return "{\"result\":\"" + data + "\"}";
+            return "{\"result\":\"" + wrapper.get("result") + "\"}";
         }
+    }
+
+    /**
+     * 脱敏数据库异常：只取首行、抹掉 jdbc 连接串、限长。
+     * 完整堆栈仅记服务端日志，避免把库地址/驱动版本/内部结构漏给上层和模型。
+     */
+    private String sanitize(Exception exception) {
+        String message = exception.getMessage();
+        if (isBlank(message)) {
+            return exception.getClass().getSimpleName();
+        }
+        int newline = message.indexOf('\n');
+        if (newline >= 0) {
+            message = message.substring(0, newline);
+        }
+        message = message.replaceAll("jdbc:[^\\s]+", "[jdbc-url]");
+        return message.length() > 200 ? message.substring(0, 200) + "..." : message;
     }
 
     private Object describeTable(Connection connection, String database, String tableName) {
@@ -192,8 +235,9 @@ public class DbhubQueryService {
             tableInfo.put("recentData", queryRecentData(connection, tableName));
             return tableInfo;
         } catch (Exception exception) {
+            log.warn("dbhub describeTable failed, table={}", tableName, exception);
             Map<String, Object> error = new LinkedHashMap<String, Object>();
-            error.put("error", exception.getMessage());
+            error.put("error", sanitize(exception));
             return error;
         }
     }

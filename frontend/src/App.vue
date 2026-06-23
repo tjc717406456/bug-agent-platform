@@ -56,9 +56,13 @@ import DbhubModal from './components/modals/DbhubModal.vue'
 import AiConfigModal from './components/modals/AiConfigModal.vue'
 import { useAppStore } from './store/useAppStore'
 
-const { activePanel, selectedProjectId, projectOptions, changeProject, loadAll } = useAppStore()
+const { activePanel, selectedProjectId, projectOptions, changeProject, loadAll, resumeAgentTask } = useAppStore()
 
-onMounted(loadAll)
+onMounted(async () => {
+  await loadAll()
+  // 刷新/切回后，续上未完成的 Agent 任务
+  await resumeAgentTask()
+})
 </script>
 
 <style>

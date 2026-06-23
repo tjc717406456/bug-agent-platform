@@ -42,11 +42,11 @@ public class InitialEvidenceBuilder {
             "ch.qos.", "org.slf4j.", "io.netty.", "reactor.", "org.junit."
     };
 
-    private final AgentToolExecutor agentToolExecutor;
+    private final SourceReader sourceReader;
     private final AppProperties appProperties;
 
-    public InitialEvidenceBuilder(AgentToolExecutor agentToolExecutor, AppProperties appProperties) {
-        this.agentToolExecutor = agentToolExecutor;
+    public InitialEvidenceBuilder(SourceReader sourceReader, AppProperties appProperties) {
+        this.sourceReader = sourceReader;
         this.appProperties = appProperties;
     }
 
@@ -103,7 +103,8 @@ public class InitialEvidenceBuilder {
         }
         StringBuilder builder = new StringBuilder();
         for (StackFrame frame : frames) {
-            String snippet = agentToolExecutor.readSourceAtClassLine(toolContext, frame.className, frame.lineNo, STACK_SNIPPET_LINES);
+            String snippet = sourceReader.readSourceAtClassLine(toolContext.getProjectId(), toolContext.getVersionId(),
+                    frame.className, frame.lineNo, STACK_SNIPPET_LINES);
             builder.append("【").append(frame.className).append("#").append(frame.methodName)
                     .append(":").append(frame.lineNo).append("】\n")
                     .append(snippet).append("\n");
@@ -165,7 +166,7 @@ public class InitialEvidenceBuilder {
         }
         StringBuilder builder = new StringBuilder();
         for (CodeNode node : targets) {
-            String snippet = agentToolExecutor.readSourceSnippet(node, toolContext, SNAPSHOT_SNIPPET_LINES);
+            String snippet = sourceReader.readSnippet(node, toolContext.getProjectId(), toolContext.getVersionId(), SNAPSHOT_SNIPPET_LINES);
             builder.append("【").append(node.getName()).append("】 ")
                     .append(node.getFilePath()).append(":").append(node.getLineNo()).append("\n")
                     .append(snippet).append("\n");

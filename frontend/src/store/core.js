@@ -4,7 +4,24 @@ import { Modal } from 'ant-design-vue'
 // 跨域共享的根状态：当前选中项目、分析表单、结果弹窗被多个面板同时读写，
 // 集中放这里让各域 store 单向依赖，避免模块间互相 import 形成环
 export const currentProject = ref(null)
-export const activePanel = ref('projects')
+
+// 当前侧边栏页持久化，刷新后不回弹「项目管理」
+const PANEL_STORAGE_KEY = 'bug-agent-active-panel'
+const PANEL_KEYS = new Set(['projects', 'source', 'ai-settings', 'dbhub-sources', 'project-dbhub', 'analysis', 'history'])
+
+function loadActivePanel() {
+  if (typeof window === 'undefined') return 'projects'
+  const saved = window.localStorage.getItem(PANEL_STORAGE_KEY)
+  return PANEL_KEYS.has(saved) ? saved : 'projects'
+}
+
+export const activePanel = ref(loadActivePanel())
+
+export function saveActivePanel(panel) {
+  if (typeof window !== 'undefined' && PANEL_KEYS.has(panel)) {
+    window.localStorage.setItem(PANEL_STORAGE_KEY, panel)
+  }
+}
 
 // 分析输入表单：analysis 域主导，project 域联动版本/路由选择，history 回看时复用
 export const analysisForm = reactive({ versionId: '', apiPath: '', userDescription: '', requestBody: '', responseBody: '', stackTrace: '', traceId: '', requestTime: '', logText: '', logId: '' })
