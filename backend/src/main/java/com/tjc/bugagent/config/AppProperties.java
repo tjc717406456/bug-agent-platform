@@ -165,6 +165,8 @@ public class AppProperties {
         private int similarCaseLimit = 1500;
         // 相似度低于此分的案例不注入，默认至少 api_path 沾边
         private int similarCaseMinScore = 1;
+        // 分阶段工具集：开启后未读代码/未看表结构前不放 query_database，逼模型先理解再查库，避免盲查
+        private boolean phasedTools = true;
         // 多假设并行模式：OFF 单链；ON 有多候选就并行；AUTO 仅在候选歧义时才并行
         private String hypothesisMode = "AUTO";
         // 并行验证的假设条数上限
@@ -175,6 +177,14 @@ public class AppProperties {
         private int hypothesisChainIterations = 12;
         // 假设分支并行线程池大小，控并发别撞模型限流
         private int hypothesisPoolSize = 2;
+
+        public boolean isPhasedTools() {
+            return phasedTools;
+        }
+
+        public void setPhasedTools(boolean phasedTools) {
+            this.phasedTools = phasedTools;
+        }
 
         public String getHypothesisMode() {
             return hypothesisMode;

@@ -55,6 +55,7 @@ create table if not exists ai_provider_config (
   timeout_seconds int not null comment '超时时间秒数',
   enabled tinyint not null comment '是否启用',
   supports_vision tinyint not null default 0 comment '模型是否支持视觉多模态',
+  role varchar(16) not null default 'PRIMARY' comment '模型角色:PRIMARY主分析/UTILITY辅助',
   created_at datetime not null comment '创建时间',
   updated_at datetime not null comment '更新时间'
 );

@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 评估跑批接口：跑用例集给分析准确率打分。
@@ -26,6 +27,22 @@ public class EvalController {
     @PostMapping("/run")
     public ApiResponse<EvalSummary> run(@RequestBody(required = false) List<EvalCase> cases) {
         return ApiResponse.ok(evalService.run(cases));
+    }
+
+    /**
+     * 裸模型基线：同一批用例只喂报错给模型单次作答，不走代理。
+     */
+    @PostMapping("/run-baseline")
+    public ApiResponse<EvalSummary> runBaseline(@RequestBody(required = false) List<EvalCase> cases) {
+        return ApiResponse.ok(evalService.runBaseline(cases));
+    }
+
+    /**
+     * A/B 对比：同一批用例分别跑裸模型和全代理，返回 {baseline, agent} 两份汇总。
+     */
+    @PostMapping("/ab")
+    public ApiResponse<Map<String, EvalSummary>> ab(@RequestBody(required = false) List<EvalCase> cases) {
+        return ApiResponse.ok(evalService.runAb(cases));
     }
 
     /**

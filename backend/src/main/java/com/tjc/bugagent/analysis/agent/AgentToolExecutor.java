@@ -86,20 +86,31 @@ public class AgentToolExecutor {
     }
 
     /**
-     * 返回 OpenAI tools 字段使用的函数定义。
+     * 返回 OpenAI tools 字段使用的函数定义（全量）。
      */
     public List<Map<String, Object>> toolSchemas() {
+        return toolSchemas(true);
+    }
+
+    /**
+     * 分阶段工具集：allowQueryDatabase=false 时不放 query_database，
+     * 逼模型先用代码/表结构工具理解清楚，再进入查库取证阶段，避免没读代码就盲写 SQL 查错列。
+     * ACI 思想：工具描述里直接写清"什么时候该用我、命中不到该换谁"，模型选得更准。
+     */
+    public List<Map<String, Object>> toolSchemas(boolean allowQueryDatabase) {
         List<Map<String, Object>> tools = new ArrayList<Map<String, Object>>();
-        tools.add(toolSchema("search_code", "搜索已索引 Java 方法和 Mapper", properties("keyword"), required("keyword")));
-        tools.add(toolSchema("get_code_detail", "读取关键源码片段，可按 nodeId 或 className/methodName 查询", properties("nodeId", "className", "methodName"), required()));
-        tools.add(toolSchema("trace_call_chain", "按接口路径重新追调用链、SQL 和表", properties("apiPath"), required()));
-        tools.add(toolSchema("search_sql", "搜索 SQL 或 Mapper 节点", properties("keyword"), required("keyword")));
-        tools.add(toolSchema("grep_source", "在原始源码全文里 grep 关键词，能命中字符串字面量、枚举值、常量、注解、配置等代码图谱搜不到的内容（如错误提示文案、ResultEnum、魔法值）", properties("keyword"), required("keyword")));
-        tools.add(toolSchema("find_callers", "反向查谁调用了某个方法/节点（上游调用者），用于从某方法往上回溯根因，nodeId 来自 search_code/get_code_detail 的结果", properties("nodeId"), required("nodeId")));
-        tools.add(toolSchema("search_log", "在本次上传的日志原文里按关键词/traceId 检索匹配行（含上下文），用于深挖初始证据里被截断的日志细节", properties("keyword"), required("keyword")));
-        tools.add(toolSchema("describe_tables", "查询表结构、数据量和最近样例", properties("tables"), required("tables")));
-        tools.add(toolSchema("query_database", "执行只读 SQL，只允许 SELECT、SHOW、DESC、DESCRIBE、EXPLAIN", properties("sql"), required("sql")));
-        tools.add(toolSchema("finish", "证据足够后输出最终定位报告，报告包含问题结论、证据链路、关键代码/SQL/数据证据、根因类型、建议处理人、置信度", properties("report"), required("report")));
+        tools.add(toolSchema("search_code", "按方法名/类名搜已索引的 Java 方法和 Mapper；搜不到字面量/枚举/常量时改用 grep_source", properties("keyword"), required("keyword")));
+        tools.add(toolSchema("get_code_detail", "读关键源码片段，按 nodeId 或 className/methodName 查；定位根因优先读栈顶那几行", properties("nodeId", "className", "methodName"), required()));
+        tools.add(toolSchema("trace_call_chain", "按接口路径重追调用链、SQL 和表，拿全链路骨架", properties("apiPath"), required()));
+        tools.add(toolSchema("search_sql", "按关键词搜 SQL/Mapper 节点；搜不到改用 grep_source 在 xml 里搜", properties("keyword"), required("keyword")));
+        tools.add(toolSchema("grep_source", "源码全文 grep，命中代码图谱搜不到的字面量/枚举/常量/注解/配置（如错误文案、ResultEnum、魔法值）", properties("keyword"), required("keyword")));
+        tools.add(toolSchema("find_callers", "反向查谁调用了某节点（上游调用者），从某方法往上回溯根因；nodeId 来自 search_code/get_code_detail", properties("nodeId"), required("nodeId")));
+        tools.add(toolSchema("search_log", "在本次日志原文按关键词/traceId 检索匹配行（含上下文），深挖初始证据里被截断的日志细节", properties("keyword"), required("keyword")));
+        tools.add(toolSchema("describe_tables", "查表结构、数据量、最近样例；写 query_database 前先用它确认列名，别凭空猜", properties("tables"), required("tables")));
+        if (allowQueryDatabase) {
+            tools.add(toolSchema("query_database", "执行只读 SQL 核对数据（只允许 SELECT/SHOW/DESC/DESCRIBE/EXPLAIN）；先 describe_tables 确认列名再查", properties("sql"), required("sql")));
+        }
+        tools.add(toolSchema("finish", "证据足够后输出最终定位报告：通俗结论、问题结论、证据链路、关键代码/SQL/数据证据、根因类型、建议处理人、置信度", properties("report"), required("report")));
         return tools;
     }
 
@@ -353,7 +364,7 @@ public class AgentToolExecutor {
 
     private AgentToolResult describeTables(AgentToolCall call, AgentToolContext context) {
         if (context.getDatasource() == null) {
-            return AgentToolResult.fail("describe_tables", "项目未配置 dbhub 数据源");
+            return AgentToolResult.fail("describe_tables", "项目未配置 dbhub 数据源，本次无法查库；请基于代码、SQL 与日志证据定位");
         }
         List<String> tables = parseTables(call.getArguments().get("tables"));
         if (tables.isEmpty()) {
@@ -365,11 +376,11 @@ public class AgentToolExecutor {
 
     private AgentToolResult queryDatabase(AgentToolCall call, AgentToolContext context) {
         if (context.getDatasource() == null) {
-            return AgentToolResult.fail("query_database", "项目未配置 dbhub 数据源");
+            return AgentToolResult.fail("query_database", "项目未配置 dbhub 数据源，本次无法查库；请基于代码、SQL 与日志证据定位");
         }
         String sql = call.stringArg("sql");
         if (!ReadonlySqlGuard.isReadonly(sql)) {
-            return AgentToolResult.fail("query_database", "只允许只读 SQL: " + sql);
+            return AgentToolResult.fail("query_database", "只允许只读 SQL，请改用 SELECT/SHOW/DESC 重写: " + sql);
         }
         String evidence = dbhubClient.queryReadonly(context.getDatasource().getDbhubKey(), sql);
         return AgentToolResult.ok("query_database", "已执行只读 SQL", evidence);

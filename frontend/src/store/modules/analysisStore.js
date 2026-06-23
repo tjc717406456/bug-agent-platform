@@ -21,8 +21,8 @@ export function removeScreenshot(file) {
 }
 
 export async function beforeLogUpload(file) {
-  if (file.size > 10 * 1024 * 1024) {
-    message.warning('日志文件不能超过 10MB')
+  if (file.size > 50 * 1024 * 1024) {
+    message.warning('日志文件不能超过 50MB')
     return false
   }
   logFileList.value = [file]
@@ -40,6 +40,55 @@ export async function beforeLogUpload(file) {
 export function removeLog() {
   logFileList.value = []
   analysisForm.logId = ''
+}
+
+// 解析扩展复制出来的结构文本（接口/请求参数/请求体/响应），拆不出接口就返回 null
+function parseCapturedText(text) {
+  if (!text || text.indexOf('接口:') < 0) {
+    return null
+  }
+  const grab = (label, nextLabels) => {
+    const start = text.indexOf(label)
+    if (start < 0) return ''
+    let end = text.length
+    for (const next of nextLabels) {
+      const idx = text.indexOf('\n' + next, start + label.length)
+      if (idx >= 0 && idx < end) end = idx
+    }
+    return text.slice(start + label.length, end).trim()
+  }
+  const apiPath = grab('接口:', ['请求参数:', '请求体:', '响应:'])
+  const reqParam = grab('请求参数:', ['请求体:', '响应:'])
+  const reqBody = grab('请求体:', ['响应:'])
+  const response = grab('响应:', [])
+  if (!apiPath) {
+    return null
+  }
+  return {
+    apiPath,
+    requestBody: reqParam + (reqBody ? '\n请求体: ' + reqBody : ''),
+    responseBody: response,
+  }
+}
+
+// 读剪贴板，按扩展复制的结构自动回填表单
+export async function pasteFromClipboard() {
+  let text = ''
+  try {
+    text = await navigator.clipboard.readText()
+  } catch (error) {
+    message.error('读取剪贴板失败，请允许剪贴板权限')
+    return
+  }
+  const parsed = parseCapturedText(text)
+  if (!parsed) {
+    message.warning('剪贴板内容不是抓包结构，先在扩展里点「复制」')
+    return
+  }
+  analysisForm.apiPath = parsed.apiPath
+  analysisForm.requestBody = parsed.requestBody
+  analysisForm.responseBody = parsed.responseBody
+  message.success('已从剪贴板回填接口与请求响应')
 }
 
 export async function analyzeAction() {

@@ -81,6 +81,14 @@ public class AgentPromptBuilder {
     }
 
     /**
+     * 预算提示：把"已用第几轮/共几轮"亮给模型，过半后提醒抓紧收口，提升收敛、防空转。
+     */
+    public String buildBudgetReminder(int used, int max) {
+        return "【预算提示】已用 " + used + "/" + max + " 轮，剩余不多。证据已足够就立刻 finish；"
+                + "只能给高概率判断也要在报告里说明剩余风险，别再追无关细节空转。";
+    }
+
+    /**
      * 模型只用文字描述计划、没真发工具调用时的纠偏提示，逼它走 tool_calls 协议。
      */
     public String buildToolNudge() {

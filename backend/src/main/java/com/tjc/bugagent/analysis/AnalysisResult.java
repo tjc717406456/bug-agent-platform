@@ -10,6 +10,26 @@ public class AnalysisResult {
     private String confidence;
     private String evidenceJson;
     private String autoVerify;
+    // 本次分析消耗的 token 总数，用于成本展示
+    private int totalTokens;
+    // 本次分析耗时(毫秒)
+    private long elapsedMs;
+
+    public int getTotalTokens() {
+        return totalTokens;
+    }
+
+    public void setTotalTokens(int totalTokens) {
+        this.totalTokens = totalTokens;
+    }
+
+    public long getElapsedMs() {
+        return elapsedMs;
+    }
+
+    public void setElapsedMs(long elapsedMs) {
+        this.elapsedMs = elapsedMs;
+    }
 
     public String getAutoVerify() {
         return autoVerify;

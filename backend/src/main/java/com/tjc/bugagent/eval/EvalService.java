@@ -45,31 +45,51 @@ public class EvalService {
      */
     public EvalSummary run(List<EvalCase> cases) {
         List<EvalCase> target = (cases == null || cases.isEmpty()) ? loadFromFile() : cases;
-        return runCases(target);
+        return runCases(target, false);
     }
 
     /**
      * 评估飞轮：把人工标注过的真实 bug 当回归用例重跑，看改完逻辑后还命不命中人工要求的关键词。
      */
     public EvalSummary runFromFeedback() {
-        return runCases(loadFromFeedback());
+        return runCases(loadFromFeedback(), false);
     }
 
-    private EvalSummary runCases(List<EvalCase> target) {
+    /**
+     * 裸模型基线：同一批用例只喂报错给模型单次作答，不走代理。
+     */
+    public EvalSummary runBaseline(List<EvalCase> cases) {
+        List<EvalCase> target = (cases == null || cases.isEmpty()) ? loadFromFile() : cases;
+        return runCases(target, true);
+    }
+
+    /**
+     * A/B 对比：同一批用例分别跑裸模型和全代理，返回两份汇总，差值即代理式流程的增益。
+     */
+    public java.util.Map<String, EvalSummary> runAb(List<EvalCase> cases) {
+        List<EvalCase> target = (cases == null || cases.isEmpty()) ? loadFromFile() : cases;
+        java.util.Map<String, EvalSummary> ab = new java.util.LinkedHashMap<String, EvalSummary>();
+        ab.put("baseline", runCases(target, true));
+        ab.put("agent", runCases(target, false));
+        return ab;
+    }
+
+    private EvalSummary runCases(List<EvalCase> target, boolean baseline) {
         List<EvalCaseResult> results = new ArrayList<EvalCaseResult>();
         for (EvalCase evalCase : target) {
-            results.add(evaluate(evalCase));
+            results.add(evaluate(evalCase, baseline));
         }
         return summarize(results);
     }
 
-    private EvalCaseResult evaluate(EvalCase evalCase) {
+    private EvalCaseResult evaluate(EvalCase evalCase, boolean baseline) {
         EvalCaseResult result = new EvalCaseResult();
         result.setName(evalCase.getName());
         result.setExpectConfidence(evalCase.getExpectConfidence());
         long start = System.currentTimeMillis();
         try {
-            AnalysisResult analysis = agentAnalysisService.analyze(toRequest(evalCase));
+            AnalysisRequest request = toRequest(evalCase);
+            AnalysisResult analysis = baseline ? agentAnalysisService.analyzeBaseline(request) : agentAnalysisService.analyze(request);
             result.setElapsedMs(System.currentTimeMillis() - start);
             result.setConfidence(analysis.getConfidence());
             result.setPlainAnswer(analysis.getPlainAnswer());

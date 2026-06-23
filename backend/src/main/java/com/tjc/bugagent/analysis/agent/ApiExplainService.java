@@ -105,7 +105,7 @@ public class ApiExplainService {
         int maxIterations = appProperties.getAgent().getMaxIterations();
 
         for (int iteration = 1; iteration <= maxIterations; iteration++) {
-            AiToolCallResult aiResult = aiClient.chatWithMessages(messages, agentToolExecutor.toolSchemas());
+            AiToolCallResult aiResult = aiClient.chatWithMessagesUtility(messages, agentToolExecutor.toolSchemas());
             List<AgentToolCall> calls = toolCallParser.parseToolCalls(aiResult);
 
             AgentToolCall finish = toolCallParser.findFinish(calls);
@@ -170,7 +170,7 @@ public class ApiExplainService {
         try {
             messages.add(conversation.message("user", "已达到最大轮次。现在必须基于以上全部证据调用 finish 输出接口讲解，"
                     + "report 要包含：通俗说明、完整流程（入口→服务→Mapper→SQL→表）、关键代码片段、涉及的表与数据流向；不要再调用查证工具。"));
-            AiToolCallResult aiResult = aiClient.chatWithMessages(messages, agentToolExecutor.toolSchemas());
+            AiToolCallResult aiResult = aiClient.chatWithMessagesUtility(messages, agentToolExecutor.toolSchemas());
             AgentToolCall finish = toolCallParser.findFinish(toolCallParser.parseToolCalls(aiResult));
             if (finish != null && !isBlank(finish.stringArg("report"))) {
                 AgentToolResult finishResult = agentToolExecutor.execute(finish, toolContext);

@@ -26,7 +26,7 @@ public class AiConfigService {
      */
     public List<AiConfig> list() {
         List<AiConfig> list = jdbcTemplate.query(
-                "select id, provider, base_url, model_name, api_key_cipher, timeout_seconds, enabled, supports_vision from ai_provider_config order by id asc",
+                "select id, provider, base_url, model_name, api_key_cipher, timeout_seconds, enabled, supports_vision, role from ai_provider_config order by id asc",
                 new AiConfigMapper());
         for (AiConfig config : list) {
             config.setApiKey("******");
@@ -41,8 +41,8 @@ public class AiConfigService {
         Integer count = jdbcTemplate.queryForObject("select count(*) from ai_provider_config", Integer.class);
         boolean enableNow = count == null || count == 0;
         jdbcTemplate.update(
-                "insert into ai_provider_config(provider, base_url, model_name, api_key_cipher, timeout_seconds, enabled, supports_vision, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, now(), now())",
-                request.getProvider(), request.getBaseUrl(), request.getModelName(), encode(request.getApiKey()), request.getTimeoutSeconds(), enableNow, request.isSupportsVision());
+                "insert into ai_provider_config(provider, base_url, model_name, api_key_cipher, timeout_seconds, enabled, supports_vision, role, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, now(), now())",
+                request.getProvider(), request.getBaseUrl(), request.getModelName(), encode(request.getApiKey()), request.getTimeoutSeconds(), enableNow, request.isSupportsVision(), normalizeRole(request.getRole()));
     }
 
     /**
@@ -55,15 +55,31 @@ public class AiConfigService {
             throw new IllegalArgumentException("AI 配置不存在: " + id);
         }
         boolean keepKey = request.getApiKey() == null || request.getApiKey().trim().isEmpty() || request.getApiKey().contains("*");
+        String role = normalizeRole(request.getRole());
         if (keepKey) {
             jdbcTemplate.update(
-                    "update ai_provider_config set provider = ?, base_url = ?, model_name = ?, timeout_seconds = ?, supports_vision = ?, updated_at = now() where id = ?",
-                    request.getProvider(), request.getBaseUrl(), request.getModelName(), request.getTimeoutSeconds(), request.isSupportsVision(), id);
+                    "update ai_provider_config set provider = ?, base_url = ?, model_name = ?, timeout_seconds = ?, supports_vision = ?, role = ?, updated_at = now() where id = ?",
+                    request.getProvider(), request.getBaseUrl(), request.getModelName(), request.getTimeoutSeconds(), request.isSupportsVision(), role, id);
         } else {
             jdbcTemplate.update(
-                    "update ai_provider_config set provider = ?, base_url = ?, model_name = ?, api_key_cipher = ?, timeout_seconds = ?, supports_vision = ?, updated_at = now() where id = ?",
-                    request.getProvider(), request.getBaseUrl(), request.getModelName(), encode(request.getApiKey()), request.getTimeoutSeconds(), request.isSupportsVision(), id);
+                    "update ai_provider_config set provider = ?, base_url = ?, model_name = ?, api_key_cipher = ?, timeout_seconds = ?, supports_vision = ?, role = ?, updated_at = now() where id = ?",
+                    request.getProvider(), request.getBaseUrl(), request.getModelName(), encode(request.getApiKey()), request.getTimeoutSeconds(), request.isSupportsVision(), role, id);
         }
+    }
+
+    /** 角色只认 PRIMARY/UTILITY，其它一律当 PRIMARY。 */
+    private String normalizeRole(String role) {
+        return "UTILITY".equalsIgnoreCase(role == null ? "" : role.trim()) ? "UTILITY" : "PRIMARY";
+    }
+
+    /**
+     * 取辅助模型配置（接口讲解、多假设侦察等轻活用），没标 UTILITY 的就返回 null，调用方退回主模型。
+     */
+    public AiConfig getUtilityConfig() {
+        List<AiConfig> list = jdbcTemplate.query(
+                "select id, provider, base_url, model_name, api_key_cipher, timeout_seconds, enabled, supports_vision, role from ai_provider_config where role = 'UTILITY' order by id desc limit 1",
+                new AiConfigMapper());
+        return list.isEmpty() ? null : list.get(0);
     }
 
     /**
@@ -94,7 +110,7 @@ public class AiConfigService {
 
     public AiConfig getEnabledConfig() {
         List<AiConfig> list = jdbcTemplate.query(
-                "select id, provider, base_url, model_name, api_key_cipher, timeout_seconds, enabled, supports_vision from ai_provider_config where enabled = 1 order by id desc limit 1",
+                "select id, provider, base_url, model_name, api_key_cipher, timeout_seconds, enabled, supports_vision, role from ai_provider_config where enabled = 1 order by id desc limit 1",
                 new AiConfigMapper());
         return list.isEmpty() ? null : list.get(0);
     }
@@ -119,6 +135,7 @@ public class AiConfigService {
             config.setTimeoutSeconds(rs.getInt("timeout_seconds"));
             config.setEnabled(rs.getBoolean("enabled"));
             config.setSupportsVision(rs.getBoolean("supports_vision"));
+            config.setRole(rs.getString("role"));
             return config;
         }
     }

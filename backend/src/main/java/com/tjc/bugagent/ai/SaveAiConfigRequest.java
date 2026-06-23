@@ -18,6 +18,8 @@ public class SaveAiConfigRequest {
     private boolean enabled = true;
     // 该模型是否支持视觉(多模态)，支持才会把报错截图喂图识读
     private boolean supportsVision = false;
+    // 角色：PRIMARY 主分析 / UTILITY 辅助轻活
+    private String role = "PRIMARY";
 
     public String getProvider() {
         return provider;
@@ -73,6 +75,14 @@ public class SaveAiConfigRequest {
 
     public void setSupportsVision(boolean supportsVision) {
         this.supportsVision = supportsVision;
+    }
+
+    public String getRole() {
+        return role;
+    }
+
+    public void setRole(String role) {
+        this.role = role;
     }
 }
 

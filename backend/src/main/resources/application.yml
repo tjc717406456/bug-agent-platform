@@ -33,14 +33,16 @@ app:
     connection-timeout-ms: 10000
   agent:
     max-iterations: 32
-    initial-evidence-limit: 12000
+    initial-evidence-limit: 30000
     sql-text-limit: 2000
     tool-result-limit: 4000
     self-critique: true
     tool-timeout-seconds: 60
     tool-fanout-pool-size: 8
+    # 分阶段工具集：先读代码/看表结构，再解锁 query_database 查库取证
+    phased-tools: true
     # 多假设并行：OFF 单链 / ON 多候选即并行 / AUTO 仅歧义时并行
-    hypothesis-mode: AUTO
+    hypothesis-mode: OFF
     hypothesis-max-branches: 2
     hypothesis-min-score-gap: 25
     hypothesis-chain-iterations: 12
@@ -52,5 +54,5 @@ app:
     cases-path: ./workspace/eval-cases.json
   log:
     dir: ./workspace/logs
-    max-bytes: 10485760
+    max-bytes: 52428800
     retention-days: 1

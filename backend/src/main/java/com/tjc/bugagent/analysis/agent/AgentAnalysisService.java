@@ -111,6 +111,7 @@ public class AgentAnalysisService {
      * 带进度回调的分析：每轮关键动作通过 listener 回传，前端实时展示，告别黑盒干等。
      */
     public AnalysisResult analyze(AnalysisRequest request, AnalysisProgressListener progress) {
+        long startMs = System.currentTimeMillis();
         ProjectVersion version = resolveVersion(request);
         CodeGraphQueryResult graph = codeGraphQueryService.queryByApiPath(request.getProjectId(), version.getId(), request.getApiPath());
         ProjectDatasource datasource = projectService.firstEnabledDatasource(request.getProjectId());
@@ -156,7 +157,48 @@ public class AgentAnalysisService {
         result.setConfidence(confidence);
         result.setEvidenceJson(evidence);
         result.setAutoVerify(autoVerify.getStatus());
+        result.setTotalTokens(winner.tokens);
+        result.setElapsedMs(System.currentTimeMillis() - startMs);
+        progress.onStep("✓ 分析完成 · " + winner.rounds.size() + " 轮查证 · " + confidence + " 置信 · " + winner.tokens + " tokens · " + (result.getElapsedMs() / 1000) + "s");
         return result;
+    }
+
+    /**
+     * 裸模型基线：只把原始报错信息(接口+请求+响应+堆栈+日志)喂给模型，单次作答，
+     * 不建代码图谱、不调工具、不查库、不多轮。用于 A/B 对比，量化"代理式流程"相对裸模型的增益。不落库。
+     */
+    public AnalysisResult analyzeBaseline(AnalysisRequest request) {
+        long startMs = System.currentTimeMillis();
+        StringBuilder info = new StringBuilder();
+        info.append("接口路径: ").append(safe(request.getApiPath())).append("\n");
+        appendIf(info, "用户描述", request.getUserDescription());
+        appendIf(info, "请求参数", request.getRequestBody());
+        appendIf(info, "响应结果", request.getResponseBody());
+        appendIf(info, "异常堆栈", request.getStackTrace());
+        appendIf(info, "日志", resolveLogText(request));
+
+        List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
+        messages.add(conversation.message("system", "你是后端 Bug 定位助手。只能根据下面的报错信息直接判断根因，"
+                + "没有源码访问、不能调用工具、不能查数据库。一次性作答。"));
+        messages.add(conversation.message("user", "【报错信息】\n" + info
+                + "\n直接给出最可能的根因：通俗结论 + 问题结论 + 根因类型，一段话写清，不要罗列排查计划。"));
+        AiToolCallResult aiResult = aiClient.chatWithMessages(messages, null);
+        String report = safe(aiResult.getContent());
+
+        AnalysisResult result = new AnalysisResult();
+        result.setConclusion(report);
+        result.setPlainAnswer(plainAnswerResolver.buildPlainAnswer(report, ""));
+        result.setConfidence("");
+        result.setEvidenceJson("");
+        result.setTotalTokens(aiResult.getTotalTokens());
+        result.setElapsedMs(System.currentTimeMillis() - startMs);
+        return result;
+    }
+
+    private void appendIf(StringBuilder builder, String label, String value) {
+        if (!isBlank(value)) {
+            builder.append(label).append(": ").append(value).append("\n");
+        }
     }
 
     /**
@@ -238,9 +280,11 @@ public class AgentAnalysisService {
         progress.onStep("汇总各假设结论，挑出证据最硬的根因");
         StringBuilder reports = new StringBuilder();
         List<Map<String, Object>> mergedRounds = new ArrayList<Map<String, Object>>();
+        int mergedTokens = 0;
         for (int i = 0; i < branches.size(); i++) {
             reports.append("【假设").append(i + 1).append("的调查结论】\n").append(safe(branches.get(i).report)).append("\n\n");
             mergedRounds.addAll(branches.get(i).rounds);
+            mergedTokens += branches.get(i).tokens;
         }
         String synthesized;
         try {
@@ -257,7 +301,7 @@ public class AgentAnalysisService {
             }
             return best;
         }
-        return new ChainResult(synthesized, mergedRounds);
+        return new ChainResult(synthesized, mergedRounds, mergedTokens);
     }
 
     /**
@@ -288,13 +332,24 @@ public class AgentAnalysisService {
         int noNewKeyFactRounds = 0;
         int toolNudges = 0;
         boolean selfChecked = false;
+        // 分阶段工具集：未读代码/未看表结构前不放 query_database；关了该配置就全程全量
+        boolean phased = appProperties.getAgent().isPhasedTools();
+        boolean verifyUnlocked = !phased;
+        // 预算可见性：过了 2/3 轮提醒一次模型抓紧收口
+        boolean budgetWarned = false;
+        int budgetWarnFrom = Math.max(1, maxIterations * 2 / 3);
+        int tokens = 0;
 
         for (int iteration = 1; iteration <= maxIterations; iteration++) {
             String forceFinishReason = judge.resolveForceFinishReason(graph, rounds, noNewKeyFactRounds);
             if (!isBlank(forceFinishReason)) {
                 messages.add(conversation.message("user", promptBuilder.buildForceFinishInstruction(forceFinishReason)));
+            } else if (!budgetWarned && iteration >= budgetWarnFrom) {
+                budgetWarned = true;
+                messages.add(conversation.message("user", promptBuilder.buildBudgetReminder(iteration, maxIterations)));
             }
-            AiToolCallResult aiResult = aiClient.chatWithMessages(messages, agentToolExecutor.toolSchemas());
+            AiToolCallResult aiResult = aiClient.chatWithMessages(messages, agentToolExecutor.toolSchemas(verifyUnlocked));
+            tokens += aiResult.getTotalTokens();
             List<AgentToolCall> calls = toolCallParser.parseToolCalls(aiResult);
 
             // 强制收口：本轮只允许 finish
@@ -353,6 +408,11 @@ public class AgentAnalysisService {
                 anyOk = anyOk || toolResult.isOk();
                 anyNewFact = anyNewFact || newKeyFact;
                 anyHardFailure = anyHardFailure || toolResult.isHardFailure();
+                // 成功读过代码或看过表结构，就进入取证阶段，解锁 query_database
+                if (!verifyUnlocked && toolResult.isOk() && unlocksVerify(call.getAction())) {
+                    verifyUnlocked = true;
+                    progress.onStep(label + "已理解代码/表结构，进入查库取证阶段");
+                }
             }
 
             if (anyOk) {
@@ -375,17 +435,19 @@ public class AgentAnalysisService {
             // 到顶仍没收口：再逼模型基于已有证据产出一份完整报告，别甩一句话
             finalReport = forceSynthesizeReport(messages, toolContext, rounds, maxIterations + 1);
         }
-        return new ChainResult(finalReport, rounds);
+        return new ChainResult(finalReport, rounds, tokens);
     }
 
     /** 一条调查链的产出：最终报告 + 全部轮次记录，不含落库。 */
     private static final class ChainResult {
         private final String report;
         private final List<Map<String, Object>> rounds;
+        private final int tokens;
 
-        private ChainResult(String report, List<Map<String, Object>> rounds) {
+        private ChainResult(String report, List<Map<String, Object>> rounds, int tokens) {
             this.report = report;
             this.rounds = rounds;
+            this.tokens = tokens;
         }
     }
 
@@ -447,6 +509,12 @@ public class AgentAnalysisService {
             logText = logStorageService.read(request.getLogId());
         }
         return logText;
+    }
+
+    /** 读过代码或看过表结构的动作，达成后才解锁查库（query_database）。 */
+    private boolean unlocksVerify(String action) {
+        return "get_code_detail".equals(action) || "trace_call_chain".equals(action)
+                || "search_code".equals(action) || "describe_tables".equals(action);
     }
 
     /** 拆分截图路径：存储按换行拼接，顺带兼容逗号分隔，去空。 */

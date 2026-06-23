@@ -45,7 +45,7 @@ public class HypothesisScout {
         int maxCount = Math.max(2, appProperties.getAgent().getHypothesisMaxBranches());
         String reply;
         try {
-            reply = aiClient.chat(promptBuilder.buildHypothesisScoutPrompt(initialEvidence, maxCount));
+            reply = aiClient.chatUtility(promptBuilder.buildHypothesisScoutPrompt(initialEvidence, maxCount));
         } catch (Exception exception) {
             log.warn("多假设侦察调用失败，退回单链: {}", exception.getMessage());
             return Collections.emptyList();

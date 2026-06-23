@@ -35,6 +35,7 @@ public class DatabaseMigrationService {
             return;
         }
         addColumnIfMissing("ai_provider_config", "supports_vision", "tinyint not null default 0 comment '模型是否支持视觉多模态' after enabled");
+        addColumnIfMissing("ai_provider_config", "role", "varchar(16) not null default 'PRIMARY' comment '模型角色:PRIMARY主分析/UTILITY辅助' after supports_vision");
     }
 
     /**

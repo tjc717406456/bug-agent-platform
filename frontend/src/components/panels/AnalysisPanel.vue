@@ -15,6 +15,7 @@
       <div class="section-title">
         <h3>问题输入</h3>
         <span>接口、版本、证据</span>
+        <a-button size="small" style="margin-left:auto" @click="pasteFromClipboard">📋 从剪贴板回填</a-button>
       </div>
       <a-form layout="horizontal" :label-col="{ style: { width: '92px' } }" :wrapper-col="{ flex: 'auto' }" class="analysis-form">
         <a-row :gutter="16">
@@ -139,6 +140,7 @@ const {
   removeScreenshot,
   analyzeAction,
   agentAnalyzeAction,
-  apiAnalyzeAction
+  apiAnalyzeAction,
+  pasteFromClipboard
 } = useAppStore()
 </script>

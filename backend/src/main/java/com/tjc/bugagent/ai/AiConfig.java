@@ -13,6 +13,8 @@ public class AiConfig {
     private boolean enabled;
     // 该模型是否支持视觉(多模态)：支持才把报错截图当图片喂给它，纯文本模型置 false 只发文字
     private boolean supportsVision;
+    // 角色：PRIMARY 主分析(bug 定位/自检)，UTILITY 辅助(接口讲解/侦察等轻活)
+    private String role;
 
     public Long getId() {
         return id;
@@ -76,6 +78,14 @@ public class AiConfig {
 
     public void setSupportsVision(boolean supportsVision) {
         this.supportsVision = supportsVision;
+    }
+
+    public String getRole() {
+        return role;
+    }
+
+    public void setRole(String role) {
+        this.role = role;
     }
 }
 

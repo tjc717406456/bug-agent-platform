@@ -61,11 +61,23 @@ public class AiClient {
         return config != null && config.isSupportsVision();
     }
 
+    /** 辅助模型配置：标了 UTILITY 的就用它，没有就退回主模型。 */
+    private AiConfig resolveUtilityConfig() {
+        AiConfig utility = aiConfigService.getUtilityConfig();
+        return utility != null ? utility : aiConfigService.getEnabledConfig();
+    }
+
     /**
-     * 发送普通对话请求，保留给 AI 配置测试和旧分析流程使用。
+     * 发送普通对话请求(主模型)，保留给 AI 配置测试和旧分析流程使用。
      */
     public String chat(String prompt) {
         AiToolCallResult result = chatWithTools(prompt, null);
+        return result.getContent();
+    }
+
+    /** 辅助模型的单轮对话(接口讲解、多假设侦察等轻活)，省主模型的钱。 */
+    public String chatUtility(String prompt) {
+        AiToolCallResult result = chatWithMessages(buildMessages(prompt), null, resolveUtilityConfig());
         return result.getContent();
     }
 
@@ -77,11 +89,22 @@ public class AiClient {
     }
 
     /**
-     * 发送多轮对话请求，调用方自行维护完整 messages（含 system、历轮 assistant/tool 结果）。
+     * 发送多轮对话请求(主模型)，调用方自行维护完整 messages（含 system、历轮 assistant/tool 结果）。
      */
     public AiToolCallResult chatWithMessages(List<Map<String, Object>> messages, List<Map<String, Object>> tools) {
+        return chatWithMessages(messages, tools, aiConfigService.getEnabledConfig());
+    }
+
+    /** 用辅助模型跑多轮对话(接口讲解等)，省钱。 */
+    public AiToolCallResult chatWithMessagesUtility(List<Map<String, Object>> messages, List<Map<String, Object>> tools) {
+        return chatWithMessages(messages, tools, resolveUtilityConfig());
+    }
+
+    /**
+     * 多轮对话核心：用指定的模型配置发送，主/辅模型路由由调用方决定。
+     */
+    public AiToolCallResult chatWithMessages(List<Map<String, Object>> messages, List<Map<String, Object>> tools, AiConfig config) {
         AiToolCallResult result = new AiToolCallResult();
-        AiConfig config = aiConfigService.getEnabledConfig();
         if (config == null) {
             result.setContent("AI is not configured. The report is generated from local code graph evidence only.");
             return result;
@@ -376,6 +399,13 @@ public class AiClient {
         if (response == null || !(response.get("choices") instanceof List)) {
             result.setContent("AI returned empty response.");
             return;
+        }
+        // 取本次调用的 token 消耗，做成本追踪
+        if (response.get("usage") instanceof Map) {
+            Object total = ((Map) response.get("usage")).get("total_tokens");
+            if (total instanceof Number) {
+                result.setTotalTokens(((Number) total).intValue());
+            }
         }
         List choices = (List) response.get("choices");
         if (choices.isEmpty() || !(choices.get(0) instanceof Map)) {

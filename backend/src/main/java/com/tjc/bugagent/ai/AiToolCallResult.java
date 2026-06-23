@@ -15,6 +15,16 @@ public class AiToolCallResult {
     private List<AiToolCall> toolCalls = new ArrayList<AiToolCall>();
     // 模型本轮返回的原始 assistant message，多轮对话时原样回填，保证 tool_calls 与 tool 结果配对
     private Map<String, Object> assistantMessage;
+    // 本次调用消耗的 token（从响应 usage 取，流式且未开 usage 时为 0），用于成本追踪
+    private int totalTokens;
+
+    public int getTotalTokens() {
+        return totalTokens;
+    }
+
+    public void setTotalTokens(int totalTokens) {
+        this.totalTokens = totalTokens;
+    }
 
     public Map<String, Object> getAssistantMessage() {
         return assistantMessage;
