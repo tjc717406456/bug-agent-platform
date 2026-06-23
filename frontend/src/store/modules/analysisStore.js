@@ -8,6 +8,22 @@ export const agentProgress = ref([])
 export const agentProgressVisible = ref(false)
 export const logFileList = ref([])
 
+// 正在跑的 Agent 任务持久化：刷新/切走再回来能续上轮询、拿回结果（结果在 Redis，TTL 30min）
+const ACTIVE_TASK_KEY = 'bug-agent-active-task'
+export const agentTaskRunning = ref(false)
+
+function saveActiveTask(taskId) {
+  if (typeof window !== 'undefined' && taskId) {
+    window.localStorage.setItem(ACTIVE_TASK_KEY, taskId)
+  }
+}
+
+function clearActiveTask() {
+  if (typeof window !== 'undefined') {
+    window.localStorage.removeItem(ACTIVE_TASK_KEY)
+  }
+}
+
 export const screenshotFileList = computed(() => screenshotFiles.value.map((file, index) => ({ uid: String(index), name: file.name })))
 
 export function beforeScreenshotUpload(file) {
@@ -113,6 +129,7 @@ export async function agentAnalyzeAction() {
     const payload = { ...analysisForm, projectId: currentProject.value.id }
     payload.versionId = payload.versionId ? Number(payload.versionId) : null
     const task = await submitAgentAnalysisTaskScreenshots(payload, screenshotFiles.value)
+    saveActiveTask(task.taskId)
     analysisResult.value = await waitAgentTask(task.taskId)
     feedbackEditable.value = false
     agentProgressVisible.value = false
@@ -145,6 +162,7 @@ export async function apiAnalyzeAction() {
       userDescription: analysisForm.userDescription
     }
     const task = await submitApiExplainTask(payload)
+    saveActiveTask(task.taskId)
     analysisResult.value = await waitAgentTask(task.taskId)
     feedbackEditable.value = false
     agentProgressVisible.value = false
@@ -158,19 +176,52 @@ export async function apiAnalyzeAction() {
 }
 
 export async function waitAgentTask(taskId) {
-  for (let index = 0; index < 150; index++) {
-    const task = await pollAgentAnalysisTask(taskId)
-    // 实时刷新进度时间线
-    if (Array.isArray(task.progress)) {
-      agentProgress.value = task.progress
+  agentTaskRunning.value = true
+  try {
+    for (let index = 0; index < 150; index++) {
+      const task = await pollAgentAnalysisTask(taskId)
+      // 实时刷新进度时间线
+      if (Array.isArray(task.progress)) {
+        agentProgress.value = task.progress
+      }
+      if (task.status === 'SUCCESS') {
+        clearActiveTask()
+        agentTaskRunning.value = false
+        return task.result
+      }
+      if (task.status === 'FAILED' || task.status === 'NOT_FOUND') {
+        clearActiveTask()
+        agentTaskRunning.value = false
+        throw new Error(task.message || 'Agent分析失败')
+      }
+      await sleep(2000)
     }
-    if (task.status === 'SUCCESS') {
-      return task.result
-    }
-    if (task.status === 'FAILED' || task.status === 'NOT_FOUND') {
-      throw new Error(task.message || 'Agent分析失败')
-    }
-    await sleep(2000)
+    agentTaskRunning.value = false
+    throw new Error('Agent分析超时，请稍后查看任务状态')
+  } catch (error) {
+    agentTaskRunning.value = false
+    throw error
   }
-  throw new Error('Agent分析超时，请稍后查看任务状态')
+}
+
+// 页面加载/切回时，若本地存着未完成的任务，续上轮询，拿回结果并弹窗
+export async function resumeAgentTask() {
+  if (agentTaskRunning.value || typeof window === 'undefined') return
+  const taskId = window.localStorage.getItem(ACTIVE_TASK_KEY)
+  if (!taskId) return
+
+  agentProgress.value = []
+  agentProgressVisible.value = true
+  try {
+    analysisResult.value = await waitAgentTask(taskId)
+    feedbackEditable.value = false
+    agentProgressVisible.value = false
+    activeReportTab.value = 'report'
+    analysisDialogVisible.value = true
+    message.success('Agent分析完成！')
+  } catch (error) {
+    agentProgressVisible.value = false
+    clearActiveTask()
+    message.error(error.message || 'Agent分析失败')
+  }
 }

@@ -211,6 +211,8 @@ public class AgentAnalysisService {
                                       String initialUserPrompt, List<String> screenshots, String refPrompt,
                                       int maxIterations, AnalysisProgressListener progress) {
         String mode = resolveHypothesisMode(request);
+        log.info("多假设模式 · 全局配置={} · 请求deepMode={} · 实际生效={}",
+                appProperties.getAgent().getHypothesisMode(), request.getDeepMode(), mode);
         if ("OFF".equals(mode)) {
             return runChain(null, maxIterations, graph, toolContext, initialEvidence, initialUserPrompt, screenshots, refPrompt, progress, "");
         }

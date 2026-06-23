@@ -8,6 +8,7 @@ import * as aiConfigStore from './modules/aiConfigStore'
 // 切面板：进历史页时自动刷一次列表，属 ui 与 history 的跨域编排，放聚合层
 function selectPanel(key) {
   core.activePanel.value = key
+  core.saveActivePanel(key)
   if (key === 'history') {
     historyStore.searchHistory()
   }
