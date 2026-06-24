@@ -1,7 +1,6 @@
 package com.tjc.bugagent.analysis;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.tjc.bugagent.analysis.agent.AgentAnalysisService;
 import com.tjc.bugagent.analysis.agent.AgentAnalysisTaskService;
 import com.tjc.bugagent.analysis.agent.AgentAnalysisTaskStatus;
 import com.tjc.bugagent.analysis.agent.AgentAnalysisTaskSubmitResult;
@@ -28,7 +27,6 @@ import java.util.List;
 @RequestMapping("/analysis")
 public class AnalysisController {
     private final AnalysisService analysisService;
-    private final AgentAnalysisService agentAnalysisService;
     private final AgentAnalysisTaskService agentAnalysisTaskService;
     private final ScreenshotStorageService screenshotStorageService;
     private final AnalysisFeedbackService analysisFeedbackService;
@@ -37,7 +35,6 @@ public class AnalysisController {
     private final ObjectMapper objectMapper;
 
     public AnalysisController(AnalysisService analysisService,
-                              AgentAnalysisService agentAnalysisService,
                               AgentAnalysisTaskService agentAnalysisTaskService,
                               ScreenshotStorageService screenshotStorageService,
                               AnalysisFeedbackService analysisFeedbackService,
@@ -45,7 +42,6 @@ public class AnalysisController {
                               AnalysisRecordService analysisRecordService,
                               ObjectMapper objectMapper) {
         this.analysisService = analysisService;
-        this.agentAnalysisService = agentAnalysisService;
         this.agentAnalysisTaskService = agentAnalysisTaskService;
         this.screenshotStorageService = screenshotStorageService;
         this.analysisFeedbackService = analysisFeedbackService;
@@ -60,37 +56,6 @@ public class AnalysisController {
     @PostMapping
     public ApiResponse<AnalysisResult> analyze(@Valid @RequestBody AnalysisRequest request) {
         return ApiResponse.ok(analysisService.analyze(request));
-    }
-
-    /**
-     * 同步 Agent 分析，单次最多数轮 LLM 往返会长期占用 HTTP 线程，仅保留兼容旧调用方；
-     * 新接入请走异步任务 {@code /agent/tasks} + 轮询，别用这个。
-     */
-    @Deprecated
-    @PostMapping("/agent")
-    public ApiResponse<AnalysisResult> analyzeWithAgent(@Valid @RequestBody AnalysisRequest request) {
-        return ApiResponse.ok(agentAnalysisService.analyze(request));
-    }
-
-    /**
-     * 带截图的同步 Agent 分析，同样占 HTTP 线程，建议改用异步任务接口。
-     */
-    @Deprecated
-    @PostMapping("/agent/screenshots")
-    public ApiResponse<AnalysisResult> analyzeWithAgentAndScreenshots(@RequestParam("request") String requestJson,
-                                                                       @RequestParam(value = "screenshots", required = false) MultipartFile[] screenshots) throws Exception {
-        AnalysisRequest request = objectMapper.readValue(requestJson, AnalysisRequest.class);
-        String screenshotPaths = screenshotStorageService.saveScreenshots(request.getProjectId(), screenshots);
-        request.setScreenshotPaths(screenshotPaths);
-        return ApiResponse.ok(agentAnalysisService.analyze(request));
-    }
-
-    /**
-     * 提交异步 Agent 分析任务。
-     */
-    @PostMapping("/agent/tasks")
-    public ApiResponse<AgentAnalysisTaskSubmitResult> submitAgentTask(@Valid @RequestBody AnalysisRequest request) {
-        return ApiResponse.ok(agentAnalysisTaskService.submit(request));
     }
 
     /**

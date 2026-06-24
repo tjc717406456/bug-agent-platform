@@ -373,8 +373,11 @@ public class AgentToolExecutor {
     }
 
     private String formatNodeWithSnippet(CodeNode node, AgentToolContext context) {
-        return formatNode(node) + "\n源码片段:\n"
-                + sourceReader.readSnippet(node, context.getProjectId(), context.getVersionId(), MAX_SNIPPET_LINES);
+        // 方法节点读整段（花括号配对到结束），免得长方法尾部读不到逼模型 grep 拼凑；其它节点读固定窗口
+        String snippet = "METHOD".equals(node.getNodeType())
+                ? sourceReader.readMethodSnippet(node, context.getProjectId(), context.getVersionId())
+                : sourceReader.readSnippet(node, context.getProjectId(), context.getVersionId(), MAX_SNIPPET_LINES);
+        return formatNode(node) + "\n源码片段:\n" + snippet;
     }
 
     private String formatNodes(List<CodeNode> nodes) {

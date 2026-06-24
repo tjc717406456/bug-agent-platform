@@ -119,20 +119,6 @@ export function analyzeBug(payload) {
   return request('/analysis', { method: 'POST', body: JSON.stringify(payload) })
 }
 
-export function analyzeBugWithAgent(payload) {
-  return request('/analysis/agent', { method: 'POST', body: JSON.stringify(payload) })
-}
-
-export function analyzeBugWithAgentScreenshots(payload, screenshots = []) {
-  const form = new FormData()
-  form.append('request', JSON.stringify(payload))
-  screenshots.forEach((file) => form.append('screenshots', file))
-  return request('/analysis/agent/screenshots', { method: 'POST', body: form })
-}
-export function submitAgentAnalysisTask(payload) {
-  return request('/analysis/agent/tasks', { method: 'POST', body: JSON.stringify(payload) })
-}
-
 export function submitAgentAnalysisTaskScreenshots(payload, screenshots = []) {
   const form = new FormData()
   form.append('request', JSON.stringify(payload))

@@ -58,6 +58,101 @@ public class SourceReader {
         }
     }
 
+    // 读整段方法时的行数上限：覆盖绝大多数方法，超长方法兜底截断（避免一次塞爆上下文）
+    private static final int MAX_METHOD_LINES = 400;
+
+    /**
+     * 读整段方法：从定位行往下做花括号配对，把整个方法体读全，省得长方法尾部读不到、逼模型 grep 拼凑。
+     * 找不到方法边界（如非 Java 方法、超长）就退回固定窗口。
+     */
+    public String readMethodSnippet(CodeNode node, Long projectId, Long versionId) {
+        if (node.getFilePath() == null || node.getLineNo() == null) {
+            return "无源码定位信息";
+        }
+        try {
+            Path path = resolveSourcePath(node.getFilePath(), node.getQualifiedName(), versionId);
+            List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+            int scanStart = Math.max(0, node.getLineNo() - 1);
+            int end = findMethodEnd(lines, scanStart);
+            if (end < 0) {
+                // 没配平（非方法/超长）→ 退回固定窗口，至少不比原来差
+                return readSnippet(node, projectId, versionId, MAX_METHOD_LINES);
+            }
+            int displayStart = Math.max(0, scanStart - 2);
+            StringBuilder snippet = new StringBuilder();
+            for (int index = displayStart; index <= end && index < lines.size(); index++) {
+                snippet.append(index + 1).append(": ").append(lines.get(index)).append("\n");
+            }
+            return snippet.length() == 0 ? "无源码内容" : snippet.toString();
+        } catch (Exception exception) {
+            return readSnippet(node, projectId, versionId, MAX_METHOD_LINES);
+        }
+    }
+
+    /**
+     * 从 startLine0(0-based) 起做花括号配对，返回方法体闭合 '}' 所在行下标；跳过字符串/字符/行注释/块注释里的花括号。
+     * MAX_METHOD_LINES 行内没配平就返回 -1（超长或不是方法）。
+     */
+    private int findMethodEnd(List<String> lines, int startLine0) {
+        int depth = 0;
+        boolean opened = false;
+        boolean inBlockComment = false;
+        int limit = Math.min(lines.size(), startLine0 + MAX_METHOD_LINES);
+        for (int i = startLine0; i < limit; i++) {
+            String line = lines.get(i);
+            boolean inString = false;
+            boolean inChar = false;
+            for (int c = 0; c < line.length(); c++) {
+                char ch = line.charAt(c);
+                if (inBlockComment) {
+                    if (ch == '*' && c + 1 < line.length() && line.charAt(c + 1) == '/') {
+                        inBlockComment = false;
+                        c++;
+                    }
+                    continue;
+                }
+                if (inString) {
+                    if (ch == '\\') {
+                        c++;
+                    } else if (ch == '"') {
+                        inString = false;
+                    }
+                    continue;
+                }
+                if (inChar) {
+                    if (ch == '\\') {
+                        c++;
+                    } else if (ch == '\'') {
+                        inChar = false;
+                    }
+                    continue;
+                }
+                if (ch == '/' && c + 1 < line.length() && line.charAt(c + 1) == '/') {
+                    break;
+                }
+                if (ch == '/' && c + 1 < line.length() && line.charAt(c + 1) == '*') {
+                    inBlockComment = true;
+                    c++;
+                    continue;
+                }
+                if (ch == '"') {
+                    inString = true;
+                } else if (ch == '\'') {
+                    inChar = true;
+                } else if (ch == '{') {
+                    depth++;
+                    opened = true;
+                } else if (ch == '}') {
+                    depth--;
+                    if (opened && depth == 0) {
+                        return i;
+                    }
+                }
+            }
+        }
+        return -1;
+    }
+
     /**
      * 按"类全限定名 + 行号"读源码，用于异常堆栈栈帧的精确定位。
      * 先在图谱里按类名找真实文件路径，找不到再按全限定名推断源码路径兜底。
