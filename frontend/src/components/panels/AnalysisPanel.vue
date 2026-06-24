@@ -82,6 +82,9 @@
                 <p class="ant-upload-drag-icon"><InboxOutlined /></p>
                 <p class="ant-upload-text">拖入 .log 文件或点击选择（≤10MB）</p>
               </a-upload-dragger>
+              <a-button type="link" size="small" block @click="openLogSplit">
+                <template #icon><ScissorOutlined /></template>大文件超 10MB？按时间切割
+              </a-button>
             </a-col>
           </a-row>
         </a-form-item>
@@ -115,7 +118,7 @@
 </template>
 
 <script setup>
-import { BarChartOutlined, InboxOutlined } from '@ant-design/icons-vue'
+import { BarChartOutlined, InboxOutlined, ScissorOutlined } from '@ant-design/icons-vue'
 import { useAppStore } from '../../store/useAppStore'
 
 const {
@@ -141,6 +144,7 @@ const {
   analyzeAction,
   agentAnalyzeAction,
   apiAnalyzeAction,
-  pasteFromClipboard
+  pasteFromClipboard,
+  openLogSplit
 } = useAppStore()
 </script>

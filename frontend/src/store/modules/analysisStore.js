@@ -7,6 +7,11 @@ export const screenshotFiles = ref([])
 export const agentProgress = ref([])
 export const agentProgressVisible = ref(false)
 export const logFileList = ref([])
+// 本地日志按时间切割弹窗的开关（纯前端处理，原始文件不上传）
+export const logSplitVisible = ref(false)
+export function openLogSplit() {
+  logSplitVisible.value = true
+}
 
 // 正在跑的 Agent 任务持久化：刷新/切走再回来能续上轮询、拿回结果（结果在 Redis，TTL 30min）
 const ACTIVE_TASK_KEY = 'bug-agent-active-task'
@@ -176,6 +181,10 @@ export async function apiAnalyzeAction() {
 }
 
 export async function waitAgentTask(taskId) {
+  // 没拿到 taskId 直接报准确原因，别拿 undefined 去 poll 出个误导的"分析失败"
+  if (!taskId) {
+    throw new Error('Agent任务ID为空')
+  }
   agentTaskRunning.value = true
   try {
     for (let index = 0; index < 150; index++) {

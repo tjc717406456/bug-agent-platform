@@ -35,6 +35,7 @@
     <ProjectModal />
     <DbhubModal />
     <AiConfigModal />
+    <LogSplitModal />
   </a-layout>
 </template>
 
@@ -54,6 +55,7 @@ import AnalysisReportModal from './components/modals/AnalysisReportModal.vue'
 import ProjectModal from './components/modals/ProjectModal.vue'
 import DbhubModal from './components/modals/DbhubModal.vue'
 import AiConfigModal from './components/modals/AiConfigModal.vue'
+import LogSplitModal from './components/modals/LogSplitModal.vue'
 import { useAppStore } from './store/useAppStore'
 
 const { activePanel, selectedProjectId, projectOptions, changeProject, loadAll, resumeAgentTask } = useAppStore()
