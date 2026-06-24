@@ -33,7 +33,7 @@ app:
     connection-timeout-ms: 10000
   agent:
     max-iterations: 32
-    initial-evidence-limit: 30000
+    initial-evidence-limit: 24000
     sql-text-limit: 2000
     tool-result-limit: 4000
     self-critique: true

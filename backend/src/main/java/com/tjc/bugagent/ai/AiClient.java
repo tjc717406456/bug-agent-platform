@@ -19,6 +19,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -107,6 +108,7 @@ public class AiClient {
         AiToolCallResult result = new AiToolCallResult();
         if (config == null) {
             result.setContent("AI is not configured. The report is generated from local code graph evidence only.");
+            result.setFailed(true);
             return result;
         }
 
@@ -114,41 +116,54 @@ public class AiClient {
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setBearerAuth(config.getApiKey());
 
-        // 带工具时强制非流式：部分网关（如该中转的 gpt-5.5）流式下会丢 tool_calls，退化成只吐文本，导致 Agent 收不到工具调用
-        boolean stream = appProperties.getAi().isStreamEnabled() && (tools == null || tools.isEmpty());
-        Map<String, Object> body = new HashMap<String, Object>();
-        body.put("model", config.getModelName());
-        body.put("messages", messages);
-        body.put("temperature", 0.2);
-        if (stream) {
-            body.put("stream", true);
-        }
-        if (tools != null && !tools.isEmpty()) {
-            body.put("tools", tools);
-            body.put("tool_choice", "auto");
+        boolean streamEnabled = appProperties.getAi().isStreamEnabled();
+        // 带工具时默认非流式：部分网关流式下会丢 tool_calls。但非流式长请求易被网关掐连接（reset/EOF），
+        // 故保留"断连时自动降级为流式重试"——流式分块返回不易被网关空闲超时掐，且 SSE 解析照样能拼出 tool_calls。
+        boolean hasTools = tools != null && !tools.isEmpty();
+        boolean useStream = streamEnabled && !hasTools;
+        boolean canFallbackToStream = streamEnabled && hasTools;
+
+        Map<String, Object> baseBody = new HashMap<String, Object>();
+        baseBody.put("model", config.getModelName());
+        baseBody.put("messages", messages);
+        baseBody.put("temperature", 0.2);
+        if (hasTools) {
+            baseBody.put("tools", tools);
+            baseBody.put("tool_choice", "auto");
         }
 
         String url = config.getBaseUrl().replaceAll("/+$", "") + "/chat/completions";
-        // 元信息走 info；请求/响应体含源码、SQL、库数据，只在 debug 级别输出，默认不打印
-        log.info("AI request url={} model={} stream={} keyPrefix={}", url, config.getModelName(), stream, maskApiKey(config.getApiKey()));
-        log.debug("AI request body: {}", body);
         RestTemplate restTemplate = buildRestTemplate(config);
-        HttpEntity<Map<String, Object>> entity = new HttpEntity<Map<String, Object>>(body, headers);
 
         int attempts = MAX_RETRIES + 1;
         for (int attempt = 1; attempt <= attempts; attempt++) {
+            Map<String, Object> body = new HashMap<String, Object>(baseBody);
+            if (useStream) {
+                body.put("stream", true);
+            }
+            // 元信息走 info；请求/响应体含源码、SQL、库数据，只在 debug 级别输出，默认不打印
+            log.info("AI request url={} model={} stream={} keyPrefix={}", url, config.getModelName(), useStream, maskApiKey(config.getApiKey()));
+            log.debug("AI request body: {}", body);
+            HttpEntity<Map<String, Object>> entity = new HttpEntity<Map<String, Object>>(body, headers);
             try {
-                return stream ? executeStream(restTemplate, url, entity) : executeBlocking(restTemplate, url, entity);
+                return useStream ? executeStream(restTemplate, url, entity) : executeBlocking(restTemplate, url, entity);
             } catch (Exception exception) {
                 // 网关 5xx / 限流 429 / 读超时属于瞬时错误，退避后重试；4xx、响应格式错等不重试
                 if (isTransient(exception) && attempt < attempts) {
-                    log.warn("AI request transient failure (attempt {}/{}): {}, retrying", attempt, attempts, exception.getMessage());
+                    // 非流式被网关中途掐断（reset/EOF）时，下次重试切流式：分块返回扛得住网关的空闲超时
+                    if (!useStream && canFallbackToStream && isConnectionDrop(exception)) {
+                        useStream = true;
+                        log.warn("非流式连接被网关中断，重试改用流式 (attempt {}/{}): {}", attempt, attempts, exception.getMessage());
+                    } else {
+                        log.warn("AI request transient failure (attempt {}/{}): {}, retrying", attempt, attempts, exception.getMessage());
+                    }
                     sleep(RETRY_BACKOFF_MS * attempt);
                     continue;
                 }
                 log.error("AI request failed: {}", exception.getMessage(), exception);
                 // 原始错误已进日志，给调用方和前端一句干净提示，不甩网关原文
                 result.setContent("AI不可用，请稍后重试或检查 AI 配置");
+                result.setFailed(true);
                 return result;
             }
         }
@@ -312,6 +327,22 @@ public class AiClient {
         // 流式下读超时可能直接以 SocketTimeoutException 抛出（未被 RestTemplate 包成 ResourceAccessException），顺着 cause 链找
         for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
             if (cause instanceof SocketTimeoutException) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 是否网关把连接掐了（Connection reset / Unexpected end of file / 读超时）——这类切流式重试有意义；
+     * 5xx/429 是服务端已响应的错误，流式救不了，不触发降级。
+     */
+    private boolean isConnectionDrop(Exception exception) {
+        if (exception instanceof ResourceAccessException) {
+            return true;
+        }
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SocketException || cause instanceof SocketTimeoutException || cause instanceof java.io.EOFException) {
                 return true;
             }
         }

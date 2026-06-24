@@ -36,6 +36,8 @@ public class AgentToolExecutor {
     // search_log 传 "L<行号>"(如 L39741)时按行号取上下文；只认 L 前缀，裸数字仍当内容搜(避免订单号等被误判)
     private static final Pattern LOG_LINE_REF = Pattern.compile("(?i)^l(\\d+)$");
     private static final int LOG_CONTEXT_LINES = 4;
+    // 关键词带这些正则元字符(.* / [..] / \d / ^ $ 等)时按正则匹配日志；纯字面词(订单号/req串)不受影响
+    private static final Pattern LOG_REGEX_HINT = Pattern.compile("\\.\\*|\\.\\+|\\\\d|\\\\s|\\\\w|\\[[^]]+]|\\^|\\$|\\(\\?");
     private final CodeGraphQueryService codeGraphQueryService;
     private final DbhubClient dbhubClient;
     private final ProjectService projectService;
@@ -261,22 +263,38 @@ public class AgentToolExecutor {
             return readLogAround(lines, Integer.parseInt(lineRef.group(1)));
         }
         String needle = keyword.toLowerCase();
+        // 关键词带正则特征且能编译时按正则匹配——模型爱用"时间.*设备"这种过滤日志，直接支持；纯字面词仍走 contains
+        Pattern regex = compileLogRegex(keyword);
+        String mode = regex != null ? "（正则）" : "";
         StringBuilder evidence = new StringBuilder();
         int matched = 0;
         for (int index = 0; index < lines.length; index++) {
-            if (!lines[index].toLowerCase().contains(needle)) {
+            boolean hit = regex != null ? regex.matcher(lines[index]).find() : lines[index].toLowerCase().contains(needle);
+            if (!hit) {
                 continue;
             }
             evidence.append('L').append(index + 1).append(": ").append(trimLine(lines[index].trim())).append('\n');
             if (++matched >= GREP_MAX_MATCHES) {
                 evidence.append("...（命中超过 ").append(GREP_MAX_MATCHES).append(" 行已截断，请用更精确的关键词）\n");
-                return AgentToolResult.ok("search_log", "日志命中 " + matched + " 行（已截断）", evidence.toString());
+                return AgentToolResult.ok("search_log", "日志命中 " + matched + " 行（已截断）" + mode, evidence.toString());
             }
         }
         if (matched == 0) {
-            return AgentToolResult.empty("search_log", "日志里未匹配到: " + keyword);
+            return AgentToolResult.empty("search_log", "日志里未匹配到: " + keyword + mode);
         }
-        return AgentToolResult.ok("search_log", "日志命中 " + matched + " 行", evidence.toString());
+        return AgentToolResult.ok("search_log", "日志命中 " + matched + " 行" + mode, evidence.toString());
+    }
+
+    /** 关键词含正则元字符且能编译时返回正则，否则返回 null（走字面匹配）；非法正则也退回 null 不报错。 */
+    private Pattern compileLogRegex(String keyword) {
+        if (!LOG_REGEX_HINT.matcher(keyword).find()) {
+            return null;
+        }
+        try {
+            return Pattern.compile(keyword, Pattern.CASE_INSENSITIVE);
+        } catch (Exception exception) {
+            return null;
+        }
     }
 
     /** 按行号取该行及上下文；目标行给足长度（参数串常被截断），上下文行正常截断。 */

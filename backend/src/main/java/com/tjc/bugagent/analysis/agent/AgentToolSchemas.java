@@ -34,7 +34,7 @@ public class AgentToolSchemas {
         tools.add(toolSchema("search_sql", "按关键词搜 SQL/Mapper 节点；搜不到改用 grep_source 在 xml 里搜", properties("keyword"), required("keyword")));
         tools.add(toolSchema("grep_source", "源码全文 grep，命中代码图谱搜不到的字面量/枚举/常量/注解/配置（如错误文案、ResultEnum、魔法值）", properties("keyword"), required("keyword")));
         tools.add(toolSchema("find_callers", "反向查谁调用了某节点（上游调用者），从某方法往上回溯根因；nodeId 来自 search_code/get_code_detail", properties("nodeId"), required("nodeId")));
-        tools.add(toolSchema("search_log", "在本次日志原文按关键词/traceId 检索匹配行；想看某行附近被截断的细节，传该行的显示行号 \"L<行号>\"（如 L39741）即可取该行上下文。注意结果里的 L<n> 是显示行号、不是可搜关键词", properties("keyword"), required("keyword")));
+        tools.add(toolSchema("search_log", "在本次日志原文检索匹配行：默认字面匹配，关键词带正则元字符(如 09:3[0-5].*device、\\d+)时自动按正则搜；想看某行附近被截断的细节，传该行显示行号 \"L<行号>\"(如 L39741)取上下文。注意结果里的 L<n> 是显示行号、不是可搜关键词", properties("keyword"), required("keyword")));
         tools.add(toolSchema("describe_tables", "查表结构、数据量、最近样例；写 query_database 前先用它确认列名，别凭空猜", properties("tables"), required("tables")));
         if (allowQueryDatabase) {
             tools.add(toolSchema("query_database", "执行只读 SQL 核对数据（只允许 SELECT/SHOW/DESC/DESCRIBE/EXPLAIN）；先 describe_tables 确认列名再查", properties("sql"), required("sql")));

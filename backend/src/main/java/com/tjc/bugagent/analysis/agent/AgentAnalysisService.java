@@ -210,13 +210,11 @@ public class AgentAnalysisService {
                                       AgentToolExecutor.AgentToolContext toolContext, String initialEvidence,
                                       String initialUserPrompt, List<String> screenshots, String refPrompt,
                                       int maxIterations, AnalysisProgressListener progress) {
-        // 没绑数据源、或用户明说不查库时，收敛不再把"查过库"当必要条件，免得纯日志类分析收不了口空转
-        boolean dbRequired = toolContext.getDatasource() != null && !userSkipsDb(request.getUserDescription());
         String mode = resolveHypothesisMode(request);
         log.info("多假设模式 · 全局配置={} · 请求deepMode={} · 实际生效={}",
                 appProperties.getAgent().getHypothesisMode(), request.getDeepMode(), mode);
         if ("OFF".equals(mode)) {
-            return runChain(null, maxIterations, graph, toolContext, initialEvidence, initialUserPrompt, screenshots, refPrompt, progress, "", dbRequired);
+            return runChain(null, maxIterations, graph, toolContext, initialEvidence, initialUserPrompt, screenshots, refPrompt, progress, "");
         }
         List<Hypothesis> hypotheses = hypothesisScout.scout(initialEvidence);
         boolean fanout = hypotheses.size() >= 2 && ("ON".equals(mode) || isAmbiguous(hypotheses));
@@ -224,7 +222,7 @@ public class AgentAnalysisService {
             if (!hypotheses.isEmpty()) {
                 progress.onStep("侦察完成 · 根因方向明确，单链深挖");
             }
-            return runChain(null, maxIterations, graph, toolContext, initialEvidence, initialUserPrompt, screenshots, refPrompt, progress, "", dbRequired);
+            return runChain(null, maxIterations, graph, toolContext, initialEvidence, initialUserPrompt, screenshots, refPrompt, progress, "");
         }
 
         int branches = Math.min(appProperties.getAgent().getHypothesisMaxBranches(), hypotheses.size());
@@ -236,7 +234,7 @@ public class AgentAnalysisService {
             final Hypothesis hypothesis = chosen.get(i);
             final String label = "[假设" + (i + 1) + "] ";
             tasks.add(() -> runChain(hypothesis.getCause(), chainIterations, graph, toolContext,
-                    initialEvidence, initialUserPrompt, screenshots, refPrompt, progress, label, dbRequired));
+                    initialEvidence, initialUserPrompt, screenshots, refPrompt, progress, label));
         }
         List<ChainResult> branchResults = hypothesisFanoutExecutor.runAll(tasks);
         List<ChainResult> ok = new ArrayList<ChainResult>();
@@ -247,7 +245,7 @@ public class AgentAnalysisService {
         }
         if (ok.isEmpty()) {
             progress.onStep("假设分支均未产出，退回单链兜底");
-            return runChain(null, maxIterations, graph, toolContext, initialEvidence, initialUserPrompt, screenshots, refPrompt, progress, "", dbRequired);
+            return runChain(null, maxIterations, graph, toolContext, initialEvidence, initialUserPrompt, screenshots, refPrompt, progress, "");
         }
         if (ok.size() == 1) {
             return ok.get(0);
@@ -272,18 +270,6 @@ public class AgentAnalysisService {
             return "ON";
         }
         return mode;
-    }
-
-    /** 用户描述里明说不查库（如"不用连数据库/不查库"）时返回 true，收敛据此不再死等查库证据。 */
-    private boolean userSkipsDb(String description) {
-        if (isBlank(description)) {
-            return false;
-        }
-        String text = description.replace(" ", "");
-        boolean mentionsDb = text.contains("数据库") || text.contains("查库") || text.contains("连库") || text.toLowerCase().contains("db");
-        boolean negates = text.contains("不用") || text.contains("不需") || text.contains("无需")
-                || text.contains("不要") || text.contains("不查") || text.contains("不连") || text.contains("别查") || text.contains("别连");
-        return mentionsDb && negates;
     }
 
     /** 头名与次名置信分差小于阈值即判歧义，需要并行验证。候选已按分降序。 */
@@ -334,7 +320,7 @@ public class AgentAnalysisService {
     private ChainResult runChain(String hypothesisHint, int maxIterations, CodeGraphQueryResult graph,
                                  AgentToolExecutor.AgentToolContext toolContext, String initialEvidence,
                                  String initialUserPrompt, List<String> screenshots, String refPrompt,
-                                 AnalysisProgressListener progress, String label, boolean dbRequired) {
+                                 AnalysisProgressListener progress, String label) {
         List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
         messages.add(conversation.message("system", promptBuilder.buildSystemPrompt()));
         if (aiClient.currentModelSupportsVision() && !screenshots.isEmpty()) {
@@ -364,7 +350,7 @@ public class AgentAnalysisService {
         int tokens = 0;
 
         for (int iteration = 1; iteration <= maxIterations; iteration++) {
-            String forceFinishReason = judge.resolveForceFinishReason(graph, rounds, noNewKeyFactRounds, dbRequired);
+            String forceFinishReason = judge.resolveForceFinishReason(graph, rounds, noNewKeyFactRounds);
             if (!isBlank(forceFinishReason)) {
                 messages.add(conversation.message("user", promptBuilder.buildForceFinishInstruction(forceFinishReason)));
             } else if (!budgetWarned && iteration >= budgetWarnFrom) {
@@ -373,6 +359,11 @@ public class AgentAnalysisService {
             }
             AiToolCallResult aiResult = aiClient.chatWithMessages(messages, agentToolExecutor.toolSchemas(verifyUnlocked));
             tokens += aiResult.getTotalTokens();
+            // AI 真失败（网关重置/未配置）：直接中止，别把"AI不可用"当报告收口误导用户
+            if (aiResult.isFailed()) {
+                finalReport = "⚠️ AI 服务暂不可用（网关连接异常/重置），本次分析在第 " + iteration + " 轮中断，请稍后重试。";
+                break;
+            }
             List<AgentToolCall> calls = toolCallParser.parseToolCalls(aiResult);
 
             // 强制收口：本轮只允许 finish

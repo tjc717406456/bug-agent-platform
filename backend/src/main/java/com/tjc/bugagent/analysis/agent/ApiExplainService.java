@@ -109,6 +109,11 @@ public class ApiExplainService {
         for (int iteration = 1; iteration <= maxIterations; iteration++) {
             AiToolCallResult aiResult = aiClient.chatWithMessagesUtility(messages, agentToolExecutor.toolSchemas());
             tokens += aiResult.getTotalTokens();
+            // AI 真失败（网关重置/未配置）：直接中止，别把"AI不可用"当讲解收口
+            if (aiResult.isFailed()) {
+                finalReport = "⚠️ AI 服务暂不可用（网关连接异常/重置），本次讲解在第 " + iteration + " 轮中断，请稍后重试。";
+                break;
+            }
             List<AgentToolCall> calls = toolCallParser.parseToolCalls(aiResult);
 
             AgentToolCall finish = toolCallParser.findFinish(calls);

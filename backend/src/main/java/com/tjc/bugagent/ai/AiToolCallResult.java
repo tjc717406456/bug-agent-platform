@@ -17,6 +17,16 @@ public class AiToolCallResult {
     private Map<String, Object> assistantMessage;
     // 本次调用消耗的 token（从响应 usage 取，流式且未开 usage 时为 0），用于成本追踪
     private int totalTokens;
+    // AI 调用真失败（网关重试耗尽/未配置），content 是兜底错误文案而非模型输出；上层据此中止而非当报告收口
+    private boolean failed;
+
+    public boolean isFailed() {
+        return failed;
+    }
+
+    public void setFailed(boolean failed) {
+        this.failed = failed;
+    }
 
     public int getTotalTokens() {
         return totalTokens;
