@@ -1,6 +1,6 @@
 import { ref, reactive } from 'vue'
 import { message } from 'ant-design-vue'
-import { listAiConfigs, createAiConfig, updateAiConfig, activateAiConfig, deleteAiConfig, testAiConfig } from '../../api/client'
+import { listAiConfigs, createAiConfig, updateAiConfig, activateAiConfig, deleteAiConfig, testAiConfig, testEmbeddingConfig } from '../../api/client'
 import { confirm } from '../core'
 
 export const aiConfigs = ref([])
@@ -12,9 +12,11 @@ export const aiForm = reactive({ provider: 'openai-compatible', baseUrl: '', mod
 
 export async function loadAiConfigs() {
   aiConfigs.value = await listAiConfigs().catch(() => [])
-  const active = aiConfigs.value.find((item) => item.enabled)
-  selectedAiConfigId.value = active ? active.id : (aiConfigs.value[0]?.id ?? null)
-  // 有配置但没启用项时，默认激活第一条，保证分析有可用 AI
+  // 选中态只认主/辅模型，embedding 是独立开关不参与单选
+  const chats = aiConfigs.value.filter((item) => item.role !== 'EMBEDDING')
+  const active = chats.find((item) => item.enabled)
+  selectedAiConfigId.value = active ? active.id : (chats[0]?.id ?? null)
+  // 有主/辅配置但没启用项时，默认激活第一条，保证分析有可用 AI
   if (!active && selectedAiConfigId.value) {
     await activateAiConfig(selectedAiConfigId.value).catch(() => {})
   }
@@ -65,8 +67,13 @@ export async function saveAiAction() {
 
 export async function activateAiAction(id) {
   await activateAiConfig(id)
-  selectedAiConfigId.value = id
-  message.success('已切换 Agent 分析使用的 AI')
+  // embedding 是独立开关(开/关切换)，不抢主模型的选中态
+  const row = aiConfigs.value.find((item) => item.id === id)
+  const isEmbedding = row && row.role === 'EMBEDDING'
+  if (!isEmbedding) {
+    selectedAiConfigId.value = id
+  }
+  message.success(isEmbedding ? '已切换 embedding(语义召回)启用状态' : '已切换 Agent 分析使用的 AI')
   await loadAiConfigs()
 }
 
@@ -79,5 +86,10 @@ export async function deleteAiAction(row) {
 
 export async function testAiAction() {
   const result = await testAiConfig()
+  message.info(result)
+}
+
+export async function testEmbeddingAction() {
+  const result = await testEmbeddingConfig()
   message.info(result)
 }

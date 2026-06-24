@@ -25,8 +25,17 @@ public class DatabaseMigrationService {
         ensureDefaultDbhubDatasources();
         ensureAnalysisScreenshotColumn();
         ensureAnalysisFeedbackColumns();
+        ensureAnalysisEmbeddingColumn();
         ensureAiVisionColumn();
         ensureTableComments();
+    }
+
+    /** 给分析记录补 embedding 列，缓存案例文本向量，供相似案例的语义召回复用，免得每次重算。 */
+    private void ensureAnalysisEmbeddingColumn() {
+        if (!tableExists("analysis_record")) {
+            return;
+        }
+        addColumnIfMissing("analysis_record", "embedding", "mediumtext comment '案例文本向量JSON,语义召回用' after auto_verify_keywords");
     }
 
     /** 给 AI 配置补"是否支持视觉"列，旧库切到多模态版本不至于查列报错。 */

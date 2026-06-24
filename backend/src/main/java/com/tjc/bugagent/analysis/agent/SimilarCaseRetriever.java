@@ -2,9 +2,12 @@ package com.tjc.bugagent.analysis.agent;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tjc.bugagent.ai.AiClient;
 import com.tjc.bugagent.analysis.AnalysisRequest;
 import com.tjc.bugagent.config.AppProperties;
 import com.tjc.bugagent.project.ProjectVersion;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -29,7 +32,7 @@ public class SimilarCaseRetriever {
 
     // 候选集只圈"靠得住"的：人工标注过或机器验证 CONFIRMED 的，复用评测飞轮那套筛选条件
     private static final String CANDIDATE_SQL =
-            "select id, api_path, conclusion, confidence, actual_root_cause, "
+            "select id, api_path, conclusion, confidence, actual_root_cause, embedding, "
                     + "coalesce(nullif(expect_keywords, ''), auto_verify_keywords) as keywords, "
                     + "user_description, stack_trace from analysis_record "
                     + "where project_id = ? "
@@ -40,14 +43,18 @@ public class SimilarCaseRetriever {
     private static final Pattern EXCEPTION_PATTERN = Pattern.compile("([A-Za-z_][\\w$.]*Exception)");
     private static final Pattern WORD_PATTERN = Pattern.compile("[\\w\\u4e00-\\u9fa5]+");
 
+    private static final Logger log = LoggerFactory.getLogger(SimilarCaseRetriever.class);
+
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final AppProperties appProperties;
+    private final AiClient aiClient;
 
-    public SimilarCaseRetriever(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, AppProperties appProperties) {
+    public SimilarCaseRetriever(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, AppProperties appProperties, AiClient aiClient) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.appProperties = appProperties;
+        this.aiClient = aiClient;
     }
 
     /**
@@ -62,28 +69,133 @@ public class SimilarCaseRetriever {
         Set<String> currentWords = tokenize(request.getUserDescription());
         String currentException = topException(request.getStackTrace());
 
-        List<SimilarCase> scored = jdbcTemplate.query(CANDIDATE_SQL, (rs, rowNum) -> {
+        List<Candidate> candidates = jdbcTemplate.query(CANDIDATE_SQL, (rs, rowNum) -> {
             String candidatePath = safe(rs.getString("api_path"));
             String candidateDesc = safe(rs.getString("user_description"));
             // 排除与本次完全雷同的自身回放，避免把刚跑的记录当"历史"塞回去
             if (candidatePath.equals(currentPath) && candidateDesc.equals(safe(request.getUserDescription()))) {
                 return null;
             }
-            int score = score(currentPath, currentWords, currentException, candidatePath, candidateDesc, safe(rs.getString("stack_trace")));
-            String rootCause = resolveRootCause(rs.getString("actual_root_cause"), rs.getString("conclusion"));
-            return new SimilarCase(candidatePath, rootCause, formatKeywords(rs.getString("keywords")),
-                    safe(rs.getString("confidence")), score);
+            Candidate candidate = new Candidate();
+            candidate.id = rs.getLong("id");
+            candidate.apiPath = candidatePath;
+            candidate.rootCause = resolveRootCause(rs.getString("actual_root_cause"), rs.getString("conclusion"));
+            candidate.keywords = formatKeywords(rs.getString("keywords"));
+            candidate.confidence = safe(rs.getString("confidence"));
+            candidate.lexical = score(currentPath, currentWords, currentException, candidatePath, candidateDesc, safe(rs.getString("stack_trace")));
+            candidate.embeddingJson = rs.getString("embedding");
+            candidate.embedText = caseText(candidatePath, candidateDesc, candidate.rootCause, topException(rs.getString("stack_trace")));
+            return candidate;
         }, request.getProjectId());
 
+        // 词法分打底，开了语义召回再叠加余弦相似度，"意思像但说法不同"的旧案例也能排上号
+        applySemantic(candidates, caseText(currentPath, safe(request.getUserDescription()), "", currentException));
+
         List<SimilarCase> result = new ArrayList<SimilarCase>();
-        for (SimilarCase candidate : scored) {
-            if (candidate != null && candidate.getScore() >= agent.getSimilarCaseMinScore()) {
-                result.add(candidate);
+        for (Candidate candidate : candidates) {
+            if (candidate != null && candidate.finalScore >= agent.getSimilarCaseMinScore()) {
+                result.add(new SimilarCase(candidate.apiPath, candidate.rootCause, candidate.keywords, candidate.confidence, candidate.finalScore));
             }
         }
         result.sort(Comparator.comparingInt(SimilarCase::getScore).reversed());
         int topK = Math.max(0, agent.getSimilarCaseTopK());
         return result.size() > topK ? new ArrayList<SimilarCase>(result.subList(0, topK)) : result;
+    }
+
+    /**
+     * 给候选叠加语义分：最终分先取词法分，未配 embedding 模型或当前文本 embed 失败就此返回（纯词法、零回归）。
+     * 候选缺缓存向量时在预算内现算并回写 analysis_record.embedding，语料随多次分析逐步补全。
+     */
+    private void applySemantic(List<Candidate> candidates, String currentText) {
+        for (Candidate candidate : candidates) {
+            if (candidate != null) {
+                candidate.finalScore = candidate.lexical;
+            }
+        }
+        AppProperties.Ai ai = appProperties.getAi();
+        // embed 返回 null 即未启用 EMBEDDING 配置或调用失败，退回纯词法（finalScore 已置为词法分）
+        float[] current = aiClient.embed(currentText);
+        if (current == null) {
+            return;
+        }
+        int budget = ai.getEmbeddingBackfillBudget();
+        int weight = ai.getEmbeddingWeight();
+        for (Candidate candidate : candidates) {
+            if (candidate == null) {
+                continue;
+            }
+            float[] vector = parseStoredEmbedding(candidate.embeddingJson);
+            if (vector == null && budget > 0) {
+                vector = aiClient.embed(candidate.embedText);
+                if (vector != null) {
+                    storeEmbedding(candidate.id, vector);
+                    budget--;
+                }
+            }
+            if (vector != null) {
+                double cosine = cosine(current, vector);
+                if (cosine > 0) {
+                    candidate.finalScore += (int) Math.round(cosine * weight);
+                }
+            }
+        }
+    }
+
+    /** 把案例的接口/描述/根因/异常拼成一段语义文本，当前案例与历史案例用同一拼法保证可比。 */
+    private String caseText(String apiPath, String description, String rootCause, String exception) {
+        StringBuilder builder = new StringBuilder();
+        if (!isBlank(apiPath)) {
+            builder.append(apiPath).append('\n');
+        }
+        if (!isBlank(description)) {
+            builder.append(description).append('\n');
+        }
+        if (!isBlank(rootCause)) {
+            builder.append(rootCause).append('\n');
+        }
+        if (!isBlank(exception)) {
+            builder.append(exception);
+        }
+        return builder.toString().trim();
+    }
+
+    private float[] parseStoredEmbedding(String json) {
+        if (isBlank(json)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, float[].class);
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
+    private void storeEmbedding(long id, float[] vector) {
+        try {
+            jdbcTemplate.update("update analysis_record set embedding = ? where id = ?", objectMapper.writeValueAsString(vector), id);
+        } catch (Exception exception) {
+            // 回写只是缓存，失败下次再算，不影响本次召回
+            log.debug("回写案例向量失败 id={}: {}", id, exception.getMessage());
+        }
+    }
+
+    /** 余弦相似度，维度不一致(换过 embedding 模型)或零向量按 0 处理，不误配。 */
+    private double cosine(float[] a, float[] b) {
+        if (a == null || b == null || a.length != b.length || a.length == 0) {
+            return 0;
+        }
+        double dot = 0;
+        double normA = 0;
+        double normB = 0;
+        for (int index = 0; index < a.length; index++) {
+            dot += a[index] * b[index];
+            normA += a[index] * a[index];
+            normB += b[index] * b[index];
+        }
+        if (normA == 0 || normB == 0) {
+            return 0;
+        }
+        return dot / (Math.sqrt(normA) * Math.sqrt(normB));
     }
 
     /**
@@ -169,5 +281,18 @@ public class SimilarCaseRetriever {
         } catch (Exception exception) {
             return keywordsJson.trim();
         }
+    }
+
+    /** 召回候选的中间态：词法分、缓存向量、待回填的语义文本，过完语义混分再落成 SimilarCase。 */
+    private static final class Candidate {
+        private long id;
+        private String apiPath;
+        private String rootCause;
+        private String keywords;
+        private String confidence;
+        private int lexical;
+        private int finalScore;
+        private String embeddingJson;
+        private String embedText;
     }
 }

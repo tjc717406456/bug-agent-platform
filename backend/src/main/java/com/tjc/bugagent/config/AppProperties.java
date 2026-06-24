@@ -100,6 +100,11 @@ public class AppProperties {
     public static class Ai {
         // 开启 SSE 流式收取，逐块到达不再整段干等，治慢网关读超时；与某中转不兼容时配 false 退回非流式
         private boolean streamEnabled = true;
+        // 余弦相似度(0~1)折算进召回分的权重：score += cosine * weight，让"意思像"的历史案例排得上号
+        // embedding 模型/地址/密钥/超时走 AI 配置里 role=EMBEDDING 的那条，启用即开、停用即退回纯词法，这里只放算法参数
+        private int embeddingWeight = 100;
+        // 单次分析最多回填多少条缺向量的旧案例，控住首跑延迟；语料会随多次分析逐步补全
+        private int embeddingBackfillBudget = 20;
 
         public boolean isStreamEnabled() {
             return streamEnabled;
@@ -107,6 +112,22 @@ public class AppProperties {
 
         public void setStreamEnabled(boolean streamEnabled) {
             this.streamEnabled = streamEnabled;
+        }
+
+        public int getEmbeddingWeight() {
+            return embeddingWeight;
+        }
+
+        public void setEmbeddingWeight(int embeddingWeight) {
+            this.embeddingWeight = embeddingWeight;
+        }
+
+        public int getEmbeddingBackfillBudget() {
+            return embeddingBackfillBudget;
+        }
+
+        public void setEmbeddingBackfillBudget(int embeddingBackfillBudget) {
+            this.embeddingBackfillBudget = embeddingBackfillBudget;
         }
     }
 

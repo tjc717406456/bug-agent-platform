@@ -261,8 +261,15 @@ public class AgentAnalysisService {
         if (Boolean.FALSE.equals(request.getDeepMode())) {
             return "OFF";
         }
+        // YAML 可能把 OFF/NO 解析成布尔→字符串"FALSE"，TRUE/YES→"TRUE"，这里统一归一，别让 OFF 判断漏网
         String mode = safe(appProperties.getAgent().getHypothesisMode()).trim().toUpperCase();
-        return mode.isEmpty() ? "OFF" : mode;
+        if (mode.isEmpty() || "FALSE".equals(mode) || "NO".equals(mode) || "0".equals(mode)) {
+            return "OFF";
+        }
+        if ("TRUE".equals(mode) || "YES".equals(mode) || "1".equals(mode)) {
+            return "ON";
+        }
+        return mode;
     }
 
     /** 头名与次名置信分差小于阈值即判歧义，需要并行验证。候选已按分降序。 */

@@ -111,6 +111,10 @@ export function testAiConfig() {
   return request('/ai-config/test', { method: 'POST' })
 }
 
+export function testEmbeddingConfig() {
+  return request('/ai-config/test-embedding', { method: 'POST' })
+}
+
 export function analyzeBug(payload) {
   return request('/analysis', { method: 'POST', body: JSON.stringify(payload) })
 }

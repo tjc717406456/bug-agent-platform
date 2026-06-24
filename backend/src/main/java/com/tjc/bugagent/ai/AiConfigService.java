@@ -67,9 +67,27 @@ public class AiConfigService {
         }
     }
 
-    /** 角色只认 PRIMARY/UTILITY，其它一律当 PRIMARY。 */
+    /** 角色认 PRIMARY/UTILITY/EMBEDDING，其它一律当 PRIMARY。 */
     private String normalizeRole(String role) {
-        return "UTILITY".equalsIgnoreCase(role == null ? "" : role.trim()) ? "UTILITY" : "PRIMARY";
+        String value = role == null ? "" : role.trim().toUpperCase();
+        if ("UTILITY".equals(value)) {
+            return "UTILITY";
+        }
+        if ("EMBEDDING".equals(value)) {
+            return "EMBEDDING";
+        }
+        return "PRIMARY";
+    }
+
+    /**
+     * 取启用的 embedding 模型配置（role=EMBEDDING 且启用），用于语义召回。
+     * 没有或没启用就返回 null，调用方据此退回纯词法匹配。
+     */
+    public AiConfig getEmbeddingConfig() {
+        List<AiConfig> list = jdbcTemplate.query(
+                "select id, provider, base_url, model_name, api_key_cipher, timeout_seconds, enabled, supports_vision, role from ai_provider_config where role = 'EMBEDDING' and enabled = 1 order by id desc limit 1",
+                new AiConfigMapper());
+        return list.isEmpty() ? null : list.get(0);
     }
 
     /**
@@ -86,11 +104,17 @@ public class AiConfigService {
      * 切换启用的配置，决定 Agent 分析走哪个 AI。同一时间只有一条启用。
      */
     public void activate(Long id) {
-        Integer exists = jdbcTemplate.queryForObject("select count(*) from ai_provider_config where id = ?", Integer.class, id);
-        if (exists == null || exists == 0) {
+        List<String> roles = jdbcTemplate.queryForList("select role from ai_provider_config where id = ?", String.class, id);
+        if (roles.isEmpty()) {
             throw new IllegalArgumentException("AI 配置不存在: " + id);
         }
-        jdbcTemplate.update("update ai_provider_config set enabled = 0");
+        if ("EMBEDDING".equals(normalizeRole(roles.get(0)))) {
+            // 嵌入模型是独立开关：翻转自身启用位，不波及主/辅模型，切换主模型时也不会被关掉
+            jdbcTemplate.update("update ai_provider_config set enabled = case when enabled = 1 then 0 else 1 end, updated_at = now() where id = ?", id);
+            return;
+        }
+        // 主模型单选：只在非 embedding 行里互斥，别把预留启用的 embedding 一并关停
+        jdbcTemplate.update("update ai_provider_config set enabled = 0 where role <> 'EMBEDDING'");
         jdbcTemplate.update("update ai_provider_config set enabled = 1, updated_at = now() where id = ?", id);
     }
 
@@ -110,7 +134,7 @@ public class AiConfigService {
 
     public AiConfig getEnabledConfig() {
         List<AiConfig> list = jdbcTemplate.query(
-                "select id, provider, base_url, model_name, api_key_cipher, timeout_seconds, enabled, supports_vision, role from ai_provider_config where enabled = 1 order by id desc limit 1",
+                "select id, provider, base_url, model_name, api_key_cipher, timeout_seconds, enabled, supports_vision, role from ai_provider_config where enabled = 1 and role <> 'EMBEDDING' order by id desc limit 1",
                 new AiConfigMapper());
         return list.isEmpty() ? null : list.get(0);
     }

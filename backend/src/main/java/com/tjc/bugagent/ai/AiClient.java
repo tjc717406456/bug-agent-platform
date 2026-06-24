@@ -327,6 +327,62 @@ public class AiClient {
     }
 
     /**
+     * 取文本的语义向量，供相似案例的语义召回用。复用当前启用模型的 base_url/key，模型名走 app.ai.embedding-model。
+     * 未配 embedding 模型、无可用 AI、或调用失败一律返回 null，调用方据此退回纯词法匹配，不影响主流程。
+     */
+    public float[] embed(String text) {
+        if (text == null || text.trim().isEmpty()) {
+            return null;
+        }
+        // 用 AI 配置里 role=EMBEDDING 且启用的那条；没有就是没开语义召回，返回 null
+        AiConfig config = aiConfigService.getEmbeddingConfig();
+        if (config == null) {
+            return null;
+        }
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(config.getApiKey());
+        Map<String, Object> body = new HashMap<String, Object>();
+        body.put("model", config.getModelName());
+        // 截断超长文本，控住 token 成本；案例摘要几百字足够表达语义
+        body.put("input", text.length() > 4000 ? text.substring(0, 4000) : text);
+
+        String url = config.getBaseUrl().replaceAll("/+$", "") + "/embeddings";
+        int timeout = config.getTimeoutSeconds() == null || config.getTimeoutSeconds() <= 0 ? 30 : config.getTimeoutSeconds();
+        RestTemplate restTemplate = restTemplateCache.computeIfAbsent(timeout, this::createRestTemplate);
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<Map<String, Object>>(body, headers);
+        try {
+            Map response = restTemplate.postForObject(url, entity, Map.class);
+            return parseEmbedding(response);
+        } catch (Exception exception) {
+            log.warn("embedding 调用失败 model={} url={}: {}", config.getModelName(), url, exception.getMessage());
+            return null;
+        }
+    }
+
+    /** 解析 OpenAI 兼容 /embeddings 响应的 data[0].embedding，格式不符返回 null。 */
+    @SuppressWarnings("unchecked")
+    private float[] parseEmbedding(Map response) {
+        if (response == null || !(response.get("data") instanceof List)) {
+            return null;
+        }
+        List data = (List) response.get("data");
+        if (data.isEmpty() || !(data.get(0) instanceof Map)) {
+            return null;
+        }
+        Object vector = ((Map) data.get(0)).get("embedding");
+        if (!(vector instanceof List)) {
+            return null;
+        }
+        List<Object> values = (List<Object>) vector;
+        float[] result = new float[values.size()];
+        for (int index = 0; index < values.size(); index++) {
+            result[index] = values.get(index) instanceof Number ? ((Number) values.get(index)).floatValue() : 0f;
+        }
+        return result;
+    }
+
+    /**
      * 连通性测试：发一句"你好"，对方回了任何内容就算通。走真实 chat 路径但强制非流式 + 短消息，验地址、密钥、模型一条龙。
      */
     public String test() {
@@ -369,6 +425,46 @@ public class AiClient {
             return "请求被拒（HTTP " + status + "）：" + trimMessage(exception.getMessage());
         } catch (Exception exception) {
             return "无法连接 AI 服务：" + trimMessage(rootMessage(exception));
+        }
+    }
+
+    /**
+     * embedding 连通性测试：拿启用的 EMBEDDING 配置打一炮 /embeddings，验地址、密钥、模型是否真支持向量。
+     */
+    public String testEmbedding() {
+        AiConfig config = aiConfigService.getEmbeddingConfig();
+        if (config == null) {
+            return "未配置启用的 embedding 模型（新增配置时角色选\"向量\"并启用）";
+        }
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(config.getApiKey());
+        Map<String, Object> body = new HashMap<String, Object>();
+        body.put("model", config.getModelName());
+        body.put("input", "连通性测试");
+
+        String url = config.getBaseUrl().replaceAll("/+$", "") + "/embeddings";
+        RestTemplate restTemplate = restTemplateCache.computeIfAbsent(30, this::createRestTemplate);
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<Map<String, Object>>(body, headers);
+        log.info("embedding 连通性测试 url={} model={} keyPrefix={}", url, config.getModelName(), maskApiKey(config.getApiKey()));
+        try {
+            Map response = restTemplate.postForObject(url, entity, Map.class);
+            float[] vector = parseEmbedding(response);
+            if (vector == null || vector.length == 0) {
+                return "连通但未返回向量，确认填的是 embedding 模型（如 bge-m3/text-embedding-3-small），不是聊天模型";
+            }
+            return "ok（向量维度 " + vector.length + "）";
+        } catch (HttpClientErrorException exception) {
+            int status = exception.getRawStatusCode();
+            if (status == 401 || status == 403) {
+                return "密钥无效或无权限（HTTP " + status + "）";
+            }
+            if (status == 404) {
+                return "该网关不提供 /embeddings 接口（HTTP 404），换个支持 embedding 的源";
+            }
+            return "请求被拒（HTTP " + status + "）：" + trimMessage(exception.getMessage());
+        } catch (Exception exception) {
+            return "无法连接 embedding 服务：" + trimMessage(rootMessage(exception));
         }
     }
 

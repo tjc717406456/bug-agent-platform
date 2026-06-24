@@ -60,5 +60,10 @@ public class AiConfigController {
     public ApiResponse<String> test() {
         return ApiResponse.ok(aiClient.test());
     }
+
+    @PostMapping("/test-embedding")
+    public ApiResponse<String> testEmbedding() {
+        return ApiResponse.ok(aiClient.testEmbedding());
+    }
 }
 

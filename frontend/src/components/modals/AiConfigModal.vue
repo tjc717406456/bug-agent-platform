@@ -13,6 +13,7 @@
         <a-radio-group v-model:value="aiForm.role">
           <a-radio value="PRIMARY">主分析(bug 定位/自检)</a-radio>
           <a-radio value="UTILITY">辅助(接口讲解/侦察，便宜模型)</a-radio>
+          <a-radio value="EMBEDDING">向量(语义召回，填 embedding 模型如 bge-m3)</a-radio>
         </a-radio-group>
       </a-form-item>
     </a-form>
