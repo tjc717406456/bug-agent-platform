@@ -35,21 +35,21 @@ public class AgentConvergenceJudge {
         this.roundReporter = roundReporter;
     }
 
-    public String resolveForceFinishReason(CodeGraphQueryResult graph, List<Map<String, Object>> rounds, int noNewKeyFactRounds) {
+    public String resolveForceFinishReason(CodeGraphQueryResult graph, List<Map<String, Object>> rounds, int noNewKeyFactRounds, boolean dbRequired) {
         if (noNewKeyFactRounds >= MAX_NO_NEW_FACT_ROUNDS) {
             return "连续两轮没有新增关键事实";
         }
-        if (gatheredCoreEvidence(graph, rounds)) {
-            return "核心证据（入口、源码、数据库验证）已齐";
+        if (gatheredCoreEvidence(graph, rounds, dbRequired)) {
+            return dbRequired ? "核心证据（入口、源码、数据库验证）已齐" : "核心证据（入口、源码）已齐";
         }
         return null;
     }
 
     /**
      * 用结构化信号判断核心证据是否齐备：路由命中（图谱）+ 源码证据（预取快照或工具读取成功）
-     * + 数据库验证（实际查过表/结构）。
+     * + 数据库验证（实际查过表/结构）。dbRequired=false（无数据源/用户不查库）时不再强求查库这一项。
      */
-    private boolean gatheredCoreEvidence(CodeGraphQueryResult graph, List<Map<String, Object>> rounds) {
+    private boolean gatheredCoreEvidence(CodeGraphQueryResult graph, List<Map<String, Object>> rounds, boolean dbRequired) {
         boolean route = !graph.getRouteNodes().isEmpty();
         if (!route) {
             return false;
@@ -68,7 +68,7 @@ public class AgentConvergenceJudge {
                 db = true;
             }
         }
-        return code && db;
+        return code && (db || !dbRequired);
     }
 
     public boolean isNewKeyFact(List<Map<String, Object>> rounds, AgentToolCall call, AgentToolResult toolResult) {

@@ -1,7 +1,7 @@
 <template>
   <a-modal v-model:open="agentProgressVisible" title="Agent 分析进度（自主查证过程）" :footer="null" :closable="false" :mask-closable="false" centered width="600px">
     <div class="progress-box">
-      <a-spin />
+      <div class="elapsed-bar"><a-spin /><span class="elapsed">⏱ 已用时 {{ elapsedText }}</span></div>
       <a-timeline class="top-gap" v-if="agentProgress.length">
         <a-timeline-item
           v-for="(step, i) in agentProgress"
@@ -17,9 +17,31 @@
 </template>
 
 <script setup>
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { useAppStore } from '../../store/useAppStore'
 
 const { agentProgressVisible, agentProgress } = useAppStore()
+
+// 弹窗打开即开始走秒，关闭停表；纯前端计时，给个实时耗时感知（最终准确耗时以收尾的 "✓ 完成 · Ns" 为准）
+const elapsed = ref(0)
+let timer = null
+const elapsedText = computed(() => {
+  const s = elapsed.value
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
+})
+watch(agentProgressVisible, (open) => {
+  if (timer) {
+    clearInterval(timer)
+    timer = null
+  }
+  if (open) {
+    elapsed.value = 0
+    timer = setInterval(() => { elapsed.value += 1 }, 1000)
+  }
+}, { immediate: true })
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+})
 
 // 按步骤内容分类上色 + 图标，让 agent 的思考过程一眼看清是哪种动作
 function classify(step) {
@@ -42,6 +64,16 @@ function classify(step) {
 }
 .progress-box .hint-text {
   margin-top: 12px;
+}
+.elapsed-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.elapsed-bar .elapsed {
+  color: #1677ff;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
 .step-icon {
   margin-right: 6px;

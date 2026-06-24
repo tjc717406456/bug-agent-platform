@@ -82,6 +82,7 @@ public class ApiExplainService {
      * 带进度回调的接口讲解，多轮工具循环驱动模型下钻调用链和源码。
      */
     public AnalysisResult explain(AnalysisRequest request, AnalysisProgressListener progress) {
+        long startMs = System.currentTimeMillis();
         ProjectVersion version = resolveVersion(request);
         CodeGraphQueryResult graph = codeGraphQueryService.queryByApiPath(request.getProjectId(), version.getId(), request.getApiPath());
         ProjectDatasource datasource = projectService.firstEnabledDatasource(request.getProjectId());
@@ -102,10 +103,12 @@ public class ApiExplainService {
         String finalReport = null;
         int continuousFailures = 0;
         int toolNudges = 0;
+        int tokens = 0;
         int maxIterations = appProperties.getAgent().getMaxIterations();
 
         for (int iteration = 1; iteration <= maxIterations; iteration++) {
             AiToolCallResult aiResult = aiClient.chatWithMessagesUtility(messages, agentToolExecutor.toolSchemas());
+            tokens += aiResult.getTotalTokens();
             List<AgentToolCall> calls = toolCallParser.parseToolCalls(aiResult);
 
             AgentToolCall finish = toolCallParser.findFinish(calls);
@@ -159,6 +162,9 @@ public class ApiExplainService {
         result.setPlainAnswer(plainAnswerResolver.buildPlainAnswer(finalReport, evidence));
         result.setConclusion(finalReport);
         result.setEvidenceJson(evidence);
+        result.setTotalTokens(tokens);
+        result.setElapsedMs(System.currentTimeMillis() - startMs);
+        progress.onStep("✓ 讲解完成 · " + rounds.size() + " 轮查证 · " + tokens + " tokens · " + (result.getElapsedMs() / 1000) + "s");
         return result;
     }
 

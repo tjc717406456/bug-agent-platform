@@ -18,6 +18,8 @@ import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -31,6 +33,9 @@ public class AgentToolExecutor {
     private static final int GREP_MAX_MATCHES = 40;
     private static final int GREP_MAX_LINE_LENGTH = 200;
     private static final long GREP_MAX_FILE_BYTES = 1_000_000;
+    // search_log 传 "L<行号>"(如 L39741)时按行号取上下文；只认 L 前缀，裸数字仍当内容搜(避免订单号等被误判)
+    private static final Pattern LOG_LINE_REF = Pattern.compile("(?i)^l(\\d+)$");
+    private static final int LOG_CONTEXT_LINES = 4;
     private final CodeGraphQueryService codeGraphQueryService;
     private final DbhubClient dbhubClient;
     private final ProjectService projectService;
@@ -250,6 +255,11 @@ public class AgentToolExecutor {
             return AgentToolResult.empty("search_log", "本次分析未提供日志");
         }
         String[] lines = context.getLogText().split("\\r?\\n");
+        // 关键词是 "L<行号>"(结果里的显示行号标签)时，按行号取该行±上下文，省得模型把标签当内容搜
+        Matcher lineRef = LOG_LINE_REF.matcher(keyword.trim());
+        if (lineRef.matches()) {
+            return readLogAround(lines, Integer.parseInt(lineRef.group(1)));
+        }
         String needle = keyword.toLowerCase();
         StringBuilder evidence = new StringBuilder();
         int matched = 0;
@@ -267,6 +277,24 @@ public class AgentToolExecutor {
             return AgentToolResult.empty("search_log", "日志里未匹配到: " + keyword);
         }
         return AgentToolResult.ok("search_log", "日志命中 " + matched + " 行", evidence.toString());
+    }
+
+    /** 按行号取该行及上下文；目标行给足长度（参数串常被截断），上下文行正常截断。 */
+    private AgentToolResult readLogAround(String[] lines, int lineNo) {
+        if (lineNo < 1 || lineNo > lines.length) {
+            return AgentToolResult.empty("search_log", "行号 L" + lineNo + " 超出日志范围（共 " + lines.length + " 行）");
+        }
+        int start = Math.max(1, lineNo - LOG_CONTEXT_LINES);
+        int end = Math.min(lines.length, lineNo + LOG_CONTEXT_LINES);
+        StringBuilder evidence = new StringBuilder();
+        for (int i = start; i <= end; i++) {
+            String line = lines[i - 1].trim();
+            String shown = i == lineNo
+                    ? (line.length() > 800 ? line.substring(0, 800) + "..." : line)
+                    : trimLine(line);
+            evidence.append('L').append(i).append(": ").append(shown).append('\n');
+        }
+        return AgentToolResult.ok("search_log", "日志 L" + lineNo + " 附近（±" + LOG_CONTEXT_LINES + " 行）", evidence.toString());
     }
 
     private boolean isSearchableSource(Path path) {
