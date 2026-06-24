@@ -270,6 +270,11 @@ public class AgentToolExecutor {
     }
 
     private boolean isSearchableSource(Path path) {
+        // 只搜 src 目录下的源码：排除 target/build 编译产物与 dbchange 等，避免重复命中翻倍噪声、误当两处证据
+        String normalized = path.toString().replace('\\', '/').toLowerCase();
+        if (!normalized.contains("/src/")) {
+            return false;
+        }
         String name = path.getFileName().toString().toLowerCase();
         boolean source = name.endsWith(".java") || name.endsWith(".xml") || name.endsWith(".yml")
                 || name.endsWith(".yaml") || name.endsWith(".properties") || name.endsWith(".sql");
