@@ -17,10 +17,6 @@ public class DbhubClient {
         this.queryService = queryService;
     }
 
-    public String queryEvidence(String dbhubKey, List<String> tables) {
-        return describeTables(dbhubKey, tables);
-    }
-
     public String describeTables(String dbhubKey, List<String> tables) {
         return queryService.describeTables(dbhubKey, tables);
     }

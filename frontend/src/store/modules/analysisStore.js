@@ -1,12 +1,14 @@
 import { ref, computed } from 'vue'
 import { message } from 'ant-design-vue'
-import { analyzeBug, submitAgentAnalysisTaskScreenshots, pollAgentAnalysisTask, submitApiExplainTask, uploadLog } from '../../api/client'
+import { submitAgentAnalysisTaskScreenshots, pollAgentAnalysisTask, submitApiExplainTask, uploadLog } from '../../api/client'
 import { currentProject, analysisForm, analysisResult, analysisDialogVisible, activeReportTab, feedbackEditable, sleep } from '../core'
 
 export const screenshotFiles = ref([])
 export const agentProgress = ref([])
 export const agentProgressVisible = ref(false)
 export const logFileList = ref([])
+// 日志上传中标记：上传未拿到 logId 前禁掉分析按钮，避免漏带日志就开跑
+export const logUploading = ref(false)
 // 本地日志按时间切割弹窗的开关（纯前端处理，原始文件不上传）
 export const logSplitVisible = ref(false)
 export function openLogSplit() {
@@ -47,6 +49,7 @@ export async function beforeLogUpload(file) {
     return false
   }
   logFileList.value = [file]
+  logUploading.value = true
   try {
     analysisForm.logId = await uploadLog(file)
     message.success('日志已上传，分析时自动读取')
@@ -54,6 +57,8 @@ export async function beforeLogUpload(file) {
     message.error(error.message || '日志上传失败')
     logFileList.value = []
     analysisForm.logId = ''
+  } finally {
+    logUploading.value = false
   }
   return false
 }
@@ -112,22 +117,11 @@ export async function pasteFromClipboard() {
   message.success('已从剪贴板回填接口与请求响应')
 }
 
-export async function analyzeAction() {
-  const close = message.loading('正在分析中...', 0)
-  try {
-    const payload = { ...analysisForm, projectId: currentProject.value.id }
-    payload.versionId = payload.versionId ? Number(payload.versionId) : null
-    analysisResult.value = await analyzeBug(payload)
-    feedbackEditable.value = false
-    activeReportTab.value = 'report'
-    analysisDialogVisible.value = true
-    message.success('分析完成')
-  } finally {
-    close()
-  }
-}
-
 export async function agentAnalyzeAction() {
+  if (logUploading.value) {
+    message.warning('日志正在上传，请稍候再分析')
+    return
+  }
   agentProgress.value = []
   agentProgressVisible.value = true
   try {

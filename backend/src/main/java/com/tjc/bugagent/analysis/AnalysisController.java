@@ -26,7 +26,6 @@ import java.util.List;
 @RestController
 @RequestMapping("/analysis")
 public class AnalysisController {
-    private final AnalysisService analysisService;
     private final AgentAnalysisTaskService agentAnalysisTaskService;
     private final ScreenshotStorageService screenshotStorageService;
     private final AnalysisFeedbackService analysisFeedbackService;
@@ -34,28 +33,18 @@ public class AnalysisController {
     private final AnalysisRecordService analysisRecordService;
     private final ObjectMapper objectMapper;
 
-    public AnalysisController(AnalysisService analysisService,
-                              AgentAnalysisTaskService agentAnalysisTaskService,
+    public AnalysisController(AgentAnalysisTaskService agentAnalysisTaskService,
                               ScreenshotStorageService screenshotStorageService,
                               AnalysisFeedbackService analysisFeedbackService,
                               LogStorageService logStorageService,
                               AnalysisRecordService analysisRecordService,
                               ObjectMapper objectMapper) {
-        this.analysisService = analysisService;
         this.agentAnalysisTaskService = agentAnalysisTaskService;
         this.screenshotStorageService = screenshotStorageService;
         this.analysisFeedbackService = analysisFeedbackService;
         this.logStorageService = logStorageService;
         this.analysisRecordService = analysisRecordService;
         this.objectMapper = objectMapper;
-    }
-
-    /**
-     * 执行普通分析。
-     */
-    @PostMapping
-    public ApiResponse<AnalysisResult> analyze(@Valid @RequestBody AnalysisRequest request) {
-        return ApiResponse.ok(analysisService.analyze(request));
     }
 
     /**

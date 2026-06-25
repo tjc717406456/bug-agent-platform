@@ -106,8 +106,7 @@
           </a-col>
           <a-col :span="8">
             <div class="actions-col">
-              <a-button type="primary" @click="analyzeAction"><template #icon><BarChartOutlined /></template>开始分析</a-button>
-              <a-button class="left-gap" style="background:#52c41a;border-color:#52c41a;color:#fff" @click="agentAnalyzeAction"><template #icon><BarChartOutlined /></template>Agent分析</a-button>
+              <a-button type="primary" style="background:#52c41a;border-color:#52c41a" :disabled="logUploading" :loading="logUploading" @click="agentAnalyzeAction"><template #icon><BarChartOutlined /></template>{{ logUploading ? '日志上传中' : 'Agent分析' }}</a-button>
               <a-button class="left-gap" style="background:#fa8c16;border-color:#fa8c16;color:#fff" @click="apiAnalyzeAction"><template #icon><BarChartOutlined /></template>接口分析</a-button>
             </div>
           </a-col>
@@ -136,12 +135,12 @@ const {
   apiRouteOptions,
   changeApiPath,
   logFileList,
+  logUploading,
   beforeLogUpload,
   removeLog,
   screenshotFileList,
   beforeScreenshotUpload,
   removeScreenshot,
-  analyzeAction,
   agentAnalyzeAction,
   apiAnalyzeAction,
   pasteFromClipboard,

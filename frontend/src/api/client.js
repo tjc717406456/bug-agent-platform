@@ -115,10 +115,6 @@ export function testEmbeddingConfig() {
   return request('/ai-config/test-embedding', { method: 'POST' })
 }
 
-export function analyzeBug(payload) {
-  return request('/analysis', { method: 'POST', body: JSON.stringify(payload) })
-}
-
 export function submitAgentAnalysisTaskScreenshots(payload, screenshots = []) {
   const form = new FormData()
   form.append('request', JSON.stringify(payload))
