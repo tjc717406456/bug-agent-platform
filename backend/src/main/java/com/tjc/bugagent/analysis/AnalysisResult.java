@@ -14,6 +14,16 @@ public class AnalysisResult {
     private int totalTokens;
     // 本次分析耗时(毫秒)
     private long elapsedMs;
+    // 本次分析查证轮数
+    private int rounds;
+
+    public int getRounds() {
+        return rounds;
+    }
+
+    public void setRounds(int rounds) {
+        this.rounds = rounds;
+    }
 
     public int getTotalTokens() {
         return totalTokens;

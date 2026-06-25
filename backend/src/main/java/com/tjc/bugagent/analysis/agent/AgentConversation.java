@@ -157,9 +157,41 @@ public class AgentConversation {
         content.append(status).append(": ").append(safe(result.getSummary()));
         String evidence = safe(result.getEvidence());
         if (!evidence.isEmpty()) {
-            content.append("\n").append(trim(evidence, appProperties.getAgent().getToolResultLimit()));
+            // 读整段方法的 get_code_detail 给更大窗口，别让长方法尾部被截掉
+            int limit = "get_code_detail".equals(result.getTool())
+                    ? appProperties.getAgent().getCodeResultLimit()
+                    : appProperties.getAgent().getToolResultLimit();
+            content.append("\n").append(trim(evidence, limit));
         }
         return content.toString();
+    }
+
+    /**
+     * 上下文衰减：只保留最近 keepRecent 轮的工具结果全文，更早轮次的折叠成首行摘要，
+     * 削掉深挖案例每轮重发全历史的 O(n²) token 膨胀。报告/收敛都从 rounds[] 重建，折叠 messages 不影响判定。
+     * 幂等：折叠后内容无换行，再次调用自动跳过。keepRecent <= 0 时不衰减。
+     */
+    public void decayOldToolMessages(List<Map<String, Object>> messages, int keepRecent) {
+        if (keepRecent <= 0) {
+            return;
+        }
+        int assistantSeen = 0;
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            Map<String, Object> message = messages.get(i);
+            Object role = message.get("role");
+            if ("assistant".equals(role)) {
+                assistantSeen++;
+            } else if ("tool".equals(role) && assistantSeen >= keepRecent) {
+                Object raw = message.get("content");
+                if (raw instanceof String) {
+                    String text = (String) raw;
+                    int nl = text.indexOf('\n');
+                    if (nl > 0) {
+                        message.put("content", text.substring(0, nl) + " …(早期轮次详情已折叠)");
+                    }
+                }
+            }
+        }
     }
 
     /**

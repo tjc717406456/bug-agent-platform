@@ -192,6 +192,10 @@ public class AppProperties {
         private int initialEvidenceLimit = 12000;
         private int sqlTextLimit = 2000;
         private int toolResultLimit = 4000;
+        // get_code_detail 读整段方法，给更大窗口，免得长方法被 toolResultLimit 二次截断丢尾部根因
+        private int codeResultLimit = 8000;
+        // 上下文衰减：只保留最近 N 轮工具结果全文，更早的折叠成摘要行，削掉深挖案例的 O(n²) token 膨胀。0=不衰减
+        private int keepRecentRounds = 6;
         // 收口前是否做一次对抗式自检，抓"看着对"的幻觉结论；关掉可省一次 LLM 调用
         private boolean selfCritique = true;
         // 单个查证工具最长执行时间（秒），超时按失败处理，避免卡死拖垮整轮
@@ -353,6 +357,22 @@ public class AppProperties {
 
         public void setToolResultLimit(int toolResultLimit) {
             this.toolResultLimit = toolResultLimit;
+        }
+
+        public int getCodeResultLimit() {
+            return codeResultLimit;
+        }
+
+        public void setCodeResultLimit(int codeResultLimit) {
+            this.codeResultLimit = codeResultLimit;
+        }
+
+        public int getKeepRecentRounds() {
+            return keepRecentRounds;
+        }
+
+        public void setKeepRecentRounds(int keepRecentRounds) {
+            this.keepRecentRounds = keepRecentRounds;
         }
     }
 

@@ -148,7 +148,9 @@ public class AgentAnalysisService {
         String confidence = judge.resolveConfidence(graph, winner.rounds, finalReport);
         // 确定性结论连库自动核对，验证通过的无需人工即可进飞轮
         AnalysisAutoVerifier.Result autoVerify = analysisAutoVerifier.verify(safe(finalReport) + "\n" + evidence, datasource);
-        Long recordId = recordRepository.save(request, version, finalReport, confidence, evidence, autoVerify);
+        int roundsCount = winner.rounds.size();
+        long elapsedMs = System.currentTimeMillis() - startMs;
+        Long recordId = recordRepository.save(request, version, finalReport, confidence, evidence, autoVerify, roundsCount, winner.tokens);
 
         AnalysisResult result = new AnalysisResult();
         result.setId(recordId);
@@ -157,9 +159,12 @@ public class AgentAnalysisService {
         result.setConfidence(confidence);
         result.setEvidenceJson(evidence);
         result.setAutoVerify(autoVerify.getStatus());
+        result.setRounds(roundsCount);
         result.setTotalTokens(winner.tokens);
-        result.setElapsedMs(System.currentTimeMillis() - startMs);
-        progress.onStep("✓ 分析完成 · " + winner.rounds.size() + " 轮查证 · " + confidence + " 置信 · " + winner.tokens + " tokens · " + (result.getElapsedMs() / 1000) + "s");
+        result.setElapsedMs(elapsedMs);
+        log.info("分析完成 api={} 轮数={} token={} 耗时={}ms 置信={} 自检={}",
+                request.getApiPath(), roundsCount, winner.tokens, elapsedMs, confidence, autoVerify.getStatus());
+        progress.onStep("✓ 分析完成 · " + roundsCount + " 轮查证 · " + confidence + " 置信 · " + winner.tokens + " tokens · " + (elapsedMs / 1000) + "s");
         return result;
     }
 
@@ -357,6 +362,8 @@ public class AgentAnalysisService {
                 budgetWarned = true;
                 messages.add(conversation.message("user", promptBuilder.buildBudgetReminder(iteration, maxIterations)));
             }
+            // 发请求前折叠早期轮次工具结果，控长案例 token 膨胀（报告从 rounds[] 重建，不受影响）
+            conversation.decayOldToolMessages(messages, appProperties.getAgent().getKeepRecentRounds());
             AiToolCallResult aiResult = aiClient.chatWithMessages(messages, agentToolExecutor.toolSchemas(verifyUnlocked));
             tokens += aiResult.getTotalTokens();
             // AI 真失败（网关重置/未配置）：直接中止，别把"AI不可用"当报告收口误导用户

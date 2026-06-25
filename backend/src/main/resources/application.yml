@@ -36,6 +36,10 @@ app:
     initial-evidence-limit: 24000
     sql-text-limit: 2000
     tool-result-limit: 4000
+    # get_code_detail 整段方法读取的更大窗口，避免长方法尾部根因被 tool-result-limit 截断
+    code-result-limit: 8000
+    # 上下文衰减：保留最近 N 轮工具结果全文，更早的折叠成摘要行，控长案例 token 膨胀。0=不衰减
+    keep-recent-rounds: 6
     self-critique: true
     tool-timeout-seconds: 60
     tool-fanout-pool-size: 8

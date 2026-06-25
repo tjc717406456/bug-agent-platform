@@ -26,8 +26,18 @@ public class DatabaseMigrationService {
         ensureAnalysisScreenshotColumn();
         ensureAnalysisFeedbackColumns();
         ensureAnalysisEmbeddingColumn();
+        ensureAnalysisMetricsColumns();
         ensureAiVisionColumn();
         ensureTableComments();
+    }
+
+    /** 给分析记录补轮数/token 列，落每次分析的成本指标，供趋势/p95 统计和调参。 */
+    private void ensureAnalysisMetricsColumns() {
+        if (!tableExists("analysis_record")) {
+            return;
+        }
+        addColumnIfMissing("analysis_record", "rounds_count", "int not null default 0 comment '查证轮数' after embedding");
+        addColumnIfMissing("analysis_record", "total_tokens", "int not null default 0 comment '消耗token总数' after rounds_count");
     }
 
     /** 给分析记录补 embedding 列，缓存案例文本向量，供相似案例的语义召回复用，免得每次重算。 */

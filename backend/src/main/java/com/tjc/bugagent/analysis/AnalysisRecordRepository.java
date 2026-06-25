@@ -23,14 +23,14 @@ public class AnalysisRecordRepository {
     }
 
     public Long save(AnalysisRequest request, ProjectVersion version, String conclusion, String confidence,
-                     String evidence, AnalysisAutoVerifier.Result autoVerify) {
+                     String evidence, AnalysisAutoVerifier.Result autoVerify, int roundsCount, int totalTokens) {
         String verifyKeywords = autoVerify.getKeywords().isEmpty() ? null : toJsonKeywords(autoVerify.getKeywords());
         jdbcTemplate.update(
-                "insert into analysis_record(project_id, version_id, api_path, user_description, request_body, response_body, stack_trace, screenshot_paths, trace_id, request_time, conclusion, confidence, evidence_json, auto_verify, auto_verify_keywords, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())",
+                "insert into analysis_record(project_id, version_id, api_path, user_description, request_body, response_body, stack_trace, screenshot_paths, trace_id, request_time, conclusion, confidence, evidence_json, auto_verify, auto_verify_keywords, rounds_count, total_tokens, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())",
                 request.getProjectId(), version.getId(), request.getApiPath(),
                 request.getUserDescription(), request.getRequestBody(), request.getResponseBody(), request.getStackTrace(),
                 request.getScreenshotPaths(), request.getTraceId(), request.getRequestTime(), conclusion, confidence, evidence,
-                autoVerify.getStatus(), verifyKeywords);
+                autoVerify.getStatus(), verifyKeywords, roundsCount, totalTokens);
         return jdbcTemplate.queryForObject("select last_insert_id()", Long.class);
     }
 
