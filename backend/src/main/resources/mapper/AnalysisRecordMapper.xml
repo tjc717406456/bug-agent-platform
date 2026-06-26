@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tjc.bugagent.analysis.mapper.AnalysisRecordMapper">
+
+    <!-- 列名下划线靠 map-underscore-to-camel-case 自动映射到驼峰字段，无需 resultMap -->
+
+    <!-- insert 后自增主键回填到入参 id，等价原 select last_insert_id() -->
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        insert into analysis_record(project_id, version_id, api_path, user_description, request_body, response_body,
+            stack_trace, screenshot_paths, trace_id, request_time, conclusion, confidence, evidence_json,
+            auto_verify, auto_verify_keywords, rounds_count, total_tokens, created_at)
+        values (#{projectId}, #{versionId}, #{apiPath}, #{userDescription}, #{requestBody}, #{responseBody},
+            #{stackTrace}, #{screenshotPaths}, #{traceId}, #{requestTime}, #{conclusion}, #{confidence}, #{evidenceJson},
+            #{autoVerify}, #{autoVerifyKeywords}, #{roundsCount}, #{totalTokens}, now())
+    </insert>
+
+    <sql id="listWhere">
+        where 1 = 1
+        <if test="projectId != null">
+            and project_id = #{projectId}
+        </if>
+        <if test="apiPath != null and apiPath.trim() != ''">
+            and api_path like concat('%', trim(#{apiPath}), '%')
+        </if>
+    </sql>
+
+    <select id="countList" resultType="long">
+        select count(*) from analysis_record
+        <include refid="listWhere"/>
+    </select>
+
+    <select id="selectSummaryList" resultType="com.tjc.bugagent.analysis.AnalysisRecord">
+        select id, project_id, api_path, confidence, auto_verify, feedback_verdict,
+            substring(conclusion, 1, 300) as conclusion, created_at
+        from analysis_record
+        <include refid="listWhere"/>
+        order by id desc
+        limit #{limit} offset #{offset}
+    </select>
+
+    <delete id="deleteByIds">
+        delete from analysis_record where id in
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </delete>
+
+    <select id="selectDetail" resultType="com.tjc.bugagent.analysis.AnalysisRecord">
+        select id, project_id, api_path, user_description, conclusion, confidence, evidence_json,
+            auto_verify, feedback_verdict, actual_root_cause, expect_keywords, created_at
+        from analysis_record where id = #{id}
+    </select>
+
+    <update id="updateFeedback">
+        update analysis_record
+        set feedback_verdict = #{verdict}, actual_root_cause = #{actualRootCause},
+            expect_keywords = #{expectKeywords}, feedback_note = #{note}, feedback_at = now()
+        where id = #{recordId}
+    </update>
+
+    <!-- 召回候选：只圈"靠得住"的（人工标注过 或 机器验证 CONFIRMED），含 embedding/stack_trace 等非实体字段，按 Map 返回。
+         Map 结果不走 map-underscore-to-camel-case，列名即 key，故显式起驼峰别名，与 retriever 取值对齐 -->
+    <select id="selectCandidates" resultType="java.util.LinkedHashMap">
+        select id, api_path as apiPath, conclusion, confidence, actual_root_cause as actualRootCause, embedding,
+            coalesce(nullif(expect_keywords, ''), auto_verify_keywords) as keywords,
+            user_description as userDescription, stack_trace as stackTrace
+        from analysis_record
+        where project_id = #{projectId}
+        and ((feedback_verdict is not null and expect_keywords is not null and expect_keywords &lt;&gt; '' and expect_keywords &lt;&gt; '[]')
+          or (auto_verify = 'CONFIRMED' and auto_verify_keywords is not null and auto_verify_keywords &lt;&gt; ''))
+        order by id desc limit 200
+    </select>
+
+    <!-- 评估飞轮用例源：只圈"靠得住"的（人工标注过 或 机器验证 CONFIRMED），带分析入参 + keywords(coalesce 别名)。
+         Map 结果不走 map-underscore-to-camel-case，列名即 key，故显式起驼峰别名，与 EvalService 取值对齐 -->
+    <select id="selectFeedbackCases" resultType="java.util.LinkedHashMap">
+        select id, project_id as projectId, version_id as versionId, api_path as apiPath,
+            user_description as userDescription, request_body as requestBody, response_body as responseBody,
+            stack_trace as stackTrace, trace_id as traceId, request_time as requestTime,
+            coalesce(nullif(expect_keywords, ''), auto_verify_keywords) as expectKeywords
+        from analysis_record
+        where (feedback_verdict is not null and expect_keywords is not null and expect_keywords &lt;&gt; '' and expect_keywords &lt;&gt; '[]')
+           or (auto_verify = 'CONFIRMED' and auto_verify_keywords is not null and auto_verify_keywords &lt;&gt; '')
+    </select>
+
+    <update id="updateEmbedding">
+        update analysis_record set embedding = #{embedding} where id = #{id}
+    </update>
+
+</mapper>

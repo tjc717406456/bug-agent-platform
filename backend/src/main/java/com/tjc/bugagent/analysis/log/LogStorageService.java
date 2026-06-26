@@ -70,6 +70,22 @@ public class LogStorageService {
     }
 
     /**
+     * 解析 logId 对应的日志文件路径（不读取内容），非法/不存在返回 null。
+     * 给 search_log 流式 grep 用，避免把大日志全文读进内存。
+     */
+    public String resolvePath(String logId) {
+        if (logId == null || logId.trim().isEmpty()) {
+            return null;
+        }
+        // 防目录穿越：logId 只能是纯文件名
+        if (logId.contains("/") || logId.contains("\\") || logId.contains("..")) {
+            return null;
+        }
+        Path path = Paths.get(appProperties.getLog().getDir()).toAbsolutePath().normalize().resolve(logId);
+        return Files.exists(path) ? path.toString() : null;
+    }
+
+    /**
      * 每天 0 点清理：删除保留期之外的日志文件，避免磁盘堆积。
      */
     @Scheduled(cron = "0 0 0 * * ?")

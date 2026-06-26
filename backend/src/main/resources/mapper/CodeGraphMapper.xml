@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tjc.bugagent.codegraph.mapper.CodeGraphMapper">
+
+    <!-- code_node 列名下划线靠 map-underscore-to-camel-case 自动映射到 CodeNode 驼峰字段，无需 resultMap -->
+
+    <delete id="deleteEdgesByVersion">
+        delete from code_edge where project_id = #{projectId} and version_id = #{versionId}
+    </delete>
+
+    <delete id="deleteNodesByVersion">
+        delete from code_node where project_id = #{projectId} and version_id = #{versionId}
+    </delete>
+
+    <!-- 自增 id 回写到 NodeInsert.id，后续建边要用 -->
+    <insert id="insertNode" useGeneratedKeys="true" keyProperty="id"
+            parameterType="com.tjc.bugagent.codegraph.CodeGraphRepository$NodeInsert">
+        insert into code_node(project_id, version_id, node_type, name, qualified_name, file_path, line_no, metadata_json)
+        values (#{projectId}, #{versionId}, #{nodeType}, #{name}, #{qualifiedName}, #{filePath}, #{lineNo}, #{metadataJson})
+    </insert>
+
+    <!-- 一条多 values 的 insert，分批由 Repository 按 EDGE_BATCH_SIZE 切片控制 -->
+    <insert id="batchInsertEdges">
+        insert into code_edge(project_id, version_id, from_node_id, to_node_id, edge_type, metadata_json)
+        values
+        <foreach collection="list" item="item" separator=",">
+            (#{item.projectId}, #{item.versionId}, #{item.fromNodeId}, #{item.toNodeId}, #{item.edgeType}, #{item.metadataJson})
+        </foreach>
+    </insert>
+
+    <select id="findRouteNodes" resultType="com.tjc.bugagent.codegraph.CodeNode">
+        select id, node_type, name, qualified_name, file_path, line_no, metadata_json from code_node
+        where project_id = #{projectId} and version_id = #{versionId}
+          and node_type = 'API_ROUTE' and name like concat('%', #{apiPath}, '%')
+        order by name limit #{limit}
+    </select>
+
+    <select id="findOutboundNodes" resultType="com.tjc.bugagent.codegraph.CodeNode">
+        select n.id, n.node_type, n.name, n.qualified_name, n.file_path, n.line_no, n.metadata_json
+        from code_edge e join code_node n on e.to_node_id = n.id
+        where e.from_node_id = #{fromNodeId}
+          and e.edge_type in
+          <foreach collection="edgeTypes" item="t" open="(" separator="," close=")">#{t}</foreach>
+        limit 80
+    </select>
+
+    <select id="findInboundNodes" resultType="com.tjc.bugagent.codegraph.CodeNode">
+        select n.id, n.node_type, n.name, n.qualified_name, n.file_path, n.line_no, n.metadata_json
+        from code_edge e join code_node n on e.from_node_id = n.id
+        where e.to_node_id = #{toNodeId}
+          and e.edge_type in
+          <foreach collection="edgeTypes" item="t" open="(" separator="," close=")">#{t}</foreach>
+        limit 80
+    </select>
+
+    <select id="findSqlMetadata" resultType="java.lang.String">
+        select metadata_json from code_node
+        where node_type = 'SQL' and id in
+        <foreach collection="nodeIds" item="nid" open="(" separator="," close=")">#{nid}</foreach>
+        limit 30
+    </select>
+
+    <select id="findTableNames" resultType="java.lang.String">
+        select distinct name from code_node
+        where node_type = 'DB_TABLE' and id in
+        <foreach collection="nodeIds" item="nid" open="(" separator="," close=")">#{nid}</foreach>
+        limit 50
+    </select>
+
+    <select id="getNode" resultType="com.tjc.bugagent.codegraph.CodeNode">
+        select id, node_type, name, qualified_name, file_path, line_no, metadata_json
+        from code_node
+        where project_id = #{projectId} and version_id = #{versionId} and id = #{nodeId}
+        limit 1
+    </select>
+
+    <select id="searchNodes" resultType="com.tjc.bugagent.codegraph.CodeNode">
+        select id, node_type, name, qualified_name, file_path, line_no, metadata_json from code_node
+        where project_id = #{projectId} and version_id = #{versionId}
+          and node_type in
+          <foreach collection="nodeTypes" item="t" open="(" separator="," close=")">#{t}</foreach>
+          and (name like concat('%', #{keyword}, '%') or qualified_name like concat('%', #{keyword}, '%'))
+        limit #{limit}
+    </select>
+
+    <select id="searchNodesByMetadata" resultType="com.tjc.bugagent.codegraph.CodeNode">
+        select id, node_type, name, qualified_name, file_path, line_no, metadata_json from code_node
+        where project_id = #{projectId} and version_id = #{versionId}
+          and node_type in
+          <foreach collection="nodeTypes" item="t" open="(" separator="," close=")">#{t}</foreach>
+          and (name like concat('%', #{keyword}, '%') or qualified_name like concat('%', #{keyword}, '%') or metadata_json like concat('%', #{keyword}, '%'))
+        limit #{limit}
+    </select>
+
+    <select id="searchByClassName" resultType="com.tjc.bugagent.codegraph.CodeNode">
+        select id, node_type, name, qualified_name, file_path, line_no, metadata_json from code_node
+        where project_id = #{projectId} and version_id = #{versionId}
+          and (qualified_name = #{className} or qualified_name like concat(#{className}, '.%'))
+          and node_type in ('CLASS','METHOD','MAPPER','MAPPER_METHOD')
+        order by case when node_type = 'CLASS' then 0 else 1 end, line_no
+        limit 30
+    </select>
+
+    <!-- MapperNodeRef 不可变（全 final + 构造器），靠构造器映射，不走 setter -->
+    <resultMap id="mapperNodeRefMap" type="com.tjc.bugagent.codegraph.CodeGraphRepository$MapperNodeRef">
+        <constructor>
+            <idArg column="id" javaType="java.lang.Long"/>
+            <arg column="name" javaType="java.lang.String"/>
+            <arg column="qualified_name" javaType="java.lang.String"/>
+        </constructor>
+    </resultMap>
+
+    <select id="findMapperNodes" resultMap="mapperNodeRefMap">
+        select id, name, qualified_name from code_node
+        where project_id = #{projectId} and version_id = #{versionId} and node_type = 'MAPPER_METHOD'
+    </select>
+
+    <select id="findMethodIdsByName" resultType="java.lang.Long">
+        select id from code_node
+        where project_id = #{projectId} and version_id = #{versionId}
+          and node_type = 'METHOD' and name = #{methodName}
+        limit #{limit}
+    </select>
+
+    <select id="findMethodIdByQualifiedName" resultType="java.lang.Long">
+        select id from code_node
+        where project_id = #{projectId} and version_id = #{versionId}
+          and node_type = 'METHOD' and qualified_name = #{qualifiedName}
+        limit 1
+    </select>
+
+</mapper>

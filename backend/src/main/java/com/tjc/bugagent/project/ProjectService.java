@@ -1,15 +1,14 @@
 package com.tjc.bugagent.project;
 
+import com.tjc.bugagent.project.mapper.ProjectDatasourceMapper;
+import com.tjc.bugagent.project.mapper.ProjectMapper;
+import com.tjc.bugagent.project.mapper.ProjectVersionMapper;
 import org.apache.commons.io.FileUtils;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.File;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -18,27 +17,23 @@ import java.util.List;
 @Service
 public class ProjectService {
     private final JdbcTemplate jdbcTemplate;
+    private final ProjectDatasourceMapper projectDatasourceMapper;
+    private final ProjectMapper projectMapper;
+    private final ProjectVersionMapper projectVersionMapper;
 
-    public ProjectService(JdbcTemplate jdbcTemplate) {
+    public ProjectService(JdbcTemplate jdbcTemplate, ProjectDatasourceMapper projectDatasourceMapper,
+                          ProjectMapper projectMapper, ProjectVersionMapper projectVersionMapper) {
         this.jdbcTemplate = jdbcTemplate;
+        this.projectDatasourceMapper = projectDatasourceMapper;
+        this.projectMapper = projectMapper;
+        this.projectVersionMapper = projectVersionMapper;
     }
 
     /**
      * 按项目名称和编码查询项目。
      */
     public List<Project> listProjects(String name, String code) {
-        StringBuilder sql = new StringBuilder("select id, name, code, description from project where 1 = 1");
-        List<Object> params = new ArrayList<Object>();
-        if (!isBlank(name)) {
-            sql.append(" and name like ?");
-            params.add("%" + name.trim() + "%");
-        }
-        if (!isBlank(code)) {
-            sql.append(" and code like ?");
-            params.add("%" + code.trim() + "%");
-        }
-        sql.append(" order by id desc");
-        return jdbcTemplate.query(sql.toString(), new ProjectMapper(), params.toArray());
+        return projectMapper.list(name, code);
     }
 
     /**
@@ -46,9 +41,11 @@ public class ProjectService {
      */
     public Project createProject(CreateProjectRequest request) {
         validateProject(request);
-        jdbcTemplate.update(
-                "insert into project(name, code, description, created_at, updated_at) values (?, ?, ?, now(), now())",
-                request.getName().trim(), request.getCode().trim(), safe(request.getDescription()));
+        Project project = new Project();
+        project.setName(request.getName().trim());
+        project.setCode(request.getCode().trim());
+        project.setDescription(safe(request.getDescription()));
+        projectMapper.insert(project);
         return getProjectByCode(request.getCode().trim());
     }
 
@@ -61,15 +58,10 @@ public class ProjectService {
         if (oldProject == null) {
             throw new IllegalArgumentException("Project not found");
         }
-        Integer codeCount = jdbcTemplate.queryForObject(
-                "select count(1) from project where code = ? and id <> ?",
-                Integer.class, request.getCode().trim(), projectId);
-        if (codeCount != null && codeCount > 0) {
+        if (projectMapper.countByCodeExcludingId(request.getCode().trim(), projectId) > 0) {
             throw new IllegalArgumentException("Project code already exists");
         }
-        jdbcTemplate.update(
-                "update project set name = ?, code = ?, description = ?, updated_at = now() where id = ?",
-                request.getName().trim(), request.getCode().trim(), safe(request.getDescription()), projectId);
+        projectMapper.update(projectId, request.getName().trim(), request.getCode().trim(), safe(request.getDescription()));
         return getProject(projectId);
     }
 
@@ -82,53 +74,38 @@ public class ProjectService {
         jdbcTemplate.update("delete from code_edge where project_id = ?", projectId);
         jdbcTemplate.update("delete from code_node where project_id = ?", projectId);
         jdbcTemplate.update("delete from project_datasource where project_id = ?", projectId);
-        jdbcTemplate.update("delete from project_version where project_id = ?", projectId);
-        jdbcTemplate.update("delete from project where id = ?", projectId);
-    }
-
-    public List<Project> listProjects() {
-        return listProjects(null, null);
+        projectVersionMapper.deleteByProject(projectId);
+        projectMapper.deleteById(projectId);
     }
 
     public Project getProject(Long projectId) {
-        List<Project> projects = jdbcTemplate.query(
-                "select id, name, code, description from project where id = ?",
-                new ProjectMapper(), projectId);
-        return projects.isEmpty() ? null : projects.get(0);
+        return projectMapper.findById(projectId);
     }
 
     private Project getProjectByCode(String code) {
-        return jdbcTemplate.queryForObject("select id, name, code, description from project where code = ?", new ProjectMapper(), code);
+        return projectMapper.findByCode(code);
     }
 
     public List<ProjectVersion> listVersions(Long projectId) {
-        return jdbcTemplate.query(
-                "select id, project_id, source_type, branch_name, commit_id, source_path, index_status, index_message, coalesce(indexed_at, created_at) as updated_at from project_version where project_id = ? order by id desc",
-                new ProjectVersionMapper(), projectId);
+        return projectVersionMapper.listByProject(projectId);
     }
 
     public ProjectVersion latestReadyVersion(Long projectId) {
-        List<ProjectVersion> versions = jdbcTemplate.query(
-                "select id, project_id, source_type, branch_name, commit_id, source_path, index_status, index_message, coalesce(indexed_at, created_at) as updated_at from project_version where project_id = ? and index_status = 'SUCCESS' order by id desc limit 1",
-                new ProjectVersionMapper(), projectId);
-        return versions.isEmpty() ? null : versions.get(0);
+        return projectVersionMapper.latestReady(projectId);
     }
 
     public ProjectVersion getVersion(Long versionId) {
-        return jdbcTemplate.queryForObject(
-                "select id, project_id, source_type, branch_name, commit_id, source_path, index_status, index_message, coalesce(indexed_at, created_at) as updated_at from project_version where id = ?",
-                new ProjectVersionMapper(), versionId);
+        return projectVersionMapper.findById(versionId);
     }
 
     /**
      * 删除某个版本：连带清掉代码图谱（code_node/code_edge）和磁盘源码目录。
      */
     public void deleteVersion(Long projectId, Long versionId) {
-        List<String> paths = jdbcTemplate.queryForList(
-                "select source_path from project_version where id = ? and project_id = ?", String.class, versionId, projectId);
+        List<String> paths = projectVersionMapper.findSourcePaths(versionId, projectId);
         jdbcTemplate.update("delete from code_edge where project_id = ? and version_id = ?", projectId, versionId);
         jdbcTemplate.update("delete from code_node where project_id = ? and version_id = ?", projectId, versionId);
-        jdbcTemplate.update("delete from project_version where id = ? and project_id = ?", versionId, projectId);
+        projectVersionMapper.deleteByIdAndProject(versionId, projectId);
         if (!paths.isEmpty()) {
             deleteSourceDir(projectId, paths.get(0));
         }
@@ -150,31 +127,19 @@ public class ProjectService {
     }
 
     public void saveDatasource(Long projectId, SaveDatasourceRequest request) {
-        Integer count = jdbcTemplate.queryForObject(
-                "select count(1) from project_datasource where project_id = ? and env = ?",
-                Integer.class, projectId, request.getEnv());
-        if (count != null && count > 0) {
-            jdbcTemplate.update(
-                    "update project_datasource set dbhub_key = ?, whitelist_tables = ?, enabled = 1, updated_at = now() where project_id = ? and env = ?",
-                    request.getDbhubKey(), "", projectId, request.getEnv());
+        if (projectDatasourceMapper.countByProjectEnv(projectId, request.getEnv()) > 0) {
+            projectDatasourceMapper.updateByProjectEnv(request.getDbhubKey(), "", projectId, request.getEnv());
             return;
         }
-        jdbcTemplate.update(
-                "insert into project_datasource(project_id, env, dbhub_key, whitelist_tables, enabled, created_at, updated_at) values (?, ?, ?, ?, 1, now(), now())",
-                projectId, request.getEnv(), request.getDbhubKey(), "");
+        projectDatasourceMapper.insert(projectId, request.getEnv(), request.getDbhubKey(), "");
     }
 
     public List<ProjectDatasource> listDatasources(Long projectId) {
-        return jdbcTemplate.query(
-                "select id, project_id, env, dbhub_key, whitelist_tables, enabled from project_datasource where project_id = ? order by id desc",
-                new ProjectDatasourceMapper(), projectId);
+        return projectDatasourceMapper.listByProject(projectId);
     }
 
     public ProjectDatasource firstEnabledDatasource(Long projectId) {
-        List<ProjectDatasource> list = jdbcTemplate.query(
-                "select id, project_id, env, dbhub_key, whitelist_tables, enabled from project_datasource where project_id = ? and enabled = 1 order by id desc limit 1",
-                new ProjectDatasourceMapper(), projectId);
-        return list.isEmpty() ? null : list.get(0);
+        return projectDatasourceMapper.findFirstEnabled(projectId);
     }
 
     private void validateProject(CreateProjectRequest request) {
@@ -189,48 +154,5 @@ public class ProjectService {
 
     private String safe(String value) {
         return value == null ? "" : value;
-    }
-
-    private static class ProjectMapper implements RowMapper<Project> {
-        @Override
-        public Project mapRow(ResultSet rs, int rowNum) throws SQLException {
-            Project project = new Project();
-            project.setId(rs.getLong("id"));
-            project.setName(rs.getString("name"));
-            project.setCode(rs.getString("code"));
-            project.setDescription(rs.getString("description"));
-            return project;
-        }
-    }
-
-    private static class ProjectVersionMapper implements RowMapper<ProjectVersion> {
-        @Override
-        public ProjectVersion mapRow(ResultSet rs, int rowNum) throws SQLException {
-            ProjectVersion version = new ProjectVersion();
-            version.setId(rs.getLong("id"));
-            version.setProjectId(rs.getLong("project_id"));
-            version.setSourceType(rs.getString("source_type"));
-            version.setBranchName(rs.getString("branch_name"));
-            version.setCommitId(rs.getString("commit_id"));
-            version.setSourcePath(rs.getString("source_path"));
-            version.setIndexStatus(rs.getString("index_status"));
-            version.setIndexMessage(rs.getString("index_message"));
-            version.setUpdatedAt(rs.getString("updated_at"));
-            return version;
-        }
-    }
-
-    private static class ProjectDatasourceMapper implements RowMapper<ProjectDatasource> {
-        @Override
-        public ProjectDatasource mapRow(ResultSet rs, int rowNum) throws SQLException {
-            ProjectDatasource datasource = new ProjectDatasource();
-            datasource.setId(rs.getLong("id"));
-            datasource.setProjectId(rs.getLong("project_id"));
-            datasource.setEnv(rs.getString("env"));
-            datasource.setDbhubKey(rs.getString("dbhub_key"));
-            datasource.setWhitelistTables(rs.getString("whitelist_tables"));
-            datasource.setEnabled(rs.getBoolean("enabled"));
-            return datasource;
-        }
     }
 }

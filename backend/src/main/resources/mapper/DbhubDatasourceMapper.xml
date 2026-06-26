@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tjc.bugagent.dbhub.mapper.DbhubDatasourceMapper">
+
+    <!-- 实体字段 key/user/database 与列名不同名，用 select 别名对齐字段，无需 resultMap -->
+
+    <select id="listAll" resultType="com.tjc.bugagent.dbhub.DbhubDatasourceConfig">
+        select datasource_key as `key`, host, port, username as user, password, database_name as `database`
+        from dbhub_datasource_config
+        order by id desc
+    </select>
+
+    <select id="getByKey" resultType="com.tjc.bugagent.dbhub.DbhubDatasourceConfig">
+        select datasource_key as `key`, host, port, username as user, password, database_name as `database`
+        from dbhub_datasource_config
+        where datasource_key = #{key}
+    </select>
+
+    <select id="countByKey" resultType="int">
+        select count(1) from dbhub_datasource_config where datasource_key = #{key}
+    </select>
+
+    <update id="updateByKey">
+        update dbhub_datasource_config
+        set host = #{host}, port = #{port}, username = #{user}, password = #{password},
+            database_name = #{database}, updated_at = now()
+        where datasource_key = #{key}
+    </update>
+
+    <insert id="insert">
+        insert into dbhub_datasource_config(datasource_key, host, port, username, password, database_name, created_at, updated_at)
+        values (#{key}, #{host}, #{port}, #{user}, #{password}, #{database}, now(), now())
+    </insert>
+
+    <delete id="deleteByKey">
+        delete from dbhub_datasource_config where datasource_key = #{key}
+    </delete>
+
+</mapper>

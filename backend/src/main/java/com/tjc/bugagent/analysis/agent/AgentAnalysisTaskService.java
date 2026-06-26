@@ -12,10 +12,13 @@ import java.util.UUID;
 public class AgentAnalysisTaskService {
     private final AgentAnalysisTaskRunner taskRunner;
     private final AgentAnalysisTaskStore taskStore;
+    private final AgentAnalysisCancelRegistry cancelRegistry;
 
-    public AgentAnalysisTaskService(AgentAnalysisTaskRunner taskRunner, AgentAnalysisTaskStore taskStore) {
+    public AgentAnalysisTaskService(AgentAnalysisTaskRunner taskRunner, AgentAnalysisTaskStore taskStore,
+                                    AgentAnalysisCancelRegistry cancelRegistry) {
         this.taskRunner = taskRunner;
         this.taskStore = taskStore;
+        this.cancelRegistry = cancelRegistry;
     }
 
     /**
@@ -52,6 +55,13 @@ public class AgentAnalysisTaskService {
         result.setTaskId(taskId);
         result.setStatus(status.getStatus());
         return result;
+    }
+
+    /**
+     * 请求停止任务：打上取消标记，正在跑的循环会在下一轮间隙中断并置 CANCELLED。
+     */
+    public void requestStop(String taskId) {
+        cancelRegistry.requestStop(taskId);
     }
 
     /**

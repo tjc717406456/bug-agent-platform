@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import { message } from 'ant-design-vue'
-import { submitAgentAnalysisTaskScreenshots, pollAgentAnalysisTask, submitApiExplainTask, uploadLog } from '../../api/client'
+import { submitAgentAnalysisTaskScreenshots, pollAgentAnalysisTask, stopAgentAnalysisTask, submitApiExplainTask, uploadLog } from '../../api/client'
 import { currentProject, analysisForm, analysisResult, analysisDialogVisible, activeReportTab, feedbackEditable, sleep } from '../core'
 
 export const screenshotFiles = ref([])
@@ -18,16 +18,38 @@ export function openLogSplit() {
 // 正在跑的 Agent 任务持久化：刷新/切走再回来能续上轮询、拿回结果（结果在 Redis，TTL 30min）
 const ACTIVE_TASK_KEY = 'bug-agent-active-task'
 export const agentTaskRunning = ref(false)
+// 当前任务 id 与「停止中」标记：停止按钮拿 id 发请求，loading 态防重复点
+export const currentTaskId = ref('')
+export const agentTaskStopping = ref(false)
 
 function saveActiveTask(taskId) {
+  currentTaskId.value = taskId || ''
   if (typeof window !== 'undefined' && taskId) {
     window.localStorage.setItem(ACTIVE_TASK_KEY, taskId)
   }
 }
 
 function clearActiveTask() {
+  currentTaskId.value = ''
   if (typeof window !== 'undefined') {
     window.localStorage.removeItem(ACTIVE_TASK_KEY)
+  }
+}
+
+// 点停止：发后端停止请求 + 置前端停止标记，轮询循环据此立即收尾，不干等后台跑完本轮
+export async function stopAgentTask() {
+  const taskId = currentTaskId.value || (typeof window !== 'undefined' && window.localStorage.getItem(ACTIVE_TASK_KEY))
+  if (!taskId) {
+    agentProgressVisible.value = false
+    return
+  }
+  agentTaskStopping.value = true
+  try {
+    await stopAgentAnalysisTask(taskId)
+    message.info('已请求停止，正在收尾…')
+  } catch (error) {
+    agentTaskStopping.value = false
+    message.error(error.message || '停止失败')
   }
 }
 
@@ -123,15 +145,21 @@ export async function agentAnalyzeAction() {
     return
   }
   agentProgress.value = []
+  agentTaskStopping.value = false
   agentProgressVisible.value = true
   try {
     const payload = { ...analysisForm, projectId: currentProject.value.id }
     payload.versionId = payload.versionId ? Number(payload.versionId) : null
     const task = await submitAgentAnalysisTaskScreenshots(payload, screenshotFiles.value)
     saveActiveTask(task.taskId)
-    analysisResult.value = await waitAgentTask(task.taskId)
-    feedbackEditable.value = false
+    const result = await waitAgentTask(task.taskId)
     agentProgressVisible.value = false
+    if (!result) {
+      message.info('分析已停止')
+      return
+    }
+    analysisResult.value = result
+    feedbackEditable.value = false
     activeReportTab.value = 'report'
     analysisDialogVisible.value = true
     message.success('Agent分析完成！')
@@ -151,6 +179,7 @@ export async function apiAnalyzeAction() {
     return
   }
   agentProgress.value = []
+  agentTaskStopping.value = false
   agentProgressVisible.value = true
   try {
     // 接口讲解只需项目+版本+接口；问题描述选填，填了就当关注点引导讲解方向
@@ -162,9 +191,14 @@ export async function apiAnalyzeAction() {
     }
     const task = await submitApiExplainTask(payload)
     saveActiveTask(task.taskId)
-    analysisResult.value = await waitAgentTask(task.taskId)
-    feedbackEditable.value = false
+    const result = await waitAgentTask(task.taskId)
     agentProgressVisible.value = false
+    if (!result) {
+      message.info('分析已停止')
+      return
+    }
+    analysisResult.value = result
+    feedbackEditable.value = false
     activeReportTab.value = 'report'
     analysisDialogVisible.value = true
     message.success('接口分析完成！')
@@ -182,6 +216,13 @@ export async function waitAgentTask(taskId) {
   agentTaskRunning.value = true
   try {
     for (let index = 0; index < 150; index++) {
+      // 点了停止：前端立即停轮询收尾，不等后台跑完本轮（后台会自行置 CANCELLED）
+      if (agentTaskStopping.value) {
+        clearActiveTask()
+        agentTaskRunning.value = false
+        agentTaskStopping.value = false
+        return null
+      }
       const task = await pollAgentAnalysisTask(taskId)
       // 实时刷新进度时间线
       if (Array.isArray(task.progress)) {
@@ -191,6 +232,13 @@ export async function waitAgentTask(taskId) {
         clearActiveTask()
         agentTaskRunning.value = false
         return task.result
+      }
+      // 后台已停止：当正常收尾，返回 null（无结果），别当失败弹红
+      if (task.status === 'CANCELLED') {
+        clearActiveTask()
+        agentTaskRunning.value = false
+        agentTaskStopping.value = false
+        return null
       }
       if (task.status === 'FAILED' || task.status === 'NOT_FOUND') {
         clearActiveTask()
@@ -214,11 +262,18 @@ export async function resumeAgentTask() {
   if (!taskId) return
 
   agentProgress.value = []
+  agentTaskStopping.value = false
+  saveActiveTask(taskId)
   agentProgressVisible.value = true
   try {
-    analysisResult.value = await waitAgentTask(taskId)
-    feedbackEditable.value = false
+    const result = await waitAgentTask(taskId)
     agentProgressVisible.value = false
+    if (!result) {
+      message.info('分析已停止')
+      return
+    }
+    analysisResult.value = result
+    feedbackEditable.value = false
     activeReportTab.value = 'report'
     analysisDialogVisible.value = true
     message.success('Agent分析完成！')

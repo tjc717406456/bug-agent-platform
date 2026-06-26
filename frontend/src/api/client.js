@@ -126,6 +126,10 @@ export function pollAgentAnalysisTask(taskId) {
   return request(`/analysis/agent/tasks/${encodeURIComponent(taskId)}/poll`, { method: 'POST' })
 }
 
+export function stopAgentAnalysisTask(taskId) {
+  return request(`/analysis/agent/tasks/${encodeURIComponent(taskId)}/stop`, { method: 'POST' })
+}
+
 export function submitApiExplainTask(payload) {
   return request('/analysis/explain/tasks', { method: 'POST', body: JSON.stringify(payload) })
 }

@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tjc.bugagent.project.mapper.ProjectVersionMapper">
+
+    <!-- 列名下划线靠 map-underscore-to-camel-case 自动映射到驼峰字段，无需 resultMap -->
+
+    <insert id="insertVersion" useGeneratedKeys="true" keyProperty="id">
+        insert into project_version(project_id, source_type, branch_name, source_path, index_status, created_at)
+        values (#{projectId}, #{sourceType}, #{branchName}, #{sourcePath}, 'PENDING', now())
+    </insert>
+
+    <sql id="versionColumns">
+        id, project_id, source_type, branch_name, commit_id, source_path,
+        index_status, index_message, coalesce(indexed_at, created_at) as updated_at
+    </sql>
+
+    <select id="listByProject" resultType="com.tjc.bugagent.project.ProjectVersion">
+        select <include refid="versionColumns"/>
+        from project_version
+        where project_id = #{projectId}
+        order by id desc
+    </select>
+
+    <select id="latestReady" resultType="com.tjc.bugagent.project.ProjectVersion">
+        select <include refid="versionColumns"/>
+        from project_version
+        where project_id = #{projectId} and index_status = 'SUCCESS'
+        order by id desc
+        limit 1
+    </select>
+
+    <select id="findById" resultType="com.tjc.bugagent.project.ProjectVersion">
+        select <include refid="versionColumns"/>
+        from project_version
+        where id = #{id}
+    </select>
+
+    <select id="findSourcePaths" resultType="java.lang.String">
+        select source_path from project_version where id = #{id} and project_id = #{projectId}
+    </select>
+
+    <delete id="deleteByProject">
+        delete from project_version where project_id = #{projectId}
+    </delete>
+
+    <delete id="deleteByIdAndProject">
+        delete from project_version where id = #{id} and project_id = #{projectId}
+    </delete>
+
+    <update id="markIndexing">
+        update project_version
+        set index_status = 'INDEXING', index_started_at = now(), index_message = null
+        where id = #{id}
+    </update>
+
+    <update id="markSuccess">
+        update project_version
+        set index_status = 'SUCCESS', indexed_at = now(), index_message = 'index completed'
+        where id = #{id}
+    </update>
+
+    <update id="markFailed">
+        update project_version
+        set index_status = 'FAILED', index_message = #{message}
+        where id = #{id}
+    </update>
+
+    <update id="updateMessage">
+        update project_version
+        set index_message = #{message}
+        where id = #{id}
+    </update>
+
+</mapper>

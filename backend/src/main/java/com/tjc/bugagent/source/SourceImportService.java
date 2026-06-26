@@ -1,9 +1,11 @@
 package com.tjc.bugagent.source;
 
 import com.tjc.bugagent.codegraph.CodeGraphIndexService;
+import com.tjc.bugagent.codegraph.CodeGraphRepository;
 import com.tjc.bugagent.config.AppProperties;
+import com.tjc.bugagent.project.ProjectVersion;
+import com.tjc.bugagent.project.mapper.ProjectVersionMapper;
 import org.apache.commons.io.FileUtils;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -12,7 +14,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -23,12 +24,15 @@ import java.util.zip.ZipInputStream;
 @Service
 public class SourceImportService {
     private final AppProperties appProperties;
-    private final JdbcTemplate jdbcTemplate;
+    private final ProjectVersionMapper projectVersionMapper;
+    private final CodeGraphRepository codeGraphRepository;
     private final CodeGraphIndexService codeGraphIndexService;
 
-    public SourceImportService(AppProperties appProperties, JdbcTemplate jdbcTemplate, CodeGraphIndexService codeGraphIndexService) {
+    public SourceImportService(AppProperties appProperties, ProjectVersionMapper projectVersionMapper,
+                               CodeGraphRepository codeGraphRepository, CodeGraphIndexService codeGraphIndexService) {
         this.appProperties = appProperties;
-        this.jdbcTemplate = jdbcTemplate;
+        this.projectVersionMapper = projectVersionMapper;
+        this.codeGraphRepository = codeGraphRepository;
         this.codeGraphIndexService = codeGraphIndexService;
     }
 
@@ -83,15 +87,12 @@ public class SourceImportService {
      * 一个项目只保留一份当前源码，重导即覆盖，DB 和磁盘不再随导入次数无限增长。
      */
     private void pruneProjectVersions(Long projectId) {
-        List<Map<String, Object>> versions = jdbcTemplate.queryForList(
-                "select id, source_path from project_version where project_id = ?", projectId);
-        for (Map<String, Object> version : versions) {
-            Long versionId = ((Number) version.get("id")).longValue();
-            jdbcTemplate.update("delete from code_edge where project_id = ? and version_id = ?", projectId, versionId);
-            jdbcTemplate.update("delete from code_node where project_id = ? and version_id = ?", projectId, versionId);
-            deleteSourceDir(projectId, (String) version.get("source_path"));
+        List<ProjectVersion> versions = projectVersionMapper.listByProject(projectId);
+        for (ProjectVersion version : versions) {
+            codeGraphRepository.clearVersion(projectId, version.getId());
+            deleteSourceDir(projectId, version.getSourcePath());
         }
-        jdbcTemplate.update("delete from project_version where project_id = ?", projectId);
+        projectVersionMapper.deleteByProject(projectId);
     }
 
     /**
@@ -118,10 +119,13 @@ public class SourceImportService {
     }
 
     private Long createVersion(Long projectId, String sourceType, String branchName, String sourcePath) {
-        jdbcTemplate.update(
-                "insert into project_version(project_id, source_type, branch_name, source_path, index_status, created_at) values (?, ?, ?, ?, 'PENDING', now())",
-                projectId, sourceType, branchName, sourcePath);
-        return jdbcTemplate.queryForObject("select last_insert_id()", Long.class);
+        ProjectVersion version = new ProjectVersion();
+        version.setProjectId(projectId);
+        version.setSourceType(sourceType);
+        version.setBranchName(branchName);
+        version.setSourcePath(sourcePath);
+        projectVersionMapper.insertVersion(version);
+        return version.getId();
     }
 
     private void unzip(MultipartFile file, Path target) throws IOException {

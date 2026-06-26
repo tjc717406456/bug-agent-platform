@@ -76,6 +76,15 @@ public class AnalysisController {
     }
 
     /**
+     * 手动停止正在跑的 Agent 分析/接口讲解任务。
+     */
+    @PostMapping("/agent/tasks/{taskId}/stop")
+    public ApiResponse<String> stopAgentTask(@PathVariable String taskId) {
+        agentAnalysisTaskService.requestStop(taskId);
+        return ApiResponse.ok("已请求停止");
+    }
+
+    /**
      * 对一条分析记录做人工反馈（对错 + 真实根因 + 期望关键词），沉淀成回归用例。
      */
     @PutMapping("/records/{recordId}/feedback")

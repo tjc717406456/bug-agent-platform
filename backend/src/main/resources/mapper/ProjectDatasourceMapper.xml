@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tjc.bugagent.project.mapper.ProjectDatasourceMapper">
+
+    <!-- 列名下划线靠 map-underscore-to-camel-case 自动映射到驼峰字段，无需 resultMap -->
+
+    <select id="countByProjectEnv" resultType="int">
+        select count(1) from project_datasource
+        where project_id = #{projectId} and env = #{env}
+    </select>
+
+    <update id="updateByProjectEnv">
+        update project_datasource
+        set dbhub_key = #{dbhubKey}, whitelist_tables = #{whitelistTables}, enabled = 1, updated_at = now()
+        where project_id = #{projectId} and env = #{env}
+    </update>
+
+    <insert id="insert">
+        insert into project_datasource(project_id, env, dbhub_key, whitelist_tables, enabled, created_at, updated_at)
+        values (#{projectId}, #{env}, #{dbhubKey}, #{whitelistTables}, 1, now(), now())
+    </insert>
+
+    <select id="listByProject" resultType="com.tjc.bugagent.project.ProjectDatasource">
+        select id, project_id, env, dbhub_key, whitelist_tables, enabled
+        from project_datasource
+        where project_id = #{projectId}
+        order by id desc
+    </select>
+
+    <select id="findFirstEnabled" resultType="com.tjc.bugagent.project.ProjectDatasource">
+        select id, project_id, env, dbhub_key, whitelist_tables, enabled
+        from project_datasource
+        where project_id = #{projectId} and enabled = 1
+        order by id desc
+        limit 1
+    </select>
+
+</mapper>

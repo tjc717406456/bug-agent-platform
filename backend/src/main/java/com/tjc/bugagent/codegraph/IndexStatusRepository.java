@@ -1,6 +1,6 @@
 package com.tjc.bugagent.codegraph;
 
-import org.springframework.jdbc.core.JdbcTemplate;
+import com.tjc.bugagent.project.mapper.ProjectVersionMapper;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -10,29 +10,29 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class IndexStatusRepository {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final ProjectVersionMapper projectVersionMapper;
 
-    public IndexStatusRepository(JdbcTemplate jdbcTemplate) {
-        this.jdbcTemplate = jdbcTemplate;
+    public IndexStatusRepository(ProjectVersionMapper projectVersionMapper) {
+        this.projectVersionMapper = projectVersionMapper;
     }
 
     /** 进入索引中：重置开始时间和消息。 */
     public void markIndexing(Long versionId) {
-        jdbcTemplate.update("update project_version set index_status = 'INDEXING', index_started_at = now(), index_message = null where id = ?", versionId);
+        projectVersionMapper.markIndexing(versionId);
     }
 
     /** 索引成功收尾。 */
     public void markSuccess(Long versionId) {
-        jdbcTemplate.update("update project_version set index_status = 'SUCCESS', indexed_at = now(), index_message = 'index completed' where id = ?", versionId);
+        projectVersionMapper.markSuccess(versionId);
     }
 
     /** 索引失败，落具体错误信息。 */
     public void markFailed(Long versionId, String message) {
-        jdbcTemplate.update("update project_version set index_status = 'FAILED', index_message = ? where id = ?", message, versionId);
+        projectVersionMapper.markFailed(versionId, message);
     }
 
     /** 刷新当前进度消息。 */
     public void updateMessage(Long versionId, String message) {
-        jdbcTemplate.update("update project_version set index_message = ? where id = ?", message, versionId);
+        projectVersionMapper.updateMessage(versionId, message);
     }
 }

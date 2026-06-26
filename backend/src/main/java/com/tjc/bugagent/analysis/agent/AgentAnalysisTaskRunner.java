@@ -1,5 +1,6 @@
 package com.tjc.bugagent.analysis.agent;
 
+import com.tjc.bugagent.analysis.AnalysisProgressListener;
 import com.tjc.bugagent.analysis.AnalysisRequest;
 import com.tjc.bugagent.analysis.AnalysisResult;
 import org.slf4j.Logger;
@@ -17,12 +18,32 @@ public class AgentAnalysisTaskRunner {
     private final AgentAnalysisService agentAnalysisService;
     private final ApiExplainService apiExplainService;
     private final AgentAnalysisTaskStore taskStore;
+    private final AgentAnalysisCancelRegistry cancelRegistry;
 
     public AgentAnalysisTaskRunner(AgentAnalysisService agentAnalysisService, ApiExplainService apiExplainService,
-                                   AgentAnalysisTaskStore taskStore) {
+                                   AgentAnalysisTaskStore taskStore, AgentAnalysisCancelRegistry cancelRegistry) {
         this.agentAnalysisService = agentAnalysisService;
         this.apiExplainService = apiExplainService;
         this.taskStore = taskStore;
+        this.cancelRegistry = cancelRegistry;
+    }
+
+    /**
+     * 进度回调 + 取消信号：每步写回任务状态供前端轮询；isCancelled 查取消标记，让循环能在轮间停下。
+     */
+    private AnalysisProgressListener listener(String taskId, AgentAnalysisTaskStatus status) {
+        return new AnalysisProgressListener() {
+            @Override
+            public void onStep(String step) {
+                status.addProgress(step);
+                taskStore.save(status);
+            }
+
+            @Override
+            public boolean isCancelled() {
+                return cancelRegistry.isStopRequested(taskId);
+            }
+        };
     }
 
     /**
@@ -34,18 +55,19 @@ public class AgentAnalysisTaskRunner {
         status.setMessage("Agent 正在分析");
         taskStore.save(status);
         try {
-            // 每个进度步骤写回任务状态，前端轮询即可实时看到分析过程
-            AnalysisResult result = agentAnalysisService.analyze(request, step -> {
-                status.addProgress(step);
-                taskStore.save(status);
-            });
+            AnalysisResult result = agentAnalysisService.analyze(request, listener(taskId, status));
             status.setResult(result);
             status.setStatus("SUCCESS");
             status.setMessage("分析完成");
+        } catch (AnalysisCancelledException cancelled) {
+            status.setStatus("CANCELLED");
+            status.setMessage("已手动停止");
         } catch (Exception exception) {
             log.error("agent analysis task failed, taskId={}", taskId, exception);
             status.setStatus("FAILED");
             status.setMessage(exception.getMessage());
+        } finally {
+            cancelRegistry.clear(taskId);
         }
         taskStore.save(status);
     }
@@ -59,17 +81,19 @@ public class AgentAnalysisTaskRunner {
         status.setMessage("正在讲解接口");
         taskStore.save(status);
         try {
-            AnalysisResult result = apiExplainService.explain(request, step -> {
-                status.addProgress(step);
-                taskStore.save(status);
-            });
+            AnalysisResult result = apiExplainService.explain(request, listener(taskId, status));
             status.setResult(result);
             status.setStatus("SUCCESS");
             status.setMessage("讲解完成");
+        } catch (AnalysisCancelledException cancelled) {
+            status.setStatus("CANCELLED");
+            status.setMessage("已手动停止");
         } catch (Exception exception) {
             log.error("api explain task failed, taskId={}", taskId, exception);
             status.setStatus("FAILED");
             status.setMessage(exception.getMessage());
+        } finally {
+            cancelRegistry.clear(taskId);
         }
         taskStore.save(status);
     }

@@ -115,10 +115,12 @@ public class AgentAnalysisService {
         ProjectVersion version = resolveVersion(request);
         CodeGraphQueryResult graph = codeGraphQueryService.queryByApiPath(request.getProjectId(), version.getId(), request.getApiPath());
         ProjectDatasource datasource = projectService.firstEnabledDatasource(request.getProjectId());
-        // 日志原文解析一次，既喂给上下文供 search_log 深挖，也交给线索抽取
+        // 日志原文解析一次，交给线索抽取（一次性用完即弃，不长期持有）
         String logText = resolveLogText(request);
+        // 上传的大日志只把路径交给 toolContext，search_log 按需流式 grep，避免全文常驻内存
+        String logPath = resolveLogPath(request);
         AgentToolExecutor.AgentToolContext toolContext = new AgentToolExecutor.AgentToolContext(
-                request.getProjectId(), version.getId(), request.getApiPath(), datasource, logText);
+                request.getProjectId(), version.getId(), request.getApiPath(), datasource, request.getLogText(), logPath);
 
         // 有日志就先抠出堆栈、SQL、traceId、时间，缺啥补啥，让后续流程自动用上
         LogClues logClues = enrichFromLog(request, logText);
@@ -142,6 +144,10 @@ public class AgentAnalysisService {
         // 按模式跑单链或多假设并行，拿到最终胜出的调查结果
         ChainResult winner = runHypotheses(request, graph, toolContext, initialEvidence,
                 initialUserPrompt, screenshots, refPrompt, maxIterations, progress);
+        // 并行分支里的中断会被 fanout 吞成 null，这里兜底再查一次，避免停止后还落库/算自检
+        if (progress.isCancelled()) {
+            throw new AnalysisCancelledException();
+        }
 
         String finalReport = winner.report;
         String evidence = reporter.buildEvidenceLog(initialEvidence, winner.rounds);
@@ -162,7 +168,7 @@ public class AgentAnalysisService {
         result.setRounds(roundsCount);
         result.setTotalTokens(winner.tokens);
         result.setElapsedMs(elapsedMs);
-        log.info("分析完成 api={} 轮数={} token={} 耗时={}ms 置信={} 自检={}",
+        log.info("分析完成 api={} 轮数={} token={} 耗时={}ms 置信={} 自动核对={}",
                 request.getApiPath(), roundsCount, winner.tokens, elapsedMs, confidence, autoVerify.getStatus());
         progress.onStep("✓ 分析完成 · " + roundsCount + " 轮查证 · " + confidence + " 置信 · " + winner.tokens + " tokens · " + (elapsedMs / 1000) + "s");
         return result;
@@ -355,6 +361,10 @@ public class AgentAnalysisService {
         int tokens = 0;
 
         for (int iteration = 1; iteration <= maxIterations; iteration++) {
+            // 用户手动停止：轮间检测到即中断（本轮内的单次 LLM 请求打不断，停在轮与轮之间）
+            if (progress.isCancelled()) {
+                throw new AnalysisCancelledException();
+            }
             String forceFinishReason = judge.resolveForceFinishReason(graph, rounds, noNewKeyFactRounds);
             if (!isBlank(forceFinishReason)) {
                 messages.add(conversation.message("user", promptBuilder.buildForceFinishInstruction(forceFinishReason)));
@@ -386,6 +396,21 @@ public class AgentAnalysisService {
                     messages.add(conversation.message("user", promptBuilder.buildToolNudge()));
                     progress.onStep(label + "第" + iteration + "轮 · 模型只给了计划，提示其直接调用工具");
                     continue;
+                }
+                // 收口这轮模型没吐出 finish 工具调用（degraded，多为上下文过大后 tool-call 协议崩）：
+                // 模型其实会写报告，只是憋不出工具 JSON。先让它「不调工具、纯文字」直接写，绕开协议崩拿真分析；
+                // 纯文字仍空才退回机械汇总，保证给真结论而非空壳。只在崩时多发这一次，不影响正常流程。
+                if (finish.isDegraded()) {
+                    progress.onStep(label + "第" + iteration + "轮 · 模型未按协议收口，改用纯文字直接生成报告");
+                    String prose = proseSynthesizeReport(messages);
+                    if (isBlank(prose)) {
+                        String reason = isBlank(forceFinishReason) ? "模型未按协议收口，依据已查证据汇总" : forceFinishReason;
+                        prose = reporter.buildForcedFinishReport(reason, rounds);
+                    }
+                    finalReport = prose;
+                    rounds.add(reporter.recordRound(iteration, aiResult, finish,
+                            AgentToolResult.ok("finish", "已据证据生成最终报告", finalReport)));
+                    break;
                 }
                 // 模型自然收口（非强制、非兜底）时，先做一次对抗式自检，抓自洽幻觉
                 boolean canCritique = appProperties.getAgent().isSelfCritique()
@@ -473,6 +498,27 @@ public class AgentAnalysisService {
     }
 
     /**
+     * 模型憋不出 finish 工具调用时的救场：让它「不调任何工具、纯文字」直接写最终报告。
+     * 散文输出没有 tool-call JSON 解析这关，绕开上下文过大导致的协议崩，多数情况下能拿到真分析。
+     * 失败或返回空则回 null，由调用方退回机械汇总。
+     */
+    private String proseSynthesizeReport(List<Map<String, Object>> messages) {
+        try {
+            List<Map<String, Object>> ask = new ArrayList<Map<String, Object>>(messages);
+            ask.add(conversation.message("user", "现在不要调用任何工具，直接用纯文字写出最终定位报告，"
+                    + "包含：通俗结论、问题结论、证据链路、关键代码/SQL/数据证据、根因类型、建议处理人、置信度。"
+                    + "证据不足就给最可能的判断并说明剩余风险。"));
+            AiToolCallResult aiResult = aiClient.chatWithMessages(ask, null);
+            if (aiResult.isFailed()) {
+                return null;
+            }
+            return safe(aiResult.getContent());
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
+    /**
      * 达到最大轮次仍没收口时，再发一次请求逼模型基于已有证据 finish 出完整报告；
      * 模型仍不配合才退回本地汇总报告，保证给到的不是一句话。
      */
@@ -530,6 +576,17 @@ public class AgentAnalysisService {
             logText = logStorageService.read(request.getLogId());
         }
         return logText;
+    }
+
+    /**
+     * 解析上传日志文件路径，供 search_log 流式读，避免把大日志全文攥进内存。
+     * 与 resolveLogText 同一优先级：用户直接粘贴了 logText 时返回 null（贴文本优先，不读文件）。
+     */
+    private String resolveLogPath(AnalysisRequest request) {
+        if (!isBlank(request.getLogText()) || isBlank(request.getLogId())) {
+            return null;
+        }
+        return logStorageService.resolvePath(request.getLogId());
     }
 
     /** 读过代码或看过表结构的动作，达成后才解锁查库（query_database）。 */

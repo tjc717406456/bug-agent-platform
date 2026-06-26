@@ -4,17 +4,18 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tjc.bugagent.ai.AiClient;
 import com.tjc.bugagent.analysis.AnalysisRequest;
+import com.tjc.bugagent.analysis.mapper.AnalysisRecordMapper;
 import com.tjc.bugagent.config.AppProperties;
 import com.tjc.bugagent.project.ProjectVersion;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,28 +31,18 @@ import static com.tjc.bugagent.analysis.agent.AgentTextUtils.trim;
 @Component
 public class SimilarCaseRetriever {
 
-    // 候选集只圈"靠得住"的：人工标注过或机器验证 CONFIRMED 的，复用评测飞轮那套筛选条件
-    private static final String CANDIDATE_SQL =
-            "select id, api_path, conclusion, confidence, actual_root_cause, embedding, "
-                    + "coalesce(nullif(expect_keywords, ''), auto_verify_keywords) as keywords, "
-                    + "user_description, stack_trace from analysis_record "
-                    + "where project_id = ? "
-                    + "and ((feedback_verdict is not null and expect_keywords is not null and expect_keywords <> '' and expect_keywords <> '[]') "
-                    + "  or (auto_verify = 'CONFIRMED' and auto_verify_keywords is not null and auto_verify_keywords <> '')) "
-                    + "order by id desc limit 200";
-
     private static final Pattern EXCEPTION_PATTERN = Pattern.compile("([A-Za-z_][\\w$.]*Exception)");
     private static final Pattern WORD_PATTERN = Pattern.compile("[\\w\\u4e00-\\u9fa5]+");
 
     private static final Logger log = LoggerFactory.getLogger(SimilarCaseRetriever.class);
 
-    private final JdbcTemplate jdbcTemplate;
+    private final AnalysisRecordMapper analysisRecordMapper;
     private final ObjectMapper objectMapper;
     private final AppProperties appProperties;
     private final AiClient aiClient;
 
-    public SimilarCaseRetriever(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, AppProperties appProperties, AiClient aiClient) {
-        this.jdbcTemplate = jdbcTemplate;
+    public SimilarCaseRetriever(AnalysisRecordMapper analysisRecordMapper, ObjectMapper objectMapper, AppProperties appProperties, AiClient aiClient) {
+        this.analysisRecordMapper = analysisRecordMapper;
         this.objectMapper = objectMapper;
         this.appProperties = appProperties;
         this.aiClient = aiClient;
@@ -69,24 +60,28 @@ public class SimilarCaseRetriever {
         Set<String> currentWords = tokenize(request.getUserDescription());
         String currentException = topException(request.getStackTrace());
 
-        List<Candidate> candidates = jdbcTemplate.query(CANDIDATE_SQL, (rs, rowNum) -> {
-            String candidatePath = safe(rs.getString("api_path"));
-            String candidateDesc = safe(rs.getString("user_description"));
+        // 候选集只圈"靠得住"的：人工标注过或机器验证 CONFIRMED 的（筛选条件见 Mapper XML）
+        List<Map<String, Object>> rows = analysisRecordMapper.selectCandidates(request.getProjectId());
+        List<Candidate> candidates = new ArrayList<Candidate>();
+        for (Map<String, Object> row : rows) {
+            String candidatePath = safe(str(row, "apiPath"));
+            String candidateDesc = safe(str(row, "userDescription"));
             // 排除与本次完全雷同的自身回放，避免把刚跑的记录当"历史"塞回去
             if (candidatePath.equals(currentPath) && candidateDesc.equals(safe(request.getUserDescription()))) {
-                return null;
+                continue;
             }
+            String candidateStack = str(row, "stackTrace");
             Candidate candidate = new Candidate();
-            candidate.id = rs.getLong("id");
+            candidate.id = ((Number) row.get("id")).longValue();
             candidate.apiPath = candidatePath;
-            candidate.rootCause = resolveRootCause(rs.getString("actual_root_cause"), rs.getString("conclusion"));
-            candidate.keywords = formatKeywords(rs.getString("keywords"));
-            candidate.confidence = safe(rs.getString("confidence"));
-            candidate.lexical = score(currentPath, currentWords, currentException, candidatePath, candidateDesc, safe(rs.getString("stack_trace")));
-            candidate.embeddingJson = rs.getString("embedding");
-            candidate.embedText = caseText(candidatePath, candidateDesc, candidate.rootCause, topException(rs.getString("stack_trace")));
-            return candidate;
-        }, request.getProjectId());
+            candidate.rootCause = resolveRootCause(str(row, "actualRootCause"), str(row, "conclusion"));
+            candidate.keywords = formatKeywords(str(row, "keywords"));
+            candidate.confidence = safe(str(row, "confidence"));
+            candidate.lexical = score(currentPath, currentWords, currentException, candidatePath, candidateDesc, safe(candidateStack));
+            candidate.embeddingJson = str(row, "embedding");
+            candidate.embedText = caseText(candidatePath, candidateDesc, candidate.rootCause, topException(candidateStack));
+            candidates.add(candidate);
+        }
 
         // 词法分打底，开了语义召回再叠加余弦相似度，"意思像但说法不同"的旧案例也能排上号
         applySemantic(candidates, caseText(currentPath, safe(request.getUserDescription()), "", currentException));
@@ -172,11 +167,17 @@ public class SimilarCaseRetriever {
 
     private void storeEmbedding(long id, float[] vector) {
         try {
-            jdbcTemplate.update("update analysis_record set embedding = ? where id = ?", objectMapper.writeValueAsString(vector), id);
+            analysisRecordMapper.updateEmbedding(id, objectMapper.writeValueAsString(vector));
         } catch (Exception exception) {
             // 回写只是缓存，失败下次再算，不影响本次召回
             log.debug("回写案例向量失败 id={}: {}", id, exception.getMessage());
         }
+    }
+
+    /** 从候选行 Map 取字符串字段，null 安全 */
+    private String str(Map<String, Object> row, String key) {
+        Object value = row.get(key);
+        return value == null ? null : value.toString();
     }
 
     /** 余弦相似度，维度不一致(换过 embedding 模型)或零向量按 0 处理，不误配。 */

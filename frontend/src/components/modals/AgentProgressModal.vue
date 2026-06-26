@@ -1,5 +1,5 @@
 <template>
-  <a-modal v-model:open="agentProgressVisible" title="Agent 分析进度（自主查证过程）" :footer="null" :closable="false" :mask-closable="false" centered width="600px">
+  <a-modal v-model:open="agentProgressVisible" title="Agent 分析进度（自主查证过程）" :closable="false" :mask-closable="false" centered width="600px">
     <div class="progress-box">
       <div class="elapsed-bar"><a-spin /><span class="elapsed">⏱ 已用时 {{ elapsedText }}</span></div>
       <a-timeline class="top-gap" v-if="agentProgress.length">
@@ -13,6 +13,11 @@
       </a-timeline>
       <p v-else class="hint-text">正在启动分析…</p>
     </div>
+    <template #footer>
+      <a-button danger :loading="agentTaskStopping" @click="stopAgentTask">
+        {{ agentTaskStopping ? '正在停止…' : '停止分析' }}
+      </a-button>
+    </template>
   </a-modal>
 </template>
 
@@ -20,7 +25,7 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { useAppStore } from '../../store/useAppStore'
 
-const { agentProgressVisible, agentProgress } = useAppStore()
+const { agentProgressVisible, agentProgress, agentTaskStopping, stopAgentTask } = useAppStore()
 
 // 弹窗打开即开始走秒，关闭停表；纯前端计时，给个实时耗时感知（最终准确耗时以收尾的 "✓ 完成 · Ns" 为准）
 const elapsed = ref(0)

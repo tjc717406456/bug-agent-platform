@@ -74,10 +74,6 @@ public class ApiExplainService {
         this.appProperties = appProperties;
     }
 
-    public AnalysisResult explain(AnalysisRequest request) {
-        return explain(request, AnalysisProgressListener.NOOP);
-    }
-
     /**
      * 带进度回调的接口讲解，多轮工具循环驱动模型下钻调用链和源码。
      */
@@ -107,6 +103,10 @@ public class ApiExplainService {
         int maxIterations = appProperties.getAgent().getMaxIterations();
 
         for (int iteration = 1; iteration <= maxIterations; iteration++) {
+            // 用户手动停止：轮间检测到即中断
+            if (progress.isCancelled()) {
+                throw new AnalysisCancelledException();
+            }
             AiToolCallResult aiResult = aiClient.chatWithMessagesUtility(messages, agentToolExecutor.toolSchemas());
             tokens += aiResult.getTotalTokens();
             // AI 真失败（网关重置/未配置）：直接中止，别把"AI不可用"当讲解收口
@@ -167,6 +167,7 @@ public class ApiExplainService {
         result.setPlainAnswer(plainAnswerResolver.buildPlainAnswer(finalReport, evidence));
         result.setConclusion(finalReport);
         result.setEvidenceJson(evidence);
+        result.setRounds(rounds.size());
         result.setTotalTokens(tokens);
         result.setElapsedMs(System.currentTimeMillis() - startMs);
         progress.onStep("✓ 讲解完成 · " + rounds.size() + " 轮查证 · " + tokens + " tokens · " + (result.getElapsedMs() / 1000) + "s");

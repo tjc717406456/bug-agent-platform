@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tjc.bugagent.ai.mapper.AiConfigMapper">
+
+    <!-- 列名下划线靠 map-underscore-to-camel-case 自动映射；api_key_cipher 别名为 api_key 以落到 apiKey（密文，Service 再解码） -->
+
+    <select id="listAll" resultType="com.tjc.bugagent.ai.AiConfig">
+        select id, provider, base_url, model_name, api_key_cipher as api_key,
+               timeout_seconds, enabled, supports_vision, role
+        from ai_provider_config
+        order by id asc
+    </select>
+
+    <select id="countAll" resultType="int">
+        select count(*) from ai_provider_config
+    </select>
+
+    <select id="countById" resultType="int">
+        select count(*) from ai_provider_config where id = #{id}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        insert into ai_provider_config(provider, base_url, model_name, api_key_cipher, timeout_seconds, enabled, supports_vision, role, created_at, updated_at)
+        values (#{provider}, #{baseUrl}, #{modelName}, #{apiKey}, #{timeoutSeconds}, #{enabled}, #{supportsVision}, #{role}, now(), now())
+    </insert>
+
+    <update id="updateKeepKey">
+        update ai_provider_config
+        set provider = #{provider}, base_url = #{baseUrl}, model_name = #{modelName},
+            timeout_seconds = #{timeoutSeconds}, supports_vision = #{supportsVision},
+            role = #{role}, updated_at = now()
+        where id = #{id}
+    </update>
+
+    <update id="updateWithKey">
+        update ai_provider_config
+        set provider = #{provider}, base_url = #{baseUrl}, model_name = #{modelName},
+            api_key_cipher = #{apiKey}, timeout_seconds = #{timeoutSeconds},
+            supports_vision = #{supportsVision}, role = #{role}, updated_at = now()
+        where id = #{id}
+    </update>
+
+    <select id="findEnabledEmbedding" resultType="com.tjc.bugagent.ai.AiConfig">
+        select id, provider, base_url, model_name, api_key_cipher as api_key,
+               timeout_seconds, enabled, supports_vision, role
+        from ai_provider_config
+        where role = 'EMBEDDING' and enabled = 1
+        order by id desc
+        limit 1
+    </select>
+
+    <select id="findUtility" resultType="com.tjc.bugagent.ai.AiConfig">
+        select id, provider, base_url, model_name, api_key_cipher as api_key,
+               timeout_seconds, enabled, supports_vision, role
+        from ai_provider_config
+        where role = 'UTILITY'
+        order by id desc
+        limit 1
+    </select>
+
+    <select id="findRoleById" resultType="java.lang.String">
+        select role from ai_provider_config where id = #{id}
+    </select>
+
+    <update id="toggleEnabled">
+        update ai_provider_config
+        set enabled = case when enabled = 1 then 0 else 1 end, updated_at = now()
+        where id = #{id}
+    </update>
+
+    <update id="disableAllNonEmbedding">
+        update ai_provider_config set enabled = 0 where role <![CDATA[<>]]> 'EMBEDDING'
+    </update>
+
+    <update id="enableById">
+        update ai_provider_config set enabled = 1, updated_at = now() where id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        delete from ai_provider_config where id = #{id}
+    </delete>
+
+    <select id="findEnabledConfig" resultType="com.tjc.bugagent.ai.AiConfig">
+        select id, provider, base_url, model_name, api_key_cipher as api_key,
+               timeout_seconds, enabled, supports_vision, role
+        from ai_provider_config
+        where enabled = 1 and role <![CDATA[<>]]> 'EMBEDDING'
+        order by id desc
+        limit 1
+    </select>
+
+    <select id="findLatestId" resultType="java.lang.Long">
+        select id from ai_provider_config order by id desc limit 1
+    </select>
+
+</mapper>

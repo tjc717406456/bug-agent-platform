@@ -24,7 +24,7 @@ public class CodeGraphQueryService {
 
     public CodeGraphQueryResult queryByApiPath(Long projectId, Long versionId, String apiPath) {
         CodeGraphQueryResult result = new CodeGraphQueryResult();
-        List<CodeNode> routes = codeGraphRepository.findRouteNodes(projectId, versionId, "%" + apiPath + "%");
+        List<CodeNode> routes = codeGraphRepository.findRouteNodes(projectId, versionId, apiPath, 20);
         // LIKE 命中不了时，按模板匹配兜底：运行时真实路径 /user/123 也能对上索引的 /user/{id}
         if (routes.isEmpty()) {
             routes = matchByTemplate(projectId, versionId, apiPath);
@@ -74,7 +74,7 @@ public class CodeGraphQueryService {
     public List<ApiRouteOption> listApiRoutes(Long projectId, Long versionId, String keyword) {
         // 下拉要列全项目接口，大工程路由轻松上几百条，上限放到 1000 兜底全量；配合关键词远程搜索按需收窄
         List<CodeNode> routes = codeGraphRepository.findRouteNodes(
-                projectId, versionId, "%" + (keyword == null ? "" : keyword.trim()) + "%", 1000);
+                projectId, versionId, keyword == null ? "" : keyword.trim(), 1000);
         List<ApiRouteOption> options = new ArrayList<ApiRouteOption>(routes.size());
         for (CodeNode route : routes) {
             ApiRouteOption option = new ApiRouteOption();
@@ -112,7 +112,8 @@ public class CodeGraphQueryService {
      */
     private List<CodeNode> matchByTemplate(Long projectId, Long versionId, String apiPath) {
         String path = stripQuery(apiPath);
-        List<CodeNode> all = codeGraphRepository.findRouteNodes(projectId, versionId, "%", 500);
+        // 传空串配合 XML 的 concat('%', ?, '%') = '%%'，捞全部路由再按模板逐一匹配
+        List<CodeNode> all = codeGraphRepository.findRouteNodes(projectId, versionId, "", 500);
         List<CodeNode> matched = new ArrayList<CodeNode>();
         for (CodeNode route : all) {
             if (templateMatches(route.getName(), path)) {

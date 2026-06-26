@@ -10,7 +10,6 @@ import org.springframework.stereotype.Service;
 import javax.annotation.PreDestroy;
 import javax.sql.DataSource;
 import java.sql.Connection;
-import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
@@ -232,7 +231,6 @@ public class DbhubQueryService {
         try {
             tableInfo.put("columns", queryColumns(connection, database, tableName));
             tableInfo.put("totalRows", queryApproximateRows(connection, database, tableName));
-            tableInfo.put("recentData", queryRecentData(connection, tableName));
             return tableInfo;
         } catch (Exception exception) {
             log.warn("dbhub describeTable failed, table={}", tableName, exception);
@@ -244,7 +242,8 @@ public class DbhubQueryService {
 
     private List<Map<String, Object>> queryColumns(Connection connection, String database, String tableName) throws Exception {
         List<Map<String, Object>> rows = new ArrayList<Map<String, Object>>();
-        String sql = "select COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, COLUMN_COMMENT " +
+        // 定位 bug 够用即可：字段名、类型、键、注释；去掉 IS_NULLABLE/COLUMN_DEFAULT 减少喂给模型的体积
+        String sql = "select COLUMN_NAME, DATA_TYPE, COLUMN_KEY, COLUMN_COMMENT " +
                 "from INFORMATION_SCHEMA.COLUMNS where TABLE_SCHEMA = ? and TABLE_NAME = ? order by ORDINAL_POSITION";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, database);
@@ -268,21 +267,6 @@ public class DbhubQueryService {
             try (ResultSet resultSet = statement.executeQuery()) {
                 return resultSet.next() ? resultSet.getLong("TABLE_ROWS") : 0L;
             }
-        }
-    }
-
-    private List<Map<String, Object>> queryRecentData(Connection connection, String tableName) throws Exception {
-        String orderColumn = hasColumn(connection, tableName, "id") ? " order by `id` desc" : "";
-        try (Statement statement = connection.createStatement();
-             ResultSet resultSet = statement.executeQuery("select * from " + quoteIdentifier(tableName) + orderColumn + " limit 5")) {
-            return rowsToList(resultSet);
-        }
-    }
-
-    private boolean hasColumn(Connection connection, String tableName, String columnName) throws Exception {
-        DatabaseMetaData metaData = connection.getMetaData();
-        try (ResultSet resultSet = metaData.getColumns(connection.getCatalog(), null, tableName, columnName)) {
-            return resultSet.next();
         }
     }
 
@@ -332,13 +316,6 @@ public class DbhubQueryService {
             }
         }
         return config;
-    }
-
-    private String quoteIdentifier(String identifier) {
-        if (isBlank(identifier) || !identifier.matches("^[A-Za-z0-9_]+$")) {
-            throw new IllegalArgumentException("Invalid table name: " + identifier);
-        }
-        return "`" + identifier + "`";
     }
 
     private boolean isBlank(String value) {

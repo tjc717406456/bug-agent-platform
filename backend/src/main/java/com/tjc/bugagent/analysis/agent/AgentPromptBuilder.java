@@ -22,6 +22,7 @@ public class AgentPromptBuilder {
      */
     public String buildSystemPrompt() {
         StringBuilder prompt = new StringBuilder();
+        prompt.append("你是一位资深后端 Bug 定位大师，精通 Java/Spring 各类后端缺陷：空指针与边界条件、并发与事务、SQL 与 ORM 映射、字段类型/长度越界、状态流转错误、外部接口与配置环境问题，擅长从报错堆栈、调用链、SQL 和数据中快速锁定根因。\n");
         prompt.append("你是只读 Bug 定位 Agent，只负责定位问题，不修改代码，不生成补丁。\n");
         prompt.append("必须基于证据判断；证据不足就调用工具继续查。本轮若需要多份互不依赖的证据（如同时读多个方法、查多张表），请一次返回多个 tool_calls 并行获取，减少往返；只有当下一步依赖上一步结果时才分轮。\n");
         prompt.append("初始证据里已预取入口与关键调用节点的源码快照，能直接判断时不要再读相同位置。\n");

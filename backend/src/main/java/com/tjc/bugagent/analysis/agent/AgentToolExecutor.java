@@ -10,6 +10,7 @@ import com.tjc.bugagent.project.ProjectService;
 import com.tjc.bugagent.project.ProjectVersion;
 import org.springframework.stereotype.Service;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -253,36 +254,78 @@ public class AgentToolExecutor {
         if (isBlank(keyword)) {
             return AgentToolResult.fail("search_log", "缺少 keyword");
         }
-        if (isBlank(context.getLogText())) {
+        if (context.getLogPath() == null && isBlank(context.getLogText())) {
             return AgentToolResult.empty("search_log", "本次分析未提供日志");
         }
-        String[] lines = context.getLogText().split("\\r?\\n");
         // 关键词是 "L<行号>"(结果里的显示行号标签)时，按行号取该行±上下文，省得模型把标签当内容搜
         Matcher lineRef = LOG_LINE_REF.matcher(keyword.trim());
         if (lineRef.matches()) {
-            return readLogAround(lines, Integer.parseInt(lineRef.group(1)));
+            return readLogAround(context, Integer.parseInt(lineRef.group(1)));
         }
         String needle = keyword.toLowerCase();
         // 关键词带正则特征且能编译时按正则匹配——模型爱用"时间.*设备"这种过滤日志，直接支持；纯字面词仍走 contains
         Pattern regex = compileLogRegex(keyword);
         String mode = regex != null ? "（正则）" : "";
         StringBuilder evidence = new StringBuilder();
-        int matched = 0;
-        for (int index = 0; index < lines.length; index++) {
-            boolean hit = regex != null ? regex.matcher(lines[index]).find() : lines[index].toLowerCase().contains(needle);
-            if (!hit) {
-                continue;
-            }
-            evidence.append('L').append(index + 1).append(": ").append(trimLine(lines[index].trim())).append('\n');
-            if (++matched >= GREP_MAX_MATCHES) {
-                evidence.append("...（命中超过 ").append(GREP_MAX_MATCHES).append(" 行已截断，请用更精确的关键词）\n");
-                return AgentToolResult.ok("search_log", "日志命中 " + matched + " 行（已截断）" + mode, evidence.toString());
-            }
+        int[] matched = {0};
+        boolean[] truncated = {false};
+        try {
+            // 流式逐行匹配，命中到上限即停（不读完），避免把大日志整坨读进内存
+            forEachLogLine(context, (lineNo, line) -> {
+                boolean hit = regex != null ? regex.matcher(line).find() : line.toLowerCase().contains(needle);
+                if (!hit) {
+                    return true;
+                }
+                evidence.append('L').append(lineNo).append(": ").append(trimLine(line.trim())).append('\n');
+                if (++matched[0] >= GREP_MAX_MATCHES) {
+                    truncated[0] = true;
+                    return false;
+                }
+                return true;
+            });
+        } catch (IOException exception) {
+            return AgentToolResult.fail("search_log", "读取日志失败: " + exception.getMessage());
         }
-        if (matched == 0) {
+        if (truncated[0]) {
+            evidence.append("...（命中超过 ").append(GREP_MAX_MATCHES).append(" 行已截断，请用更精确的关键词）\n");
+            return AgentToolResult.ok("search_log", "日志命中 " + matched[0] + " 行（已截断）" + mode, evidence.toString());
+        }
+        if (matched[0] == 0) {
             return AgentToolResult.empty("search_log", "日志里未匹配到: " + keyword + mode);
         }
-        return AgentToolResult.ok("search_log", "日志命中 " + matched + " 行" + mode, evidence.toString());
+        return AgentToolResult.ok("search_log", "日志命中 " + matched[0] + " 行" + mode, evidence.toString());
+    }
+
+    /** 逐行遍历日志：优先按 logPath 流式读文件，否则用粘贴的 logText；consumer 返回 false 提前中止。 */
+    private void forEachLogLine(AgentToolContext context, LogLineConsumer consumer) throws IOException {
+        String path = context.getLogPath();
+        if (path != null) {
+            try (BufferedReader reader = Files.newBufferedReader(Paths.get(path), StandardCharsets.UTF_8)) {
+                String line;
+                int lineNo = 0;
+                while ((line = reader.readLine()) != null) {
+                    if (!consumer.accept(++lineNo, line)) {
+                        return;
+                    }
+                }
+            }
+            return;
+        }
+        String text = context.getLogText();
+        if (isBlank(text)) {
+            return;
+        }
+        String[] lines = text.split("\\r?\\n");
+        for (int index = 0; index < lines.length; index++) {
+            if (!consumer.accept(index + 1, lines[index])) {
+                return;
+            }
+        }
+    }
+
+    /** 行遍历回调：返回 false 中止遍历。 */
+    private interface LogLineConsumer {
+        boolean accept(int lineNo, String line);
     }
 
     /** 关键词含正则元字符且能编译时返回正则，否则返回 null（走字面匹配）；非法正则也退回 null 不报错。 */
@@ -297,20 +340,30 @@ public class AgentToolExecutor {
         }
     }
 
-    /** 按行号取该行及上下文；目标行给足长度（参数串常被截断），上下文行正常截断。 */
-    private AgentToolResult readLogAround(String[] lines, int lineNo) {
-        if (lineNo < 1 || lineNo > lines.length) {
-            return AgentToolResult.empty("search_log", "行号 L" + lineNo + " 超出日志范围（共 " + lines.length + " 行）");
-        }
+    /** 按行号取该行及上下文（流式）；目标行给足长度（参数串常被截断），上下文行正常截断。 */
+    private AgentToolResult readLogAround(AgentToolContext context, int lineNo) {
         int start = Math.max(1, lineNo - LOG_CONTEXT_LINES);
-        int end = Math.min(lines.length, lineNo + LOG_CONTEXT_LINES);
+        int end = lineNo + LOG_CONTEXT_LINES;
         StringBuilder evidence = new StringBuilder();
-        for (int i = start; i <= end; i++) {
-            String line = lines[i - 1].trim();
-            String shown = i == lineNo
-                    ? (line.length() > 800 ? line.substring(0, 800) + "..." : line)
-                    : trimLine(line);
-            evidence.append('L').append(i).append(": ").append(shown).append('\n');
+        int[] total = {0};
+        try {
+            forEachLogLine(context, (currentLine, line) -> {
+                total[0] = currentLine;
+                if (currentLine >= start && currentLine <= end) {
+                    String trimmed = line.trim();
+                    String shown = currentLine == lineNo
+                            ? (trimmed.length() > 800 ? trimmed.substring(0, 800) + "..." : trimmed)
+                            : trimLine(trimmed);
+                    evidence.append('L').append(currentLine).append(": ").append(shown).append('\n');
+                }
+                // 有效行号读到窗口末尾即停；越界（行号过大或 < 1）需读到底拿到总行数
+                return !(lineNo >= 1 && currentLine >= end);
+            });
+        } catch (IOException exception) {
+            return AgentToolResult.fail("search_log", "读取日志失败: " + exception.getMessage());
+        }
+        if (lineNo < 1 || lineNo > total[0]) {
+            return AgentToolResult.empty("search_log", "行号 L" + lineNo + " 超出日志范围（共 " + total[0] + " 行）");
         }
         return AgentToolResult.ok("search_log", "日志 L" + lineNo + " 附近（±" + LOG_CONTEXT_LINES + " 行）", evidence.toString());
     }
@@ -417,19 +470,26 @@ public class AgentToolExecutor {
         private final Long versionId;
         private final String apiPath;
         private final ProjectDatasource datasource;
-        // 本次分析的完整日志原文，供 search_log 深挖（接口讲解等无日志场景为空）
+        // 用户直接粘贴的日志文本（通常较小）；大日志走 logPath 流式读，不进内存
         private final String logText;
+        // 上传日志文件路径；search_log 按需流式 grep，避免把大文件全文攥在内存里
+        private final String logPath;
 
         public AgentToolContext(Long projectId, Long versionId, String apiPath, ProjectDatasource datasource) {
-            this(projectId, versionId, apiPath, datasource, null);
+            this(projectId, versionId, apiPath, datasource, null, null);
         }
 
         public AgentToolContext(Long projectId, Long versionId, String apiPath, ProjectDatasource datasource, String logText) {
+            this(projectId, versionId, apiPath, datasource, logText, null);
+        }
+
+        public AgentToolContext(Long projectId, Long versionId, String apiPath, ProjectDatasource datasource, String logText, String logPath) {
             this.projectId = projectId;
             this.versionId = versionId;
             this.apiPath = apiPath;
             this.datasource = datasource;
             this.logText = logText;
+            this.logPath = logPath;
         }
 
         public Long getProjectId() {
@@ -450,6 +510,10 @@ public class AgentToolExecutor {
 
         public String getLogText() {
             return logText;
+        }
+
+        public String getLogPath() {
+            return logPath;
         }
     }
 }

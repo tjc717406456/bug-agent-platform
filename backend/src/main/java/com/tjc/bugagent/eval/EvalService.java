@@ -5,10 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tjc.bugagent.analysis.agent.AgentAnalysisService;
 import com.tjc.bugagent.analysis.AnalysisRequest;
 import com.tjc.bugagent.analysis.AnalysisResult;
+import com.tjc.bugagent.analysis.mapper.AnalysisRecordMapper;
 import com.tjc.bugagent.config.AppProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Files;
@@ -17,6 +17,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 跑评估用例集，给分析准确率打分。改完 prompt/逻辑跑一遍，看命中率有没有退步。
@@ -30,14 +31,14 @@ public class EvalService {
     private final AgentAnalysisService agentAnalysisService;
     private final ObjectMapper objectMapper;
     private final AppProperties appProperties;
-    private final JdbcTemplate jdbcTemplate;
+    private final AnalysisRecordMapper analysisRecordMapper;
 
     public EvalService(AgentAnalysisService agentAnalysisService, ObjectMapper objectMapper,
-                       AppProperties appProperties, JdbcTemplate jdbcTemplate) {
+                       AppProperties appProperties, AnalysisRecordMapper analysisRecordMapper) {
         this.agentAnalysisService = agentAnalysisService;
         this.objectMapper = objectMapper;
         this.appProperties = appProperties;
-        this.jdbcTemplate = jdbcTemplate;
+        this.analysisRecordMapper = analysisRecordMapper;
     }
 
     /**
@@ -196,28 +197,32 @@ public class EvalService {
      */
     private List<EvalCase> loadFromFeedback() {
         // 进飞轮的两种来源：人工标注过的，或机器自动验证确认正确的；都没有的不进，避免拿没把握的当基准
-        return jdbcTemplate.query(
-                "select id, project_id, version_id, api_path, user_description, request_body, response_body, "
-                        + "stack_trace, trace_id, request_time, "
-                        + "coalesce(nullif(expect_keywords, ''), auto_verify_keywords) as expect_keywords from analysis_record "
-                        + "where (feedback_verdict is not null and expect_keywords is not null and expect_keywords <> '' and expect_keywords <> '[]') "
-                        + "   or (auto_verify = 'CONFIRMED' and auto_verify_keywords is not null and auto_verify_keywords <> '')",
-                (rs, rowNum) -> {
-                    EvalCase evalCase = new EvalCase();
-                    evalCase.setName("record#" + rs.getLong("id") + " " + safe(rs.getString("api_path")));
-                    evalCase.setProjectId(rs.getLong("project_id"));
-                    long versionId = rs.getLong("version_id");
-                    evalCase.setVersionId(rs.wasNull() ? null : versionId);
-                    evalCase.setApiPath(rs.getString("api_path"));
-                    evalCase.setUserDescription(rs.getString("user_description"));
-                    evalCase.setRequestBody(rs.getString("request_body"));
-                    evalCase.setResponseBody(rs.getString("response_body"));
-                    evalCase.setStackTrace(rs.getString("stack_trace"));
-                    evalCase.setTraceId(rs.getString("trace_id"));
-                    evalCase.setRequestTime(rs.getString("request_time"));
-                    evalCase.setExpectKeywords(parseKeywords(rs.getString("expect_keywords")));
-                    return evalCase;
-                });
+        List<EvalCase> cases = new ArrayList<EvalCase>();
+        for (Map<String, Object> row : analysisRecordMapper.selectFeedbackCases()) {
+            EvalCase evalCase = new EvalCase();
+            String apiPath = str(row.get("apiPath"));
+            evalCase.setName("record#" + toLong(row.get("id")) + " " + safe(apiPath));
+            evalCase.setProjectId(toLong(row.get("projectId")));
+            evalCase.setVersionId(toLong(row.get("versionId")));
+            evalCase.setApiPath(apiPath);
+            evalCase.setUserDescription(str(row.get("userDescription")));
+            evalCase.setRequestBody(str(row.get("requestBody")));
+            evalCase.setResponseBody(str(row.get("responseBody")));
+            evalCase.setStackTrace(str(row.get("stackTrace")));
+            evalCase.setTraceId(str(row.get("traceId")));
+            evalCase.setRequestTime(str(row.get("requestTime")));
+            evalCase.setExpectKeywords(parseKeywords(str(row.get("expectKeywords"))));
+            cases.add(evalCase);
+        }
+        return cases;
+    }
+
+    private String str(Object value) {
+        return value == null ? null : value.toString();
+    }
+
+    private Long toLong(Object value) {
+        return value == null ? null : ((Number) value).longValue();
     }
 
     private List<String> parseKeywords(String json) {

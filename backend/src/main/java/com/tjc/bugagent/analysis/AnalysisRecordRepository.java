@@ -1,9 +1,10 @@
 package com.tjc.bugagent.analysis;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tjc.bugagent.analysis.mapper.AnalysisRecordInsert;
+import com.tjc.bugagent.analysis.mapper.AnalysisRecordMapper;
 import com.tjc.bugagent.analysis.verify.AnalysisAutoVerifier;
 import com.tjc.bugagent.project.ProjectVersion;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -14,24 +15,37 @@ import java.util.List;
 @Repository
 public class AnalysisRecordRepository {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final AnalysisRecordMapper analysisRecordMapper;
     private final ObjectMapper objectMapper;
 
-    public AnalysisRecordRepository(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
-        this.jdbcTemplate = jdbcTemplate;
+    public AnalysisRecordRepository(AnalysisRecordMapper analysisRecordMapper, ObjectMapper objectMapper) {
+        this.analysisRecordMapper = analysisRecordMapper;
         this.objectMapper = objectMapper;
     }
 
     public Long save(AnalysisRequest request, ProjectVersion version, String conclusion, String confidence,
                      String evidence, AnalysisAutoVerifier.Result autoVerify, int roundsCount, int totalTokens) {
         String verifyKeywords = autoVerify.getKeywords().isEmpty() ? null : toJsonKeywords(autoVerify.getKeywords());
-        jdbcTemplate.update(
-                "insert into analysis_record(project_id, version_id, api_path, user_description, request_body, response_body, stack_trace, screenshot_paths, trace_id, request_time, conclusion, confidence, evidence_json, auto_verify, auto_verify_keywords, rounds_count, total_tokens, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())",
-                request.getProjectId(), version.getId(), request.getApiPath(),
-                request.getUserDescription(), request.getRequestBody(), request.getResponseBody(), request.getStackTrace(),
-                request.getScreenshotPaths(), request.getTraceId(), request.getRequestTime(), conclusion, confidence, evidence,
-                autoVerify.getStatus(), verifyKeywords, roundsCount, totalTokens);
-        return jdbcTemplate.queryForObject("select last_insert_id()", Long.class);
+        AnalysisRecordInsert record = new AnalysisRecordInsert();
+        record.setProjectId(request.getProjectId());
+        record.setVersionId(version.getId());
+        record.setApiPath(request.getApiPath());
+        record.setUserDescription(request.getUserDescription());
+        record.setRequestBody(request.getRequestBody());
+        record.setResponseBody(request.getResponseBody());
+        record.setStackTrace(request.getStackTrace());
+        record.setScreenshotPaths(request.getScreenshotPaths());
+        record.setTraceId(request.getTraceId());
+        record.setRequestTime(request.getRequestTime());
+        record.setConclusion(conclusion);
+        record.setConfidence(confidence);
+        record.setEvidenceJson(evidence);
+        record.setAutoVerify(autoVerify.getStatus());
+        record.setAutoVerifyKeywords(verifyKeywords);
+        record.setRoundsCount(roundsCount);
+        record.setTotalTokens(totalTokens);
+        analysisRecordMapper.insert(record);
+        return record.getId();
     }
 
     private String toJsonKeywords(List<String> keywords) {

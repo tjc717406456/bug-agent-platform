@@ -20,6 +20,12 @@ spring:
     init:
       mode: always
 
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
+  configuration:
+    # 下划线列名自动映射到驼峰字段：project_id → projectId,省得写 resultMap
+    map-underscore-to-camel-case: true
+
 app:
   workspace-root: ./workspace
   task-ttl-seconds: 1800
@@ -53,8 +59,9 @@ app:
     hypothesis-chain-iterations: 12
     hypothesis-pool-size: 2
   ai:
-    # 先关流式验证 tool_calls 是否被流式解析弄丢；排查完想用流式改回 true
-    stream-enabled: true
+    # 关流式：网关掐连接时退流式重试，疑似把 finish 的 tool_call 弄丢→"收尾不调工具"。
+    # 关了全程非流式（tool_call 整段解析最可靠）；网关掐了仍非流式重试。验证稳了再决定要不要改回 true。
+    stream-enabled: false
   eval:
     cases-path: ./workspace/eval-cases.json
   log:
