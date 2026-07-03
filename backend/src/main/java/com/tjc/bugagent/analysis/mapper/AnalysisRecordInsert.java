@@ -22,6 +22,16 @@ public class AnalysisRecordInsert {
     private String autoVerifyKeywords;
     private int roundsCount;
     private int totalTokens;
+    // ANALYSIS bug分析 / EXPLAIN 接口讲解
+    private String recordType;
+
+    public String getRecordType() {
+        return recordType;
+    }
+
+    public void setRecordType(String recordType) {
+        this.recordType = recordType;
+    }
 
     public Long getId() {
         return id;

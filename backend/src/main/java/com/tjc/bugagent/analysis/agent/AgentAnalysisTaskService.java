@@ -58,6 +58,24 @@ public class AgentAnalysisTaskService {
     }
 
     /**
+     * 提交异步追问任务：基于已落库的分析记录继续提问，复用同一套任务存储和轮询。
+     */
+    public AgentAnalysisTaskSubmitResult submitFollowUp(Long recordId, String question) {
+        String taskId = UUID.randomUUID().toString();
+        AgentAnalysisTaskStatus status = new AgentAnalysisTaskStatus();
+        status.setTaskId(taskId);
+        status.setStatus("PENDING");
+        status.setMessage("追问已提交");
+        taskStore.save(status);
+        taskRunner.runFollowUp(taskId, recordId, question, status);
+
+        AgentAnalysisTaskSubmitResult result = new AgentAnalysisTaskSubmitResult();
+        result.setTaskId(taskId);
+        result.setStatus(status.getStatus());
+        return result;
+    }
+
+    /**
      * 请求停止任务：打上取消标记，正在跑的循环会在下一轮间隙中断并置 CANCELLED。
      */
     public void requestStop(String taskId) {

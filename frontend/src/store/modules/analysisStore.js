@@ -1,11 +1,26 @@
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { submitAgentAnalysisTaskScreenshots, pollAgentAnalysisTask, stopAgentAnalysisTask, submitApiExplainTask, uploadLog } from '../../api/client'
+import { submitAgentAnalysisTaskScreenshots, pollAgentAnalysisTask, stopAgentAnalysisTask, submitApiExplainTask, submitFollowUpTask, uploadLog } from '../../api/client'
 import { currentProject, analysisForm, analysisResult, analysisDialogVisible, activeReportTab, feedbackEditable, sleep } from '../core'
 
 export const screenshotFiles = ref([])
 export const agentProgress = ref([])
+// 收口报告流式生成的累计快照，轮询期间渐进渲染，任务结束清空
+export const agentPartialReport = ref('')
+// 流式收口进行中：分析报告弹窗以"生成中"形态提前打开，正文渐进长出
+export const reportStreaming = ref(false)
 export const agentProgressVisible = ref(false)
+
+/** 结束流式展示形态：成功时报告弹窗留着换正式结果，停止/失败时连弹窗一起收 */
+function endStreamingView(closeDialog) {
+  if (reportStreaming.value) {
+    reportStreaming.value = false
+    if (closeDialog) {
+      analysisDialogVisible.value = false
+    }
+  }
+  agentPartialReport.value = ''
+}
 export const logFileList = ref([])
 // 日志上传中标记：上传未拿到 logId 前禁掉分析按钮，避免漏带日志就开跑
 export const logUploading = ref(false)
@@ -145,11 +160,15 @@ export async function agentAnalyzeAction() {
     return
   }
   agentProgress.value = []
+  agentPartialReport.value = ''
+  reportStreaming.value = false
   agentTaskStopping.value = false
   agentProgressVisible.value = true
   try {
     const payload = { ...analysisForm, projectId: currentProject.value.id }
     payload.versionId = payload.versionId ? Number(payload.versionId) : null
+    // 深度模式只在开启时传 true；false 会强制单链、把全局 AUTO 也盖掉，关着就传 null 跟随全局
+    payload.deepMode = analysisForm.deepMode ? true : null
     const task = await submitAgentAnalysisTaskScreenshots(payload, screenshotFiles.value)
     saveActiveTask(task.taskId)
     const result = await waitAgentTask(task.taskId)
@@ -179,6 +198,8 @@ export async function apiAnalyzeAction() {
     return
   }
   agentProgress.value = []
+  agentPartialReport.value = ''
+  reportStreaming.value = false
   agentTaskStopping.value = false
   agentProgressVisible.value = true
   try {
@@ -215,22 +236,59 @@ export async function waitAgentTask(taskId) {
   }
   agentTaskRunning.value = true
   try {
-    for (let index = 0; index < 150; index++) {
+    // 不设总时长预算：轮询正常、任务还是 RUNNING 就一直陪跑（长分析本来就可能超5分钟，有停止按钮兜底）；
+    // 只有连续 poll 异常 ≥5 次（后端真失联）才报错
+    let pollFailures = 0
+    while (true) {
       // 点了停止：前端立即停轮询收尾，不等后台跑完本轮（后台会自行置 CANCELLED）
       if (agentTaskStopping.value) {
         clearActiveTask()
         agentTaskRunning.value = false
         agentTaskStopping.value = false
+        endStreamingView(true)
         return null
       }
-      const task = await pollAgentAnalysisTask(taskId)
+      let task
+      try {
+        task = await pollAgentAnalysisTask(taskId)
+        pollFailures = 0
+      } catch (pollError) {
+        pollFailures++
+        if (pollFailures >= 5) {
+          agentTaskRunning.value = false
+          endStreamingView(true)
+          throw new Error('与后端连续5次通信失败，请检查服务状态；任务可能仍在后台运行，刷新页面可续上')
+        }
+        await sleep(2000)
+        continue
+      }
       // 实时刷新进度时间线
       if (Array.isArray(task.progress)) {
         agentProgress.value = task.progress
       }
+      const nextPartial = task.partialReport || ''
+      // 自检打回：初稿快照被后端清空但任务还在跑 → 切回进度弹窗看补证过程，别让用户对着空白报告干等
+      if (!nextPartial && reportStreaming.value && task.status === 'RUNNING') {
+        reportStreaming.value = false
+        analysisDialogVisible.value = false
+        agentProgressVisible.value = true
+      }
+      // 收口阶段的流式报告快照，渐进渲染；没有就保持为空
+      agentPartialReport.value = nextPartial
+      // 首片快照到达：切到分析报告弹窗渐进展示，进度弹窗退场
+      if (agentPartialReport.value && !reportStreaming.value) {
+        reportStreaming.value = true
+        analysisResult.value = null
+        feedbackEditable.value = false
+        activeReportTab.value = 'report'
+        agentProgressVisible.value = false
+        analysisDialogVisible.value = true
+      }
       if (task.status === 'SUCCESS') {
         clearActiveTask()
         agentTaskRunning.value = false
+        // 成功：报告弹窗留着，正式结果随后换入
+        endStreamingView(false)
         return task.result
       }
       // 后台已停止：当正常收尾，返回 null（无结果），别当失败弹红
@@ -238,17 +296,18 @@ export async function waitAgentTask(taskId) {
         clearActiveTask()
         agentTaskRunning.value = false
         agentTaskStopping.value = false
+        endStreamingView(true)
         return null
       }
       if (task.status === 'FAILED' || task.status === 'NOT_FOUND') {
         clearActiveTask()
         agentTaskRunning.value = false
+        endStreamingView(true)
         throw new Error(task.message || 'Agent分析失败')
       }
-      await sleep(2000)
+      // 流式生成阶段加密到 500ms，报告蹦字更跟手；平时 2s 一拍省请求
+      await sleep(reportStreaming.value ? 500 : 2000)
     }
-    agentTaskRunning.value = false
-    throw new Error('Agent分析超时，请稍后查看任务状态')
   } catch (error) {
     agentTaskRunning.value = false
     throw error
@@ -262,6 +321,8 @@ export async function resumeAgentTask() {
   if (!taskId) return
 
   agentProgress.value = []
+  agentPartialReport.value = ''
+  reportStreaming.value = false
   agentTaskStopping.value = false
   saveActiveTask(taskId)
   agentProgressVisible.value = true
@@ -281,5 +342,94 @@ export async function resumeAgentTask() {
     agentProgressVisible.value = false
     clearActiveTask()
     message.error(error.message || 'Agent分析失败')
+  }
+}
+
+// ===== 追问式分析：基于已落库的分析记录继续提问 =====
+// 对话气泡列表：[{ role: 'q'|'a', text }]
+export const followUpChat = ref([])
+// 追问进行中（禁发送、显示停止）
+export const followUpAsking = ref(false)
+// 追问答案的流式快照，气泡里渐进渲染
+export const followUpStreamText = ref('')
+// 追问查证进度（工具步骤一行），气泡上方小字展示
+export const followUpStep = ref('')
+let followUpTaskId = ''
+
+// 切换到别的记录/发起新分析时清空追问会话（后端历史还在 Redis，重新问会带上文）
+watch(analysisResult, (next, prev) => {
+  if (next?.id !== prev?.id) {
+    followUpChat.value = []
+    followUpStreamText.value = ''
+    followUpStep.value = ''
+    followUpAsking.value = false
+  }
+})
+
+/** 发送一条追问：提交任务后独立轮询（不走主分析的 waitAgentTask，避免弹窗切换逻辑串台）。 */
+export async function askFollowUp(question) {
+  const recordId = analysisResult.value?.id
+  const text = (question || '').trim()
+  if (!recordId || !text || followUpAsking.value) {
+    return
+  }
+  followUpChat.value = [...followUpChat.value, { role: 'q', text }]
+  followUpAsking.value = true
+  followUpStreamText.value = ''
+  followUpStep.value = ''
+  try {
+    const task = await submitFollowUpTask(recordId, text)
+    followUpTaskId = task.taskId
+    let pollFailures = 0
+    while (true) {
+      let status
+      try {
+        status = await pollAgentAnalysisTask(followUpTaskId)
+        pollFailures = 0
+      } catch (pollError) {
+        pollFailures++
+        if (pollFailures >= 5) {
+          throw new Error('与后端连续5次通信失败，请检查服务状态')
+        }
+        await sleep(2000)
+        continue
+      }
+      // 最新一条查证步骤 + 流式答案快照
+      if (Array.isArray(status.progress) && status.progress.length) {
+        followUpStep.value = status.progress[status.progress.length - 1]
+      }
+      followUpStreamText.value = status.partialReport || ''
+      if (status.status === 'SUCCESS') {
+        followUpChat.value = [...followUpChat.value, { role: 'a', text: status.result?.conclusion || '（无回答）' }]
+        break
+      }
+      if (status.status === 'CANCELLED') {
+        followUpChat.value = [...followUpChat.value, { role: 'a', text: '（已停止）' }]
+        break
+      }
+      if (status.status === 'FAILED' || status.status === 'NOT_FOUND') {
+        throw new Error(status.message || '追问失败')
+      }
+      await sleep(followUpStreamText.value ? 500 : 1000)
+    }
+  } catch (error) {
+    followUpChat.value = [...followUpChat.value, { role: 'a', text: '⚠️ ' + (error.message || '追问失败') }]
+  } finally {
+    followUpAsking.value = false
+    followUpStreamText.value = ''
+    followUpStep.value = ''
+    followUpTaskId = ''
+  }
+}
+
+/** 停止当前追问。 */
+export async function stopFollowUp() {
+  if (!followUpTaskId) {
+    return
+  }
+  try {
+    await stopAgentAnalysisTask(followUpTaskId)
+  } catch (error) {
+    message.error(error.message || '停止失败')
   }
 }

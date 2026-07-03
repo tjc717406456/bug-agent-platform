@@ -27,6 +27,7 @@ public class AnalysisRecordRepository {
                      String evidence, AnalysisAutoVerifier.Result autoVerify, int roundsCount, int totalTokens) {
         String verifyKeywords = autoVerify.getKeywords().isEmpty() ? null : toJsonKeywords(autoVerify.getKeywords());
         AnalysisRecordInsert record = new AnalysisRecordInsert();
+        record.setRecordType("ANALYSIS");
         record.setProjectId(request.getProjectId());
         record.setVersionId(version.getId());
         record.setApiPath(request.getApiPath());
@@ -42,6 +43,26 @@ public class AnalysisRecordRepository {
         record.setEvidenceJson(evidence);
         record.setAutoVerify(autoVerify.getStatus());
         record.setAutoVerifyKeywords(verifyKeywords);
+        record.setRoundsCount(roundsCount);
+        record.setTotalTokens(totalTokens);
+        analysisRecordMapper.insert(record);
+        return record.getId();
+    }
+
+    /**
+     * 保存一次接口讲解：没有置信度/自动验证这些 bug 专属字段，落库后同样支持追问与历史回看。
+     */
+    public Long saveExplain(AnalysisRequest request, ProjectVersion version, String conclusion,
+                            String evidence, int roundsCount, int totalTokens) {
+        AnalysisRecordInsert record = new AnalysisRecordInsert();
+        record.setRecordType("EXPLAIN");
+        record.setProjectId(request.getProjectId());
+        record.setVersionId(version.getId());
+        record.setApiPath(request.getApiPath());
+        record.setUserDescription(request.getUserDescription());
+        record.setConclusion(conclusion);
+        record.setConfidence("");
+        record.setEvidenceJson(evidence);
         record.setRoundsCount(roundsCount);
         record.setTotalTokens(totalTokens);
         analysisRecordMapper.insert(record);

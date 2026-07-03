@@ -26,12 +26,11 @@ class AgentAnalysisHelpersTest {
     }
 
     @Test
-    void normalizeFactSignatureTruncatesTo300() {
-        StringBuilder builder = new StringBuilder();
-        for (int i = 0; i < 400; i++) {
-            builder.append('x');
-        }
-        assertEquals(300, AgentConvergenceJudge.normalizeFactSignature(builder.toString()).length());
+    void normalizeFactSignatureKeepsFullTextSoSuffixDiffsStayDistinct() {
+        // 不再截断：前 300 字相同、后半不同的两条证据必须判为不同事实
+        String prefix = repeat('x', 350);
+        assertFalse(AgentConvergenceJudge.normalizeFactSignature(prefix + "aaa")
+                .equals(AgentConvergenceJudge.normalizeFactSignature(prefix + "bbb")));
     }
 
     @Test

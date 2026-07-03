@@ -50,6 +50,11 @@
             <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- Apache HttpClient：给 AI 调用换带连接池的工厂，复用 TCP/TLS 连接，省掉每轮重握手。版本由 Spring Boot BOM 托管 -->
+        <dependency>
+            <groupId>org.apache.httpcomponents</groupId>
+            <artifactId>httpclient</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.github.javaparser</groupId>
             <artifactId>javaparser-symbol-solver-core</artifactId>

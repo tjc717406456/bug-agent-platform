@@ -25,16 +25,32 @@ class AgentConversationTest {
         return m;
     }
 
-    /** 造 N 轮：每轮 1 条 assistant + 1 条带详情(含换行)的 tool。 */
+    /** 造 N 轮：每轮 1 条带 tool_calls 的 assistant + 1 条带详情(含换行)的 tool，贴近真实查证轮形状。 */
     private List<Map<String, Object>> buildRounds(int n) {
         List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
         messages.add(msg("system", "sys"));
         messages.add(msg("user", "init"));
         for (int i = 1; i <= n; i++) {
-            messages.add(msg("assistant", "think " + i));
+            Map<String, Object> assistant = msg("assistant", "think " + i);
+            assistant.put("tool_calls", new ArrayList<Object>());
+            messages.add(assistant);
             messages.add(msg("tool", "成功: 摘要" + i + "\n详情正文第" + i + "轮，很长很长的证据"));
         }
         return messages;
+    }
+
+    @Test
+    void plainAssistantWithoutToolCallsDoesNotCountAsRound() {
+        List<Map<String, Object>> messages = buildRounds(4);
+        // 中间插两条纠偏/复核类的纯文本 assistant，不该占折叠窗口
+        messages.add(3, msg("assistant", "nudge"));
+        messages.add(3, msg("assistant", "critique"));
+        conversation.decayOldToolMessages(messages, 4);
+        for (Map<String, Object> m : messages) {
+            if ("tool".equals(m.get("role"))) {
+                assertTrue(((String) m.get("content")).contains("\n详情"), "4轮全在窗口内，纯文本 assistant 不该把首轮挤出去");
+            }
+        }
     }
 
     @Test

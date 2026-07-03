@@ -15,4 +15,8 @@ public interface AnalysisProgressListener {
     default boolean isCancelled() {
         return false;
     }
+
+    /** 收口报告流式生成的累计快照，前端轮询取到后渐进渲染；默认丢弃。 */
+    default void onPartialReport(String partial) {
+    }
 }

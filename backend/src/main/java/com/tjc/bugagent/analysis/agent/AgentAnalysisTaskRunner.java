@@ -17,13 +17,16 @@ public class AgentAnalysisTaskRunner {
 
     private final AgentAnalysisService agentAnalysisService;
     private final ApiExplainService apiExplainService;
+    private final FollowUpService followUpService;
     private final AgentAnalysisTaskStore taskStore;
     private final AgentAnalysisCancelRegistry cancelRegistry;
 
     public AgentAnalysisTaskRunner(AgentAnalysisService agentAnalysisService, ApiExplainService apiExplainService,
+                                   FollowUpService followUpService,
                                    AgentAnalysisTaskStore taskStore, AgentAnalysisCancelRegistry cancelRegistry) {
         this.agentAnalysisService = agentAnalysisService;
         this.apiExplainService = apiExplainService;
+        this.followUpService = followUpService;
         this.taskStore = taskStore;
         this.cancelRegistry = cancelRegistry;
     }
@@ -43,6 +46,13 @@ public class AgentAnalysisTaskRunner {
             public boolean isCancelled() {
                 return cancelRegistry.isStopRequested(taskId);
             }
+
+            @Override
+            public void onPartialReport(String partial) {
+                // 快照已在编排层节流(800ms)，这里直接回写供前端轮询取
+                status.setPartialReport(partial);
+                taskStore.save(status);
+            }
         };
     }
 
@@ -57,6 +67,8 @@ public class AgentAnalysisTaskRunner {
         try {
             AnalysisResult result = agentAnalysisService.analyze(request, listener(taskId, status));
             status.setResult(result);
+            // 正式报告已在 result 里，流式半成品清掉，别让 Redis 存两份
+            status.setPartialReport(null);
             status.setStatus("SUCCESS");
             status.setMessage("分析完成");
         } catch (AnalysisCancelledException cancelled) {
@@ -64,6 +76,33 @@ public class AgentAnalysisTaskRunner {
             status.setMessage("已手动停止");
         } catch (Exception exception) {
             log.error("agent analysis task failed, taskId={}", taskId, exception);
+            status.setStatus("FAILED");
+            status.setMessage(exception.getMessage());
+        } finally {
+            cancelRegistry.clear(taskId);
+        }
+        taskStore.save(status);
+    }
+
+    /**
+     * 后台运行追问：基于已落库的分析记录回答追加提问，复用同一套任务状态/轮询/流式快照。
+     */
+    @Async("agentAnalysisExecutor")
+    public void runFollowUp(String taskId, Long recordId, String question, AgentAnalysisTaskStatus status) {
+        status.setStatus("RUNNING");
+        status.setMessage("正在回答追问");
+        taskStore.save(status);
+        try {
+            AnalysisResult result = followUpService.answer(recordId, question, listener(taskId, status));
+            status.setResult(result);
+            status.setPartialReport(null);
+            status.setStatus("SUCCESS");
+            status.setMessage("追问已回答");
+        } catch (AnalysisCancelledException cancelled) {
+            status.setStatus("CANCELLED");
+            status.setMessage("已手动停止");
+        } catch (Exception exception) {
+            log.error("follow-up task failed, taskId={} recordId={}", taskId, recordId, exception);
             status.setStatus("FAILED");
             status.setMessage(exception.getMessage());
         } finally {
@@ -83,6 +122,8 @@ public class AgentAnalysisTaskRunner {
         try {
             AnalysisResult result = apiExplainService.explain(request, listener(taskId, status));
             status.setResult(result);
+            // 正式讲解已在 result 里，流式半成品清掉
+            status.setPartialReport(null);
             status.setStatus("SUCCESS");
             status.setMessage("讲解完成");
         } catch (AnalysisCancelledException cancelled) {

@@ -3,6 +3,7 @@ package com.tjc.bugagent.analysis.agent;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tjc.bugagent.ai.AiClient;
+import com.tjc.bugagent.ai.AiToolCallResult;
 import com.tjc.bugagent.config.AppProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,6 +14,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.isBlank;
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.safe;
@@ -39,13 +41,19 @@ public class HypothesisScout {
     }
 
     /**
-     * 产出候选根因，按置信分从高到低排序。
+     * 产出候选根因，按置信分从高到低排序。侦察这笔 LLM 开销计入 tokenSink，账面别漏。
      */
-    public List<Hypothesis> scout(String initialEvidence) {
+    public List<Hypothesis> scout(String initialEvidence, AtomicInteger tokenSink) {
         int maxCount = Math.max(2, appProperties.getAgent().getHypothesisMaxBranches());
         String reply;
         try {
-            reply = aiClient.chatUtility(promptBuilder.buildHypothesisScoutPrompt(initialEvidence, maxCount));
+            AiToolCallResult result = aiClient.chatUtilityResult(promptBuilder.buildHypothesisScoutPrompt(initialEvidence, maxCount));
+            tokenSink.addAndGet(result.getTotalTokens());
+            if (result.isFailed()) {
+                log.warn("多假设侦察调用失败，退回单链: {}", result.getContent());
+                return Collections.emptyList();
+            }
+            reply = result.getContent();
         } catch (Exception exception) {
             log.warn("多假设侦察调用失败，退回单链: {}", exception.getMessage());
             return Collections.emptyList();

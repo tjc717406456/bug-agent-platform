@@ -11,6 +11,8 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 
 /**
@@ -22,9 +24,12 @@ public class HypothesisFanoutExecutor {
     private static final Logger log = LoggerFactory.getLogger(HypothesisFanoutExecutor.class);
 
     private final ExecutorService branchPool;
+    // 分支保险丝：远大于正常耗时(每轮按 LLM 重试上限+工具超时放宽到 600s)，只防真挂死，不是精确预算
+    private final long branchFuseSeconds;
 
     public HypothesisFanoutExecutor(AppProperties appProperties) {
         int poolSize = Math.max(1, appProperties.getAgent().getHypothesisPoolSize());
+        this.branchFuseSeconds = Math.max(600L, appProperties.getAgent().getHypothesisChainIterations() * 600L);
         this.branchPool = Executors.newFixedThreadPool(poolSize, runnable -> {
             Thread thread = new Thread(runnable, "agent-hypothesis-branch");
             thread.setDaemon(true);
@@ -48,7 +53,12 @@ public class HypothesisFanoutExecutor {
         List<T> results = new ArrayList<T>(tasks.size());
         for (CompletableFuture<T> future : futures) {
             try {
-                results.add(future.get());
+                // 带保险丝等待：某分支被卡死的工具/请求拖住时掐掉它，别让整个分析任务变僵尸
+                results.add(future.get(branchFuseSeconds, TimeUnit.SECONDS));
+            } catch (TimeoutException timeout) {
+                future.cancel(true);
+                log.warn("假设分支超过保险丝时长({}s)仍未返回，判挂死掐掉", branchFuseSeconds);
+                results.add(null);
             } catch (Exception exception) {
                 log.warn("假设分支执行失败，跳过该分支: {}", exception.getMessage());
                 results.add(null);

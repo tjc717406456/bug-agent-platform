@@ -27,8 +27,18 @@ public class DatabaseMigrationService {
         ensureAnalysisFeedbackColumns();
         ensureAnalysisEmbeddingColumn();
         ensureAnalysisMetricsColumns();
+        ensureAnalysisRecordTypeColumn();
         ensureAiVisionColumn();
         ensureTableComments();
+    }
+
+    /** 给分析记录补类型列：ANALYSIS bug分析 / EXPLAIN 接口讲解——讲解落库后同样支持追问与历史回看。 */
+    private void ensureAnalysisRecordTypeColumn() {
+        if (!tableExists("analysis_record")) {
+            return;
+        }
+        addColumnIfMissing("analysis_record", "record_type",
+                "varchar(16) not null default 'ANALYSIS' comment '记录类型:ANALYSIS bug分析/EXPLAIN 接口讲解' after api_path");
     }
 
     /** 给分析记录补轮数/token 列，落每次分析的成本指标，供趋势/p95 统计和调参。 */

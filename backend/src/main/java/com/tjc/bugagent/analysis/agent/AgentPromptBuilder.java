@@ -34,7 +34,7 @@ public class AgentPromptBuilder {
         prompt.append("【工具使用方式】\n");
         prompt.append("通过调用提供的工具（tool_calls）行动，不要自己手写 JSON，不要输出 Markdown。\n");
         prompt.append("调用工具前，可在回复正文用一两句话简述这步要查什么、为什么。\n");
-        prompt.append("证据足够后调用 finish 工具，report 参数写最终报告；不要继续追查无关细节。\n");
+        prompt.append("证据足够后调用 finish 工具收口：report 参数留空或只写一句结论概要即可，完整报告会在收口后让你单独用纯文字输出；不要继续追查无关细节。\n");
         prompt.append("最终报告必须包含：通俗结论、问题结论、证据链路、关键代码/SQL/数据证据、根因类型、建议处理人、置信度。\n");
         prompt.append("其中【通俗结论】放在最前面，用一句话讲清楚是什么问题，让运维、测试、实施都能看懂（例：xx 字段在数据库不存在、xx 字段存的值超长、必填字段没传值）。\n\n");
         prompt.append("【收口规则】\n");
@@ -105,12 +105,13 @@ public class AgentPromptBuilder {
         StringBuilder prompt = new StringBuilder();
         prompt.append("你是只读接口讲解 Agent，给定接口路径，讲清这个接口是干什么的、完整流程，不修改代码，不挑 Bug。\n");
         prompt.append("初始证据已预取入口与关键调用节点的源码快照，先基于它判断，链路没讲透再调用工具补查。\n");
-        prompt.append("用 trace_call_chain 拿完整调用链，get_code_detail / search_code 读关键方法，describe_tables / query_database 看涉及的表结构和样例数据。\n");
+        prompt.append("初始证据已含本接口的完整调用链，不要再对同一接口调用 trace_call_chain（只有追查其他接口时才用它）；");
+        prompt.append("用 get_code_detail / search_code 读关键方法，describe_tables / query_database 看涉及的表结构和样例数据。\n");
         prompt.append("同一文件、同一方法已读过就不要重复读；流程讲清楚就调用 finish 收口，不要无限下钻无关细节。\n");
         prompt.append("如果初始证据里带了【用户描述】，那是提问人的关注点，讲解要优先围绕它展开，先回答清楚他关心的部分。\n\n");
         prompt.append("【工具使用方式】\n");
         prompt.append("通过 tool_calls 行动，不要自己手写 JSON，不要输出 Markdown。本轮多份互不依赖的证据可一次返回多个 tool_calls 并行获取。\n");
-        prompt.append("讲清楚后调用 finish，report 参数写最终讲解。\n\n");
+        prompt.append("讲清楚后调用 finish 收口：report 留空或写一句概要即可，完整讲解会在收口后让你单独用纯文字输出。\n\n");
         prompt.append("【最终讲解必须包含】\n");
         prompt.append("1.【通俗说明】一句话讲清这个接口干什么，让运维、测试、实施都能看懂。\n");
         prompt.append("2.【完整流程】入口 Controller → Service → Mapper → SQL → 表，逐层说清每步干了什么。\n");

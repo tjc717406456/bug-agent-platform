@@ -106,6 +106,11 @@
           </a-col>
           <a-col :span="8">
             <div class="actions-col">
+              <a-tooltip title="开启后先侦察候选根因，方向存疑时并行分链深挖（更准但更烧 token），方向明确仍走单链；关闭跟随系统配置">
+                <span style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap">
+                  <a-switch v-model:checked="analysisForm.deepMode" size="small" />深度分析
+                </span>
+              </a-tooltip>
               <a-button type="primary" style="background:#52c41a;border-color:#52c41a" :disabled="logUploading" :loading="logUploading" @click="agentAnalyzeAction"><template #icon><BarChartOutlined /></template>{{ logUploading ? '日志上传中' : 'Agent分析' }}</a-button>
               <a-button class="left-gap" style="background:#fa8c16;border-color:#fa8c16;color:#fff" @click="apiAnalyzeAction"><template #icon><BarChartOutlined /></template>接口分析</a-button>
             </div>

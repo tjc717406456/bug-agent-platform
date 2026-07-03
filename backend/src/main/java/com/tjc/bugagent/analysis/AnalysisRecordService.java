@@ -17,13 +17,13 @@ public class AnalysisRecordService {
     }
 
     /**
-     * 按项目、接口筛分析历史，分页返回精简字段（不带大体积证据）+ 总条数。
+     * 按项目、接口、类型筛分析历史，分页返回精简字段（不带大体积证据）+ 总条数。
      */
-    public AnalysisRecordPage list(Long projectId, String apiPath, int page, int size) {
+    public AnalysisRecordPage list(Long projectId, String apiPath, String recordType, int page, int size) {
         int limit = size <= 0 || size > 200 ? 20 : size;
         int offset = Math.max(0, page) * limit;
-        long total = analysisRecordMapper.countList(projectId, apiPath);
-        List<AnalysisRecord> records = analysisRecordMapper.selectSummaryList(projectId, apiPath, limit, offset);
+        long total = analysisRecordMapper.countList(projectId, apiPath, recordType);
+        List<AnalysisRecord> records = analysisRecordMapper.selectSummaryList(projectId, apiPath, recordType, limit, offset);
         return new AnalysisRecordPage(records, total);
     }
 

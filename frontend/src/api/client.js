@@ -134,6 +134,13 @@ export function submitApiExplainTask(payload) {
   return request('/analysis/explain/tasks', { method: 'POST', body: JSON.stringify(payload) })
 }
 
+export function submitFollowUpTask(recordId, question) {
+  return request(`/analysis/records/${encodeURIComponent(recordId)}/followup/tasks`, {
+    method: 'POST',
+    body: JSON.stringify({ question })
+  })
+}
+
 export function submitAnalysisFeedback(recordId, payload) {
   return request(`/analysis/records/${encodeURIComponent(recordId)}/feedback`, { method: 'PUT', body: JSON.stringify(payload) })
 }
@@ -148,6 +155,7 @@ export function listAnalysisRecords(params = {}) {
   const query = new URLSearchParams()
   if (params.projectId) query.set('projectId', params.projectId)
   if (params.apiPath) query.set('apiPath', params.apiPath)
+  if (params.recordType) query.set('recordType', params.recordType)
   if (params.page != null) query.set('page', params.page)
   if (params.size != null) query.set('size', params.size)
   const suffix = query.toString() ? `?${query.toString()}` : ''

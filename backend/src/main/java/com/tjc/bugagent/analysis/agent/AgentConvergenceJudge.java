@@ -1,6 +1,7 @@
 package com.tjc.bugagent.analysis.agent;
 
 import com.tjc.bugagent.ai.AiClient;
+import com.tjc.bugagent.ai.AiToolCallResult;
 import com.tjc.bugagent.codegraph.CodeGraphQueryResult;
 import com.tjc.bugagent.codegraph.CodeNode;
 import com.tjc.bugagent.config.AppProperties;
@@ -10,6 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.isBlank;
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.safe;
@@ -23,7 +25,8 @@ import static com.tjc.bugagent.analysis.agent.AgentTextUtils.trimHeadTail;
 @Component
 public class AgentConvergenceJudge {
 
-    private static final int MAX_NO_NEW_FACT_ROUNDS = 2;
+    // 连续多少轮无新增关键事实即强制收口。编排层日志也引用，故包可见
+    static final int MAX_NO_NEW_FACT_ROUNDS = 2;
 
     private final AiClient aiClient;
     private final AppProperties appProperties;
@@ -35,14 +38,17 @@ public class AgentConvergenceJudge {
         this.roundReporter = roundReporter;
     }
 
-    public String resolveForceFinishReason(CodeGraphQueryResult graph, List<Map<String, Object>> rounds, int noNewKeyFactRounds) {
+    /** 硬收口只认空转：连续无新事实才强制。证据类型齐备不再是强制条件——碰过三类证据不等于查透了。 */
+    public String resolveForceFinishReason(int noNewKeyFactRounds) {
         if (noNewKeyFactRounds >= MAX_NO_NEW_FACT_ROUNDS) {
             return "连续两轮没有新增关键事实";
         }
-        if (gatheredCoreEvidence(graph, rounds)) {
-            return "核心证据（入口、源码、数据库验证）已齐";
-        }
         return null;
+    }
+
+    /** 核心证据齐备的软信号：编排层只提醒一次模型考虑收口，不剥夺继续深挖的权利。 */
+    public boolean coreEvidenceGathered(CodeGraphQueryResult graph, List<Map<String, Object>> rounds) {
+        return gatheredCoreEvidence(graph, rounds);
     }
 
     /**
@@ -72,16 +78,15 @@ public class AgentConvergenceJudge {
     }
 
     public boolean isNewKeyFact(List<Map<String, Object>> rounds, AgentToolCall call, AgentToolResult toolResult) {
-        // 判别信号（工具、参数、结果）放前面，思考过程放最后，避免长思考把签名挤出 300 字截断窗口
-        String text = factSignatureText(safe(call.getAction()), safe(call.getArguments()),
-                safe(toolResult.getSummary()), safe(toolResult.getEvidence()), safe(call.getThought()));
-        if (text.contains("无源码定位信息") || text.contains("未找到") || text.contains("缺少")) {
+        // 失败/查无结果用结构化状态判，不再嗅探正文关键词——证据里恰好含"未找到"仨字不该被误杀
+        if (!toolResult.isOk()) {
             return false;
         }
-        String normalized = normalizeFactSignature(text);
+        String normalized = normalizeFactSignature(factSignatureText(safe(call.getAction()), safe(call.getArguments()),
+                safe(toolResult.getSummary()), safe(toolResult.getEvidence())));
         for (Map<String, Object> round : rounds) {
             String previous = factSignatureText(safe(round.get("action")), safe(round.get("arguments")),
-                    safe(round.get("toolSummary")), safe(round.get("toolEvidence")), safe(round.get("thought")));
+                    safe(round.get("toolSummary")), safe(round.get("toolEvidence")));
             if (normalized.equals(normalizeFactSignature(previous))) {
                 return false;
             }
@@ -89,20 +94,19 @@ public class AgentConvergenceJudge {
         return true;
     }
 
-    private String factSignatureText(String action, String arguments, String summary, String evidence, String thought) {
-        return (action + "\n" + arguments + "\n" + summary + "\n" + evidence + "\n" + thought).toLowerCase();
+    // 判重只看确定性的工具侧字段（工具、参数、摘要、证据）。thought 是模型自由文本，
+    // 措辞每轮都变，纳入只会破坏判重；存证展示仍保留在 evidence log，不影响这里
+    private String factSignatureText(String action, String arguments, String summary, String evidence) {
+        return (action + "\n" + arguments + "\n" + summary + "\n" + evidence).toLowerCase();
     }
 
     static String normalizeFactSignature(String text) {
-        String normalized = (text == null ? "" : text)
+        // 不截断：全文 equals 成本可忽略，截 300 字反而把"前缀相同、后半不同"的新证据误判成重复
+        return (text == null ? "" : text)
                 .replaceAll("\\s+", " ")
                 .replaceAll("nodeid=\\d+", "nodeid=#")
                 .replaceAll("line=\\d+", "line=#")
                 .replaceAll("id=\\d+", "id=#");
-        if (normalized.length() > 300) {
-            normalized = normalized.substring(0, 300);
-        }
-        return normalized;
     }
 
     private boolean hasSnapshotTarget(CodeGraphQueryResult graph) {
@@ -168,8 +172,9 @@ public class AgentConvergenceJudge {
     /**
      * 独立一次 LLM 调用，让模型基于证据反驳自己的初步结论。
      * 用单独的会话（不污染主对话），结论站得住返回含 CONFIRM 的文本，有问题返回 REVISE。
+     * 复核这笔 LLM 开销计入 tokenSink。
      */
-    public String runSelfCritique(String report, List<Map<String, Object>> rounds, String initialEvidence) {
+    public String runSelfCritique(String report, List<Map<String, Object>> rounds, String initialEvidence, AtomicInteger tokenSink) {
         // 自检证据保头留尾：头是入口/堆栈/路由定位，尾是末轮根因查证，超限时挖掉中间探索轮
         String evidence = trimHeadTail(roundReporter.buildEvidenceLog(initialEvidence, rounds), appProperties.getAgent().getInitialEvidenceLimit());
         StringBuilder prompt = new StringBuilder();
@@ -181,7 +186,9 @@ public class AgentConvergenceJudge {
         prompt.append("有实质问题，第一行只回 REVISE，再用一句话说明还需要补查什么。不要复述结论，不要客套。\n\n");
         prompt.append("【初步结论】\n").append(safe(report)).append("\n\n");
         prompt.append("【已收集证据】\n").append(evidence);
-        return aiClient.chat(prompt.toString());
+        AiToolCallResult result = aiClient.chatWithTools(prompt.toString(), null);
+        tokenSink.addAndGet(result.getTotalTokens());
+        return result.getContent();
     }
 
     /**

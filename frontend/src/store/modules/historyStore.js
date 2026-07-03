@@ -4,7 +4,7 @@ import { listAnalysisRecords, getAnalysisRecord, batchDeleteAnalysisRecords, sub
 import { analysisResult, analysisDialogVisible, activeReportTab, feedbackEditable, activePanel, confirm } from '../core'
 
 export const analysisRecords = ref([])
-export const historyQuery = reactive({ projectId: null, apiPath: '' })
+export const historyQuery = reactive({ projectId: null, apiPath: '', recordType: '' })
 export const selectedHistoryKeys = ref([])
 export const historyPagination = reactive({ current: 1, pageSize: 20, total: 0, showSizeChanger: true, pageSizeOptions: ['10', '20', '50', '100'] })
 export const feedbackForm = reactive({ verdict: '', expectKeywords: '', actualRootCause: '', note: '' })
@@ -24,6 +24,7 @@ export async function loadHistory() {
   const result = await listAnalysisRecords({
     projectId: historyQuery.projectId,
     apiPath: historyQuery.apiPath,
+    recordType: historyQuery.recordType,
     page: historyPagination.current - 1,
     size: historyPagination.pageSize
   }).catch(() => ({ records: [], total: 0 }))
@@ -61,6 +62,8 @@ export async function viewRecord(row) {
   const detail = await getAnalysisRecord(row.id)
   analysisResult.value = {
     id: detail.id,
+    // 类型必须带上：报告弹窗靠它决定"讲解不显示反馈框"、追问人设等
+    recordType: detail.recordType,
     plainAnswer: '',
     conclusion: detail.conclusion,
     confidence: detail.confidence,

@@ -17,6 +17,8 @@ public class AgentAnalysisTaskStatus {
     private String message;
     private AnalysisResult result;
     private List<String> progress = new ArrayList<String>();
+    // 收口报告流式生成的累计快照，前端轮询期间渐进渲染；任务完成后清空（正式报告在 result 里）
+    private String partialReport;
 
     public List<String> getProgress() {
         return progress;
@@ -66,5 +68,13 @@ public class AgentAnalysisTaskStatus {
 
     public void setResult(AnalysisResult result) {
         this.result = result;
+    }
+
+    public String getPartialReport() {
+        return partialReport;
+    }
+
+    public void setPartialReport(String partialReport) {
+        this.partialReport = partialReport;
     }
 }

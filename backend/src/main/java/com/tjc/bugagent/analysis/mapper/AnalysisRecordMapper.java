@@ -17,11 +17,13 @@ public interface AnalysisRecordMapper {
     /** 写入一次分析记录，自增主键回填到 record.id（useGeneratedKeys） */
     void insert(AnalysisRecordInsert record);
 
-    /** 历史列表总条数，projectId/apiPath 可选 */
-    long countList(@Param("projectId") Long projectId, @Param("apiPath") String apiPath);
+    /** 历史列表总条数，projectId/apiPath/recordType 可选 */
+    long countList(@Param("projectId") Long projectId, @Param("apiPath") String apiPath,
+                   @Param("recordType") String recordType);
 
     /** 历史列表精简字段，按 id 倒序分页 */
     List<AnalysisRecord> selectSummaryList(@Param("projectId") Long projectId, @Param("apiPath") String apiPath,
+                                           @Param("recordType") String recordType,
                                            @Param("limit") int limit, @Param("offset") int offset);
 
     /** 批量删除 */

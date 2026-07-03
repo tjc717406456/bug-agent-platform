@@ -3,6 +3,10 @@ package com.tjc.bugagent.ai;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tjc.bugagent.config.AppProperties;
+import org.apache.http.client.config.RequestConfig;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpEntity;
@@ -10,7 +14,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.ClientHttpResponse;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
@@ -45,8 +49,10 @@ public class AiClient {
     private final AiConfigService aiConfigService;
     private final ObjectMapper objectMapper;
     private final AppProperties appProperties;
-    // 按读超时缓存 RestTemplate；SimpleClientHttpRequestFactory 每次请求新建连接，实例可安全共享
+    // 按读超时缓存 RestTemplate；底层共用一个连接池，复用 TCP/TLS 连接省重握手
     private final Map<Integer, RestTemplate> restTemplateCache = new ConcurrentHashMap<Integer, RestTemplate>();
+    // 全局共享连接池：并发分析链、每轮 LLM 请求都打同一网关，池化后 keep-alive 连接反复复用
+    private final PoolingHttpClientConnectionManager connectionManager = buildConnectionManager();
 
     public AiClient(AiConfigService aiConfigService, ObjectMapper objectMapper, AppProperties appProperties) {
         this.aiConfigService = aiConfigService;
@@ -78,8 +84,75 @@ public class AiClient {
 
     /** 辅助模型的单轮对话(接口讲解、多假设侦察等轻活)，省主模型的钱。 */
     public String chatUtility(String prompt) {
-        AiToolCallResult result = chatWithMessages(buildMessages(prompt), null, resolveUtilityConfig());
-        return result.getContent();
+        return chatUtilityResult(prompt).getContent();
+    }
+
+    /** chatUtility 的带用量版本：调用方需要累计 token 消耗时用这个。 */
+    public AiToolCallResult chatUtilityResult(String prompt) {
+        return chatWithMessages(buildMessages(prompt), null, resolveUtilityConfig());
+    }
+
+    /**
+     * 纯文字流式生成（主模型）：不带工具、强制 stream。网关流式丢的是 tool_calls，纯 content 分块不受影响，
+     * 且分块回传不会被网关读超时掐断。onPartial 收到的是**累计全文快照**（重试自动清零重来，调用方无需自己拼）。
+     */
+    public AiToolCallResult chatProseStream(List<Map<String, Object>> messages, java.util.function.Consumer<String> onPartial) {
+        return chatProseStream(messages, aiConfigService.getEnabledConfig(), onPartial);
+    }
+
+    /** 纯文字流式生成（辅助模型），接口讲解收口用。 */
+    public AiToolCallResult chatProseStreamUtility(List<Map<String, Object>> messages, java.util.function.Consumer<String> onPartial) {
+        return chatProseStream(messages, resolveUtilityConfig(), onPartial);
+    }
+
+    private AiToolCallResult chatProseStream(List<Map<String, Object>> messages, AiConfig config,
+                                             java.util.function.Consumer<String> onPartial) {
+        AiToolCallResult failedResult = new AiToolCallResult();
+        if (config == null) {
+            failedResult.setContent("AI is not configured. The report is generated from local code graph evidence only.");
+            failedResult.setFailed(true);
+            return failedResult;
+        }
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(config.getApiKey());
+        Map<String, Object> body = new HashMap<String, Object>();
+        body.put("model", config.getModelName());
+        body.put("messages", messages);
+        body.put("temperature", 0.2);
+        body.put("stream", true);
+        String url = config.getBaseUrl().replaceAll("/+$", "") + "/chat/completions";
+        RestTemplate restTemplate = buildRestTemplate(config);
+        int attempts = MAX_RETRIES + 1;
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            log.info("AI request url={} model={} stream=true(prose) keyPrefix={}", url, config.getModelName(), maskApiKey(config.getApiKey()));
+            HttpEntity<Map<String, Object>> entity = new HttpEntity<Map<String, Object>>(body, headers);
+            // 每次尝试独立累计，重试时快照从零重来，不会把上次半截内容拼进去
+            StringBuilder accumulated = new StringBuilder();
+            try {
+                long callStartMs = System.currentTimeMillis();
+                AiToolCallResult result = executeStream(restTemplate, url, entity, delta -> {
+                    accumulated.append(delta);
+                    if (onPartial != null) {
+                        onPartial.accept(accumulated.toString());
+                    }
+                });
+                log.info("AI response model={} 耗时={}ms tokens={} (prose-stream)", config.getModelName(),
+                        System.currentTimeMillis() - callStartMs, result.getTotalTokens());
+                return result;
+            } catch (Exception exception) {
+                if (isTransient(exception) && attempt < attempts) {
+                    log.warn("AI prose-stream transient failure (attempt {}/{}): {}, retrying", attempt, attempts, exception.getMessage());
+                    sleep(RETRY_BACKOFF_MS * attempt);
+                    continue;
+                }
+                log.error("AI prose-stream failed: {}", exception.getMessage(), exception);
+                failedResult.setContent("AI不可用，请稍后重试或检查 AI 配置");
+                failedResult.setFailed(true);
+                return failedResult;
+            }
+        }
+        return failedResult;
     }
 
     /**
@@ -96,15 +169,31 @@ public class AiClient {
         return chatWithMessages(messages, tools, aiConfigService.getEnabledConfig());
     }
 
+    /**
+     * 主模型多轮对话并强制本轮必发工具调用(tool_choice=required)：探查/收尾轮用，从源头堵"只给文字计划不调工具"。
+     * 受 app.ai.tool-choice-required 开关控制；网关不认 required 时由核心方法自动降级为 auto 重试。
+     */
+    public AiToolCallResult chatWithMessagesRequired(List<Map<String, Object>> messages, List<Map<String, Object>> tools) {
+        String toolChoice = appProperties.getAi().isToolChoiceRequired() ? "required" : "auto";
+        return chatWithMessages(messages, tools, aiConfigService.getEnabledConfig(), toolChoice);
+    }
+
     /** 用辅助模型跑多轮对话(接口讲解等)，省钱。 */
     public AiToolCallResult chatWithMessagesUtility(List<Map<String, Object>> messages, List<Map<String, Object>> tools) {
         return chatWithMessages(messages, tools, resolveUtilityConfig());
     }
 
     /**
-     * 多轮对话核心：用指定的模型配置发送，主/辅模型路由由调用方决定。
+     * 多轮对话核心：用指定的模型配置发送，主/辅模型路由由调用方决定。tool_choice 默认 auto。
      */
     public AiToolCallResult chatWithMessages(List<Map<String, Object>> messages, List<Map<String, Object>> tools, AiConfig config) {
+        return chatWithMessages(messages, tools, config, "auto");
+    }
+
+    /**
+     * 多轮对话核心：toolChoice 控制是否强制调工具（auto/required）。带工具且 required 时若网关返 400，自动降级 auto 重试一次。
+     */
+    public AiToolCallResult chatWithMessages(List<Map<String, Object>> messages, List<Map<String, Object>> tools, AiConfig config, String toolChoice) {
         AiToolCallResult result = new AiToolCallResult();
         if (config == null) {
             result.setContent("AI is not configured. The report is generated from local code graph evidence only.");
@@ -122,6 +211,8 @@ public class AiClient {
         boolean hasTools = tools != null && !tools.isEmpty();
         boolean useStream = streamEnabled && !hasTools;
         boolean canFallbackToStream = streamEnabled && hasTools;
+        // required 逼模型本轮必发 tool_calls；部分网关不认，catch 里检测 400 后降级为 auto 重试
+        String effectiveToolChoice = (toolChoice == null || toolChoice.trim().isEmpty()) ? "auto" : toolChoice;
 
         Map<String, Object> baseBody = new HashMap<String, Object>();
         baseBody.put("model", config.getModelName());
@@ -129,7 +220,7 @@ public class AiClient {
         baseBody.put("temperature", 0.2);
         if (hasTools) {
             baseBody.put("tools", tools);
-            baseBody.put("tool_choice", "auto");
+            baseBody.put("tool_choice", effectiveToolChoice);
         }
 
         String url = config.getBaseUrl().replaceAll("/+$", "") + "/chat/completions";
@@ -146,8 +237,20 @@ public class AiClient {
             log.debug("AI request body: {}", body);
             HttpEntity<Map<String, Object>> entity = new HttpEntity<Map<String, Object>>(body, headers);
             try {
-                return useStream ? executeStream(restTemplate, url, entity) : executeBlocking(restTemplate, url, entity);
+                long callStartMs = System.currentTimeMillis();
+                AiToolCallResult callResult = useStream ? executeStream(restTemplate, url, entity) : executeBlocking(restTemplate, url, entity);
+                // 与上面的 request 日志配对：长生成期间的"沉默"到这行落地，耗时/用量一目了然
+                log.info("AI response model={} 耗时={}ms tokens={} toolCalls={}", config.getModelName(),
+                        System.currentTimeMillis() - callStartMs, callResult.getTotalTokens(), callResult.getToolCalls().size());
+                return callResult;
             } catch (Exception exception) {
+                // required 不被网关支持时通常返 400：降级 auto 立即重试，别硬断（仍保留 nudge 作二级兜底）
+                if (hasTools && "required".equals(effectiveToolChoice) && isBadRequest(exception) && attempt < attempts) {
+                    effectiveToolChoice = "auto";
+                    baseBody.put("tool_choice", "auto");
+                    log.warn("网关疑似不支持 tool_choice=required，降级为 auto 重试 (attempt {}/{}): {}", attempt, attempts, exception.getMessage());
+                    continue;
+                }
                 // 网关 5xx / 限流 429 / 读超时属于瞬时错误，退避后重试；4xx、响应格式错等不重试
                 if (isTransient(exception) && attempt < attempts) {
                     // 非流式被网关中途掐断（reset/EOF）时，下次重试切流式：分块返回扛得住网关的空闲超时
@@ -186,21 +289,29 @@ public class AiClient {
      * 流式：逐块读取 SSE，把分片的 content 与 tool_calls 归并成与非流式一致的结果对象。
      */
     private AiToolCallResult executeStream(RestTemplate restTemplate, String url, HttpEntity<Map<String, Object>> entity) {
+        return executeStream(restTemplate, url, entity, null);
+    }
+
+    /** onDelta 非空时每收到一段 content 增量回调一次，供收口报告边生成边推给前端。 */
+    private AiToolCallResult executeStream(RestTemplate restTemplate, String url, HttpEntity<Map<String, Object>> entity,
+                                           java.util.function.Consumer<String> onDelta) {
         return restTemplate.execute(url, HttpMethod.POST, request -> {
             request.getHeaders().addAll(entity.getHeaders());
             objectMapper.writeValue(request.getBody(), entity.getBody());
-        }, this::extractStream);
+        }, response -> extractStream(response, onDelta));
     }
 
     /**
      * 解析 SSE 响应流：累加 content；tool_calls 按 index 归并（id/name 取首个非空，arguments 逐片拼接）。
      */
-    private AiToolCallResult extractStream(ClientHttpResponse response) throws java.io.IOException {
+    private AiToolCallResult extractStream(ClientHttpResponse response, java.util.function.Consumer<String> onDelta) throws java.io.IOException {
         StringBuilder content = new StringBuilder();
         StringBuilder raw = new StringBuilder();
         // 按 index 归并工具调用分片，保持模型给出的先后顺序
         Map<Integer, ToolCallChunk> toolChunks = new LinkedHashMap<Integer, ToolCallChunk>();
         boolean sawData = false;
+        // 部分网关会在末尾 chunk 带 usage，抓到就记，抓不到 token 计 0（流式协议没强制回用量）
+        int totalTokens = 0;
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.getBody(), StandardCharsets.UTF_8))) {
             String line;
@@ -218,6 +329,10 @@ public class AiClient {
                 sawData = true;
                 raw.append(data).append("\n");
                 JsonNode chunk = objectMapper.readTree(data);
+                JsonNode usage = chunk.path("usage");
+                if (usage.has("total_tokens")) {
+                    totalTokens = usage.path("total_tokens").asInt(0);
+                }
                 JsonNode choices = chunk.path("choices");
                 if (!choices.isArray() || choices.size() == 0) {
                     continue;
@@ -226,6 +341,9 @@ public class AiClient {
                 JsonNode contentNode = delta.path("content");
                 if (contentNode.isTextual()) {
                     content.append(contentNode.asText());
+                    if (onDelta != null && !contentNode.asText().isEmpty()) {
+                        onDelta.accept(contentNode.asText());
+                    }
                 }
                 JsonNode toolCalls = delta.path("tool_calls");
                 if (toolCalls.isArray()) {
@@ -241,6 +359,7 @@ public class AiClient {
         AiToolCallResult result = new AiToolCallResult();
         result.setRawResponse(raw.toString());
         result.setContent(content.toString());
+        result.setTotalTokens(totalTokens);
         List<AiToolCall> calls = new ArrayList<AiToolCall>();
         for (ToolCallChunk chunk : toolChunks.values()) {
             if (chunk.name == null || chunk.name.trim().isEmpty()) {
@@ -331,6 +450,12 @@ public class AiClient {
             }
         }
         return false;
+    }
+
+    /** 是否 400 Bad Request：用于探测网关不认 tool_choice=required，从而降级为 auto。 */
+    private boolean isBadRequest(Exception exception) {
+        return exception instanceof HttpClientErrorException
+                && ((HttpClientErrorException) exception).getRawStatusCode() == 400;
     }
 
     /**
@@ -590,11 +715,34 @@ public class AiClient {
         return restTemplateCache.computeIfAbsent(readTimeoutSeconds, this::createRestTemplate);
     }
 
+    /**
+     * 全局连接池：AI 请求全打同一网关，池化后 keep-alive 连接反复复用，免掉每轮的 TCP+TLS 握手。
+     * validateAfterInactivity 保证复用前校验空闲连接，避开网关早已关掉的死连接（NoHttpResponseException）。
+     */
+    private static PoolingHttpClientConnectionManager buildConnectionManager() {
+        PoolingHttpClientConnectionManager manager = new PoolingHttpClientConnectionManager();
+        manager.setMaxTotal(100);
+        manager.setDefaultMaxPerRoute(50);
+        manager.setValidateAfterInactivity(5000);
+        return manager;
+    }
+
+    /**
+     * 每种读超时建一个 RestTemplate，但共用同一连接池（setConnectionManagerShared=true，close 不销毁池）。
+     * 读超时走 RequestConfig 的 socketTimeout，与旧的 setReadTimeout 语义一致。
+     */
     private RestTemplate createRestTemplate(int readTimeoutSeconds) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(CONNECT_TIMEOUT_MS);
-        factory.setReadTimeout(readTimeoutSeconds * 1000);
-        return new RestTemplate(factory);
+        RequestConfig requestConfig = RequestConfig.custom()
+                .setConnectTimeout(CONNECT_TIMEOUT_MS)
+                .setSocketTimeout(readTimeoutSeconds * 1000)
+                .setConnectionRequestTimeout(CONNECT_TIMEOUT_MS)
+                .build();
+        CloseableHttpClient httpClient = HttpClients.custom()
+                .setConnectionManager(connectionManager)
+                .setConnectionManagerShared(true)
+                .setDefaultRequestConfig(requestConfig)
+                .build();
+        return new RestTemplate(new HttpComponentsClientHttpRequestFactory(httpClient));
     }
 
     private Map<String, Object> message(String role, String content) {

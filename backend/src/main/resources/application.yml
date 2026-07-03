@@ -51,6 +51,8 @@ app:
     tool-fanout-pool-size: 8
     # 分阶段工具集：先读代码/看表结构，再解锁 query_database 查库取证
     phased-tools: true
+    # 相似案例召回已关：bug 定位是证据驱动，历史结论增益有限还可能锚定误导；哪天做"错例纠偏"再开
+    enable-similar-case: false
     # 多假设并行：OFF 单链 / ON 多候选即并行 / AUTO 仅歧义时并行
     # 必须加引号！YAML 会把裸 OFF/NO/FALSE 当布尔，绑到字符串字段成了 "false"，绕过 OFF 判断
     hypothesis-mode: "OFF"

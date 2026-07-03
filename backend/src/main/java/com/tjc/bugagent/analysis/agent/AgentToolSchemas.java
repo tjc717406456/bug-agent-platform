@@ -39,7 +39,8 @@ public class AgentToolSchemas {
         if (allowQueryDatabase) {
             tools.add(toolSchema("query_database", "执行只读 SQL 核对数据（只允许 SELECT/SHOW/DESC/DESCRIBE/EXPLAIN）；先 describe_tables 确认列名再查", properties("sql"), required("sql")));
         }
-        tools.add(toolSchema("finish", "证据足够后输出最终定位报告：通俗结论、问题结论、证据链路、关键代码/SQL/数据证据、根因类型、建议处理人、置信度", properties("report"), required("report")));
+        // 收口改两段式：finish 只当信号，完整报告在收口后用纯文字流式生成（大文本塞工具参数既挤崩协议又没法流式）
+        tools.add(toolSchema("finish", "证据足够后调用它宣布收口。无需在参数里写完整报告：report 留空或只写一句结论概要，完整报告会在收口后单独让你输出", properties("report"), required()));
         return tools;
     }
 
@@ -100,7 +101,7 @@ public class AgentToolSchemas {
             return "只读 SQL，仅 SELECT/SHOW/DESC/DESCRIBE/EXPLAIN";
         }
         if ("report".equals(name)) {
-            return "最终定位报告";
+            return "结论概要，可留空（完整报告在收口后单独生成）";
         }
         return name;
     }

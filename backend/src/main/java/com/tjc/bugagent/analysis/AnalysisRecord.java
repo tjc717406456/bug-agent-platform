@@ -7,6 +7,8 @@ public class AnalysisRecord {
     private Long id;
     private Long projectId;
     private String apiPath;
+    // ANALYSIS bug分析 / EXPLAIN 接口讲解
+    private String recordType;
     private String userDescription;
     private String conclusion;
     private String confidence;
@@ -39,6 +41,14 @@ public class AnalysisRecord {
 
     public void setApiPath(String apiPath) {
         this.apiPath = apiPath;
+    }
+
+    public String getRecordType() {
+        return recordType;
+    }
+
+    public void setRecordType(String recordType) {
+        this.recordType = recordType;
     }
 
     public String getUserDescription() {

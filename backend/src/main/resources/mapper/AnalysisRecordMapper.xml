@@ -6,10 +6,10 @@
 
     <!-- insert 后自增主键回填到入参 id，等价原 select last_insert_id() -->
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
-        insert into analysis_record(project_id, version_id, api_path, user_description, request_body, response_body,
+        insert into analysis_record(project_id, version_id, api_path, record_type, user_description, request_body, response_body,
             stack_trace, screenshot_paths, trace_id, request_time, conclusion, confidence, evidence_json,
             auto_verify, auto_verify_keywords, rounds_count, total_tokens, created_at)
-        values (#{projectId}, #{versionId}, #{apiPath}, #{userDescription}, #{requestBody}, #{responseBody},
+        values (#{projectId}, #{versionId}, #{apiPath}, #{recordType}, #{userDescription}, #{requestBody}, #{responseBody},
             #{stackTrace}, #{screenshotPaths}, #{traceId}, #{requestTime}, #{conclusion}, #{confidence}, #{evidenceJson},
             #{autoVerify}, #{autoVerifyKeywords}, #{roundsCount}, #{totalTokens}, now())
     </insert>
@@ -22,6 +22,9 @@
         <if test="apiPath != null and apiPath.trim() != ''">
             and api_path like concat('%', trim(#{apiPath}), '%')
         </if>
+        <if test="recordType != null and recordType.trim() != ''">
+            and record_type = #{recordType}
+        </if>
     </sql>
 
     <select id="countList" resultType="long">
@@ -30,7 +33,7 @@
     </select>
 
     <select id="selectSummaryList" resultType="com.tjc.bugagent.analysis.AnalysisRecord">
-        select id, project_id, api_path, confidence, auto_verify, feedback_verdict,
+        select id, project_id, api_path, record_type, confidence, auto_verify, feedback_verdict,
             substring(conclusion, 1, 300) as conclusion, created_at
         from analysis_record
         <include refid="listWhere"/>
@@ -46,7 +49,7 @@
     </delete>
 
     <select id="selectDetail" resultType="com.tjc.bugagent.analysis.AnalysisRecord">
-        select id, project_id, api_path, user_description, conclusion, confidence, evidence_json,
+        select id, project_id, api_path, record_type, user_description, conclusion, confidence, evidence_json,
             auto_verify, feedback_verdict, actual_root_cause, expect_keywords, created_at
         from analysis_record where id = #{id}
     </select>
@@ -58,7 +61,8 @@
         where id = #{recordId}
     </update>
 
-    <!-- 召回候选：只圈"靠得住"的（人工标注过 或 机器验证 CONFIRMED），含 embedding/stack_trace 等非实体字段，按 Map 返回。
+    <!-- 召回候选：只圈"靠得住"的（人工标注为正确 或 机器验证 CONFIRMED），含 embedding/stack_trace 等非实体字段，按 Map 返回。
+         人工路只认 CORRECT、不强求关键词（关键词是评估飞轮的需求，与召回解耦）；标错的不进池，免得错案例当正面参考污染。
          Map 结果不走 map-underscore-to-camel-case，列名即 key，故显式起驼峰别名，与 retriever 取值对齐 -->
     <select id="selectCandidates" resultType="java.util.LinkedHashMap">
         select id, api_path as apiPath, conclusion, confidence, actual_root_cause as actualRootCause, embedding,
@@ -66,7 +70,8 @@
             user_description as userDescription, stack_trace as stackTrace
         from analysis_record
         where project_id = #{projectId}
-        and ((feedback_verdict is not null and expect_keywords is not null and expect_keywords &lt;&gt; '' and expect_keywords &lt;&gt; '[]')
+        and record_type = 'ANALYSIS'
+        and (feedback_verdict = 'CORRECT'
           or (auto_verify = 'CONFIRMED' and auto_verify_keywords is not null and auto_verify_keywords &lt;&gt; ''))
         order by id desc limit 200
     </select>
@@ -79,8 +84,9 @@
             stack_trace as stackTrace, trace_id as traceId, request_time as requestTime,
             coalesce(nullif(expect_keywords, ''), auto_verify_keywords) as expectKeywords
         from analysis_record
-        where (feedback_verdict is not null and expect_keywords is not null and expect_keywords &lt;&gt; '' and expect_keywords &lt;&gt; '[]')
-           or (auto_verify = 'CONFIRMED' and auto_verify_keywords is not null and auto_verify_keywords &lt;&gt; '')
+        where record_type = 'ANALYSIS'
+        and ((feedback_verdict is not null and expect_keywords is not null and expect_keywords &lt;&gt; '' and expect_keywords &lt;&gt; '[]')
+           or (auto_verify = 'CONFIRMED' and auto_verify_keywords is not null and auto_verify_keywords &lt;&gt; ''))
     </select>
 
     <update id="updateEmbedding">

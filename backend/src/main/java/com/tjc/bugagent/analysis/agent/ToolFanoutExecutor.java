@@ -13,8 +13,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Agent 单轮内多个查证工具的并行执行器：自带小型线程池（非 Spring @Async，避免抢占分析任务线程池），
- * 单工具直接执行省线程开销，多工具并发并对每个设超时，避免一个卡死的工具拖垮整轮分析。
+ * Agent 单轮内查证工具的执行器：自带小型线程池（非 Spring @Async，避免抢占分析任务线程池），
+ * 不论一个还是多个工具都走池 + 超时——大多数轮次恰恰只有一个调用，超时保护必须对每轮生效，
+ * 否则一条慢 SQL/大日志检索能把整个分析无限期堵死，连停止按钮都够不着（取消检测在轮间）。
  */
 @Component
 public class ToolFanoutExecutor {
@@ -40,14 +41,9 @@ public class ToolFanoutExecutor {
     }
 
     /**
-     * 并行执行本轮的查证工具；单个工具时直接执行避免线程开销。
+     * 执行本轮的查证工具，单个也走池，保证每个调用都受超时约束。
      */
     public List<AgentToolResult> executeAll(List<AgentToolCall> calls, AgentToolExecutor.AgentToolContext context) {
-        if (calls.size() == 1) {
-            List<AgentToolResult> single = new ArrayList<AgentToolResult>(1);
-            single.add(safeExecute(calls.get(0), context));
-            return single;
-        }
         int timeoutSeconds = Math.max(1, appProperties.getAgent().getToolTimeoutSeconds());
         List<CompletableFuture<AgentToolResult>> futures = new ArrayList<CompletableFuture<AgentToolResult>>();
         for (AgentToolCall call : calls) {

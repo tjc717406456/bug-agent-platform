@@ -100,6 +100,8 @@ public class AppProperties {
     public static class Ai {
         // 开启 SSE 流式收取，逐块到达不再整段干等，治慢网关读超时；与某中转不兼容时配 false 退回非流式
         private boolean streamEnabled = true;
+        // 探查/收尾轮强制 tool_choice=required，从源头堵"只给文字计划不调工具"；网关不认会自动降级 auto，表现异常也可一键关
+        private boolean toolChoiceRequired = true;
         // 余弦相似度(0~1)折算进召回分的权重：score += cosine * weight，让"意思像"的历史案例排得上号
         // embedding 模型/地址/密钥/超时走 AI 配置里 role=EMBEDDING 的那条，启用即开、停用即退回纯词法，这里只放算法参数
         private int embeddingWeight = 100;
@@ -112,6 +114,14 @@ public class AppProperties {
 
         public void setStreamEnabled(boolean streamEnabled) {
             this.streamEnabled = streamEnabled;
+        }
+
+        public boolean isToolChoiceRequired() {
+            return toolChoiceRequired;
+        }
+
+        public void setToolChoiceRequired(boolean toolChoiceRequired) {
+            this.toolChoiceRequired = toolChoiceRequired;
         }
 
         public int getEmbeddingWeight() {
@@ -189,6 +199,8 @@ public class AppProperties {
      */
     public static class Agent {
         private int maxIterations = 32;
+        // 接口讲解的独立轮次上限：讲解没有 bug 分析那套收敛判定，靠预算硬约束防无限下钻
+        private int explainMaxIterations = 24;
         private int initialEvidenceLimit = 12000;
         private int sqlTextLimit = 2000;
         private int toolResultLimit = 4000;
@@ -208,8 +220,8 @@ public class AppProperties {
         private int similarCaseTopK = 3;
         // 相似案例参考文本的总字数上限，防止挤占证据
         private int similarCaseLimit = 1500;
-        // 相似度低于此分的案例不注入，默认至少 api_path 沾边
-        private int similarCaseMinScore = 1;
+        // 相似度低于此分的案例不注入：100 = 至少完全同接口才召回，挡掉泛词法/相关接口噪声
+        private int similarCaseMinScore = 100;
         // 分阶段工具集：开启后未读代码/未看表结构前不放 query_database，逼模型先理解再查库，避免盲查
         private boolean phasedTools = true;
         // 多假设并行模式：OFF 单链；ON 有多候选就并行；AUTO 仅在候选歧义时才并行
@@ -333,6 +345,14 @@ public class AppProperties {
 
         public void setMaxIterations(int maxIterations) {
             this.maxIterations = maxIterations;
+        }
+
+        public int getExplainMaxIterations() {
+            return explainMaxIterations;
+        }
+
+        public void setExplainMaxIterations(int explainMaxIterations) {
+            this.explainMaxIterations = explainMaxIterations;
         }
 
         public int getInitialEvidenceLimit() {

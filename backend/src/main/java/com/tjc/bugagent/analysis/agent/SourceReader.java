@@ -90,6 +90,38 @@ public class SourceReader {
     }
 
     /**
+     * 无行号的 mapper xml 节点兜底定位：按 id="节点名" 扫到标签行，回一段带行号的语句片段（读到闭合标签即止）。
+     * 免得模型拿到"无源码定位信息"死胡同后，还得自己 grep 好几轮补救。找不到或读不了返回 null。
+     */
+    public String readXmlTagSnippet(CodeNode node, Long versionId, int maxLines) {
+        if (node.getFilePath() == null || isBlank(node.getName())) {
+            return null;
+        }
+        try {
+            Path path = resolveSourcePath(node.getFilePath(), node.getQualifiedName(), versionId);
+            List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+            String needle = "id=\"" + node.getName() + "\"";
+            for (int i = 0; i < lines.size(); i++) {
+                if (!lines.get(i).contains(needle)) {
+                    continue;
+                }
+                StringBuilder snippet = new StringBuilder();
+                int end = Math.min(lines.size(), i + Math.max(1, maxLines));
+                for (int index = i; index < end; index++) {
+                    snippet.append(index + 1).append(": ").append(lines.get(index)).append("\n");
+                    if (index > i && lines.get(index).matches(".*</(select|update|insert|delete)>.*")) {
+                        break;
+                    }
+                }
+                return snippet.toString();
+            }
+            return null;
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
+    /**
      * 从 startLine0(0-based) 起做花括号配对，返回方法体闭合 '}' 所在行下标；跳过字符串/字符/行注释/块注释里的花括号。
      * MAX_METHOD_LINES 行内没配平就返回 -1（超长或不是方法）。
      */

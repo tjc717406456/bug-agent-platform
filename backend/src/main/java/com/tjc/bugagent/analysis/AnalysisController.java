@@ -19,6 +19,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import javax.validation.Valid;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Bug 分析接口。
@@ -85,6 +86,15 @@ public class AnalysisController {
     }
 
     /**
+     * 基于一条分析记录发起追问，返回 taskId，轮询复用 poll 接口（含流式快照）。
+     */
+    @PostMapping("/records/{recordId}/followup/tasks")
+    public ApiResponse<AgentAnalysisTaskSubmitResult> submitFollowUp(@PathVariable Long recordId,
+                                                                     @RequestBody Map<String, String> body) {
+        return ApiResponse.ok(agentAnalysisTaskService.submitFollowUp(recordId, body.get("question")));
+    }
+
+    /**
      * 对一条分析记录做人工反馈（对错 + 真实根因 + 期望关键词），沉淀成回归用例。
      */
     @PutMapping("/records/{recordId}/feedback")
@@ -107,9 +117,10 @@ public class AnalysisController {
     @GetMapping("/records")
     public ApiResponse<AnalysisRecordPage> listRecords(@RequestParam(required = false) Long projectId,
                                                        @RequestParam(required = false) String apiPath,
+                                                       @RequestParam(required = false) String recordType,
                                                        @RequestParam(defaultValue = "0") int page,
                                                        @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.ok(analysisRecordService.list(projectId, apiPath, page, size));
+        return ApiResponse.ok(analysisRecordService.list(projectId, apiPath, recordType, page, size));
     }
 
     /**

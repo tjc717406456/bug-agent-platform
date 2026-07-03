@@ -8,6 +8,8 @@ import com.tjc.bugagent.dbhub.ReadonlySqlGuard;
 import com.tjc.bugagent.project.ProjectDatasource;
 import com.tjc.bugagent.project.ProjectService;
 import com.tjc.bugagent.project.ProjectVersion;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
@@ -29,6 +31,7 @@ import java.util.stream.Stream;
  */
 @Service
 public class AgentToolExecutor {
+    private static final Logger log = LoggerFactory.getLogger(AgentToolExecutor.class);
     private static final int MAX_SNIPPET_LINES = 80;
     // grep 原始源码的护栏：单次最多回多少处命中、单行截多长、跳过多大的文件
     private static final int GREP_MAX_MATCHES = 40;
@@ -56,12 +59,37 @@ public class AgentToolExecutor {
 
     /**
      * 执行 Agent 指定的只读工具。
+     * 除 finish 外全是只读幂等的，同一次分析内按 (action, 参数) 缓存成功结果：
+     * 并行假设链重复查同一段代码/同一条链路时直接复用，省重复查询和重复 token。
      */
     public AgentToolResult execute(AgentToolCall call, AgentToolContext context) {
         String action = call.getAction();
         if (isBlank(action)) {
             return AgentToolResult.fail("unknown", "缺少 action");
         }
+        if ("finish".equals(action)) {
+            return AgentToolResult.ok("finish", "Agent 已输出最终报告", call.stringArg("report"));
+        }
+        String cacheKey = cacheKey(action, call);
+        AgentToolResult cached = context.cachedResult(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+        AgentToolResult result = doExecute(action, call, context);
+        // 只缓存成功结果：瞬时失败(库抖动等)缓存了会毒化模型的重试
+        if (result != null && result.isOk()) {
+            context.cacheResult(cacheKey, result);
+        }
+        return result;
+    }
+
+    /** 参数按 key 排序拼缓存键，同样的参数换个顺序也命中同一条。 */
+    private String cacheKey(String action, AgentToolCall call) {
+        Map<String, Object> args = call.getArguments();
+        return action + "|" + (args == null ? "{}" : new java.util.TreeMap<String, Object>(args).toString());
+    }
+
+    private AgentToolResult doExecute(String action, AgentToolCall call, AgentToolContext context) {
         if ("search_code".equals(action)) {
             return searchCode(call, context);
         }
@@ -88,9 +116,6 @@ public class AgentToolExecutor {
         }
         if ("query_database".equals(action)) {
             return queryDatabase(call, context);
-        }
-        if ("finish".equals(action)) {
-            return AgentToolResult.ok("finish", "Agent 已输出最终报告", call.stringArg("report"));
         }
         return AgentToolResult.fail(action, "不支持的工具: " + action);
     }
@@ -411,8 +436,13 @@ public class AgentToolExecutor {
         if (!ReadonlySqlGuard.isReadonly(sql)) {
             return AgentToolResult.fail("query_database", "只允许只读 SQL，请改用 SELECT/SHOW/DESC 重写: " + sql);
         }
+        // SQL 原文落 info 便于追溯执行了啥；结果正文含业务数据，只在 debug 打
+        log.info("query_database 执行 SQL: {}", sql);
         String evidence = dbhubClient.queryReadonly(context.getDatasource().getDbhubKey(), sql);
-        return AgentToolResult.ok("query_database", "已执行只读 SQL", evidence);
+        log.debug("query_database 结果: {}", evidence);
+        // 摘要带上截断的 SQL，前端进度时间线和证据页一眼可见查的是啥
+        String summarySql = sql.length() > 160 ? sql.substring(0, 160) + "..." : sql;
+        return AgentToolResult.ok("query_database", "已执行只读 SQL: " + summarySql, evidence);
     }
 
     private List<String> parseTables(Object value) {
@@ -430,7 +460,47 @@ public class AgentToolExecutor {
         String snippet = "METHOD".equals(node.getNodeType())
                 ? sourceReader.readMethodSnippet(node, context.getProjectId(), context.getVersionId())
                 : sourceReader.readSnippet(node, context.getProjectId(), context.getVersionId(), MAX_SNIPPET_LINES);
+        if (snippet != null && snippet.startsWith("无源码定位信息")) {
+            snippet = unlocatedNodeFallback(node, context);
+        }
         return formatNode(node) + "\n源码片段:\n" + snippet;
+    }
+
+    // metadata 是索引期落的 JSON，解析只在无行号兜底时用；ObjectMapper 线程安全，静态共享即可
+    private static final com.fasterxml.jackson.databind.ObjectMapper METADATA_MAPPER = new com.fasterxml.jackson.databind.ObjectMapper();
+
+    /**
+     * MAPPER_METHOD/SQL 这类没索引到行号的节点，别甩"无源码定位信息"死胡同（模型只能自己 grep 好几轮补救）：
+     * 优先回 metadata 里的 SQL 原文，再按 id="名字" 定位 xml 标签行给出语句片段，一次调用给足。
+     */
+    private String unlocatedNodeFallback(CodeNode node, AgentToolContext context) {
+        StringBuilder result = new StringBuilder();
+        String sql = metadataSql(node);
+        if (!isBlank(sql)) {
+            result.append("SQL 原文(来自索引 metadata):\n").append(sql).append("\n");
+        }
+        String xmlSnippet = sourceReader.readXmlTagSnippet(node, context.getVersionId(), MAX_SNIPPET_LINES);
+        if (!isBlank(xmlSnippet)) {
+            result.append("XML 定位(按 id 匹配):\n").append(xmlSnippet);
+        }
+        return result.length() == 0
+                ? "无源码定位信息（该节点未索引行号，可用 grep_source 按名称全文搜索）"
+                : result.toString();
+    }
+
+    /** 从节点 metadata JSON 里抠 sql 字段，没有或解析不了返回 null。 */
+    private String metadataSql(CodeNode node) {
+        if (isBlank(node.getMetadataJson())) {
+            return null;
+        }
+        try {
+            Map<String, Object> metadata = METADATA_MAPPER.readValue(node.getMetadataJson(),
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            Object sql = metadata.get("sql");
+            return sql == null ? null : String.valueOf(sql);
+        } catch (Exception exception) {
+            return null;
+        }
     }
 
     private String formatNodes(List<CodeNode> nodes) {
@@ -466,6 +536,18 @@ public class AgentToolExecutor {
      * Agent 工具执行需要的运行上下文。
      */
     public static class AgentToolContext {
+        // 一次分析内的工具结果缓存：context 每次分析建一个、所有假设链共享，只存成功结果
+        private final java.util.concurrent.ConcurrentHashMap<String, AgentToolResult> resultCache =
+                new java.util.concurrent.ConcurrentHashMap<String, AgentToolResult>();
+
+        AgentToolResult cachedResult(String key) {
+            return resultCache.get(key);
+        }
+
+        void cacheResult(String key, AgentToolResult result) {
+            resultCache.putIfAbsent(key, result);
+        }
+
         private final Long projectId;
         private final Long versionId;
         private final String apiPath;

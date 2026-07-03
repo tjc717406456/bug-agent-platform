@@ -180,17 +180,43 @@ public class AgentConversation {
             Map<String, Object> message = messages.get(i);
             Object role = message.get("role");
             if ("assistant".equals(role)) {
-                assistantSeen++;
+                // 只有真发过 tool_calls 的才算一轮；nudge/复核打回的纯文本 assistant 不占折叠窗口
+                if (message.get("tool_calls") != null) {
+                    assistantSeen++;
+                }
             } else if ("tool".equals(role) && assistantSeen >= keepRecent) {
                 Object raw = message.get("content");
                 if (raw instanceof String) {
                     String text = (String) raw;
                     int nl = text.indexOf('\n');
                     if (nl > 0) {
-                        message.put("content", text.substring(0, nl) + " …(早期轮次详情已折叠)");
+                        // 提示可重调取回：解除与"已读过不要重复读"规则的冲突，防模型凭模糊印象编字段名/行号；
+                        // 同参数重调命中工具缓存秒回，代价只剩一个往返
+                        message.put("content", text.substring(0, nl) + " …(早期轮次详情已折叠，需要细节时用相同参数重调该工具即可取回)");
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * 两段式收口：闭合本轮全部 tool_call，finish 回"信号已收到"，同轮夹带的其他调用标不再执行，
+     * 满足协议后紧接着就能发"纯文字写报告"的流式请求。
+     */
+    public void appendFinishAck(List<Map<String, Object>> messages, AiToolCallResult aiResult, AgentToolCall finish) {
+        String finishId = finish.getToolCallId();
+        for (com.tjc.bugagent.ai.AiToolCall raw : aiResult.getToolCalls()) {
+            String id = raw.getId();
+            if (id == null) {
+                continue;
+            }
+            Map<String, Object> toolMessage = new LinkedHashMap<String, Object>();
+            toolMessage.put("role", "tool");
+            toolMessage.put("tool_call_id", id);
+            toolMessage.put("content", id.equals(finishId)
+                    ? "收口信号已收到，请按接下来的指示用纯文字输出完整报告。"
+                    : "已收口，该调用不再执行。");
+            messages.add(toolMessage);
         }
     }
 

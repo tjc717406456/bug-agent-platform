@@ -15,6 +15,12 @@
       <a-form-item label="接口">
         <a-input v-model:value="historyQuery.apiPath" allow-clear placeholder="接口路径模糊匹配" @pressEnter="searchHistory" />
       </a-form-item>
+      <a-form-item label="类型">
+        <a-select v-model:value="historyQuery.recordType" allow-clear placeholder="全部" style="width: 120px" @change="searchHistory">
+          <a-select-option value="ANALYSIS">分析</a-select-option>
+          <a-select-option value="EXPLAIN">讲解</a-select-option>
+        </a-select>
+      </a-form-item>
       <a-form-item><a-button type="primary" @click="searchHistory"><template #icon><ReloadOutlined /></template>查询</a-button></a-form-item>
     </a-form>
     <a-table
@@ -30,6 +36,12 @@
         <template #default="{ index }">{{ (historyPagination.current - 1) * historyPagination.pageSize + index + 1 }}</template>
       </a-table-column>
       <a-table-column title="接口" data-index="apiPath" :width="180" />
+      <a-table-column title="类型" :width="80">
+        <template #default="{ record }">
+          <a-tag v-if="record.recordType === 'EXPLAIN'" color="cyan">讲解</a-tag>
+          <a-tag v-else color="geekblue">分析</a-tag>
+        </template>
+      </a-table-column>
       <a-table-column title="结论" data-index="conclusion" :ellipsis="true" />
       <a-table-column title="置信度" data-index="confidence" :width="90" />
       <a-table-column title="验证" :width="110">
