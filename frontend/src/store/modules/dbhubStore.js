@@ -7,6 +7,8 @@ export const dbhubDatasources = ref([])
 export const selectedDbhubDatasources = ref([])
 export const selectedDbhubKeys = ref([])
 export const dbhubDialogVisible = ref(false)
+// 编辑态锁 key：key 是业务主键，编辑时改 key 会被后端当新记录 insert
+export const dbhubEditing = ref(false)
 export const dbhubForm = reactive({ key: '', host: 'localhost', port: 3306, user: 'root', password: '1234', database: '' })
 export const dbhubQuery = reactive({ user: '', database: '' })
 
@@ -62,6 +64,7 @@ export async function testDbhubDatasourceAction() {
 }
 
 export function openDbhubDialog(row) {
+  dbhubEditing.value = !!row
   if (row) {
     fillDbhubForm(row)
   } else {

@@ -229,8 +229,10 @@ public class DbhubQueryService {
     private Object describeTable(Connection connection, String database, String tableName) {
         Map<String, Object> tableInfo = new LinkedHashMap<String, Object>();
         try {
-            tableInfo.put("columns", queryColumns(connection, database, tableName));
+            List<Map<String, Object>> columns = queryColumns(connection, database, tableName);
+            tableInfo.put("columns", columns);
             tableInfo.put("totalRows", queryApproximateRows(connection, database, tableName));
+            tableInfo.put("recentRows", queryRecentRows(connection, tableName, columns));
             return tableInfo;
         } catch (Exception exception) {
             log.warn("dbhub describeTable failed, table={}", tableName, exception);
@@ -238,6 +240,55 @@ public class DbhubQueryService {
             error.put("error", sanitize(exception));
             return error;
         }
+    }
+
+    /**
+     * 取最近几条样例数据。表名来自模型入参且要拼进 SQL，先收敛成纯标识符防注入；
+     * 有主键按主键倒序（走索引，大表也快），没主键就不排序随缘取几条。
+     * 样例失败不连坐整个 describe，降级返回错误说明。
+     */
+    private Object queryRecentRows(Connection connection, String tableName, List<Map<String, Object>> columns) {
+        String table = cleanIdentifier(tableName);
+        if (!table.matches("[A-Za-z0-9_$]+")) {
+            return "invalid table name";
+        }
+        String primaryKey = null;
+        for (Map<String, Object> column : columns) {
+            if ("PRI".equals(column.get("COLUMN_KEY"))) {
+                primaryKey = String.valueOf(column.get("COLUMN_NAME"));
+                break;
+            }
+        }
+        AppProperties.Dbhub dbhub = appProperties.getDbhub();
+        String sql = "select * from `" + table + "`"
+                + (primaryKey == null ? "" : " order by `" + primaryKey.replace("`", "``") + "` desc")
+                + " limit " + dbhub.getSampleRows();
+        try (Statement statement = connection.createStatement()) {
+            statement.setQueryTimeout(dbhub.getQueryTimeoutSeconds());
+            try (ResultSet resultSet = statement.executeQuery(sql)) {
+                List<Map<String, Object>> rows = rowsToList(resultSet);
+                for (Map<String, Object> row : rows) {
+                    for (Map.Entry<String, Object> entry : row.entrySet()) {
+                        entry.setValue(compactCell(entry.getValue()));
+                    }
+                }
+                return rows;
+            }
+        } catch (Exception exception) {
+            log.warn("dbhub queryRecentRows failed, table={}", tableName, exception);
+            return "sample query failed: " + sanitize(exception);
+        }
+    }
+
+    /** 样例只为看数据长相：长文本截断、二进制不外发，防大字段撑爆模型上下文。 */
+    private Object compactCell(Object value) {
+        if (value instanceof String && ((String) value).length() > 200) {
+            return ((String) value).substring(0, 200) + "...";
+        }
+        if (value instanceof byte[]) {
+            return "[binary " + ((byte[]) value).length + " bytes]";
+        }
+        return value;
     }
 
     private List<Map<String, Object>> queryColumns(Connection connection, String database, String tableName) throws Exception {

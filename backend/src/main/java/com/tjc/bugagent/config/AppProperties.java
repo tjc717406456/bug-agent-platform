@@ -152,6 +152,16 @@ public class AppProperties {
         private int maxRows = 500;
         // 单条只读 SQL 的执行超时（秒），防止慢查询占住连接拖垮服务
         private int queryTimeoutSeconds = 15;
+        // describe_tables 返回的最近样例条数，让模型第一轮就看到数据长相
+        private int sampleRows = 3;
+
+        public int getSampleRows() {
+            return sampleRows;
+        }
+
+        public void setSampleRows(int sampleRows) {
+            this.sampleRows = sampleRows;
+        }
 
         public int getMaxRows() {
             return maxRows;
