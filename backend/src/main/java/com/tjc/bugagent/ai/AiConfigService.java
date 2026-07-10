@@ -1,21 +1,28 @@
 package com.tjc.bugagent.ai;
 
 import com.tjc.bugagent.ai.mapper.AiConfigMapper;
+import com.tjc.bugagent.audit.AuditService;
+import com.tjc.bugagent.security.CryptoService;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 import java.util.List;
 
 /**
  * Saves and reads global AI configuration.
+ *
+ * <p>apiKey 落库前经 CryptoService 加密（历史行为 Base64，读取时自动兼容）。
+ * 写入一律用新格式，老行在下一次保存时自然升级。
  */
 @Service
 public class AiConfigService {
     private final AiConfigMapper aiConfigMapper;
+    private final CryptoService cryptoService;
+    private final AuditService auditService;
 
-    public AiConfigService(AiConfigMapper aiConfigMapper) {
+    public AiConfigService(AiConfigMapper aiConfigMapper, CryptoService cryptoService, AuditService auditService) {
         this.aiConfigMapper = aiConfigMapper;
+        this.cryptoService = cryptoService;
+        this.auditService = auditService;
     }
 
     /**
@@ -44,6 +51,7 @@ public class AiConfigService {
         config.setSupportsVision(request.isSupportsVision());
         config.setRole(normalizeRole(request.getRole()));
         aiConfigMapper.insert(config);
+        auditService.log("AI_CONFIG_CREATE", "AI_CONFIG", config.getId(), request.getModelName());
     }
 
     /**
@@ -112,6 +120,8 @@ public class AiConfigService {
             return;
         }
         // 主模型单选：只在非 embedding 行里互斥，别把预留启用的 embedding 一并关停
+        // 全局互斥开关：切主模型会影响所有用户，必须留痕
+        auditService.log("AI_CONFIG_ACTIVATE", "AI_CONFIG", id, null);
         aiConfigMapper.disableAllNonEmbedding();
         aiConfigMapper.enableById(id);
     }
@@ -120,6 +130,7 @@ public class AiConfigService {
      * 删除配置。删掉的恰好是当前启用项时，自动把剩下最新的一条设为启用。
      */
     public void delete(Long id) {
+        auditService.log("AI_CONFIG_DELETE", "AI_CONFIG", id, null);
         AiConfig enabled = getEnabledConfig();
         aiConfigMapper.deleteById(id);
         if (enabled != null && id.equals(enabled.getId())) {
@@ -134,7 +145,7 @@ public class AiConfigService {
         return decodeKey(aiConfigMapper.findEnabledConfig());
     }
 
-    /** 把查询返回的密文 api_key 解码成明文，null 透传。 */
+    /** 把查询返回的密文 api_key 解成明文，null 透传。 */
     private AiConfig decodeKey(AiConfig config) {
         if (config != null) {
             config.setApiKey(decode(config.getApiKey()));
@@ -143,10 +154,11 @@ public class AiConfigService {
     }
 
     private String encode(String value) {
-        return Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8));
+        return cryptoService.encrypt(value);
     }
 
+    /** 新密文走 AES，历史值是 Base64，由 CryptoService 分辨。 */
     private String decode(String value) {
-        return new String(Base64.getDecoder().decode(value), StandardCharsets.UTF_8);
+        return cryptoService.decryptAiKey(value);
     }
 }

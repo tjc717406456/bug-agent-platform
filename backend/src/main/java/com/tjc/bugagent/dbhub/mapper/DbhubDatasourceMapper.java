@@ -16,6 +16,9 @@ public interface DbhubDatasourceMapper {
     /** 全部数据源配置，按 id 倒序 */
     List<DbhubDatasourceConfig> listAll();
 
+    /** 仅数据源 key 与库名：给普通用户挑选绑定项，连 host/账号/密码列都不 select */
+    List<DbhubDatasourceConfig> listKeys();
+
     /** 按 key 查单个配置，无则 null */
     DbhubDatasourceConfig getByKey(@Param("key") String key);
 

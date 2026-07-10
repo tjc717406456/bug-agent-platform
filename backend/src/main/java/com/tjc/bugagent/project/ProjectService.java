@@ -30,27 +30,29 @@ public class ProjectService {
     }
 
     /**
-     * 按项目名称和编码查询项目。
+     * 按项目名称和编码查询项目。ownerId 为空表示管理员，返回全部项目。
      */
-    public List<Project> listProjects(String name, String code) {
-        return projectMapper.list(name, code);
+    public List<Project> listProjects(String name, String code, Long ownerId) {
+        return projectMapper.list(name, code, ownerId);
     }
 
     /**
-     * 创建项目。
+     * 创建项目，归属到指定用户。项目编码只在同一所有者下唯一。
      */
-    public Project createProject(CreateProjectRequest request) {
+    public Project createProject(CreateProjectRequest request, Long ownerId) {
         validateProject(request);
         Project project = new Project();
         project.setName(request.getName().trim());
         project.setCode(request.getCode().trim());
+        project.setOwnerId(ownerId);
         project.setDescription(safe(request.getDescription()));
         projectMapper.insert(project);
-        return getProjectByCode(request.getCode().trim());
+        // 用回填的自增 id 重查：code 已不再全局唯一，按 code 回查会捞到别人的同名项目
+        return getProject(project.getId());
     }
 
     /**
-     * 更新项目基础信息。
+     * 更新项目基础信息。编码判重限定在该项目的所有者名下。
      */
     public Project updateProject(Long projectId, CreateProjectRequest request) {
         validateProject(request);
@@ -58,7 +60,7 @@ public class ProjectService {
         if (oldProject == null) {
             throw new IllegalArgumentException("Project not found");
         }
-        if (projectMapper.countByCodeExcludingId(request.getCode().trim(), projectId) > 0) {
+        if (projectMapper.countByCodeExcludingId(request.getCode().trim(), projectId, oldProject.getOwnerId()) > 0) {
             throw new IllegalArgumentException("Project code already exists");
         }
         projectMapper.update(projectId, request.getName().trim(), request.getCode().trim(), safe(request.getDescription()));
@@ -80,10 +82,6 @@ public class ProjectService {
 
     public Project getProject(Long projectId) {
         return projectMapper.findById(projectId);
-    }
-
-    private Project getProjectByCode(String code) {
-        return projectMapper.findByCode(code);
     }
 
     public List<ProjectVersion> listVersions(Long projectId) {

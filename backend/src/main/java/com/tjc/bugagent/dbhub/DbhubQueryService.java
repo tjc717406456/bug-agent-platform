@@ -343,7 +343,8 @@ public class DbhubQueryService {
         HikariDataSource dataSource = new HikariDataSource();
         dataSource.setDriverClassName("com.mysql.cj.jdbc.Driver");
         dataSource.setJdbcUrl("jdbc:mysql://" + config.getHost() + ":" + config.getPort() + "/" + config.getDatabase() +
-                "?allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai");
+                // tinyIntIsBit=false：tinyint(1) 默认映射成 Boolean，状态列 0/1/2 会失真成 true/false 喂给模型
+                "?allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&tinyIntIsBit=false");
         dataSource.setUsername(config.getUser());
         dataSource.setPassword(config.getPassword() == null ? "" : config.getPassword());
         AppProperties.Dbhub dbhub = appProperties.getDbhub();

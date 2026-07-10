@@ -253,6 +253,13 @@ export async function waitAgentTask(taskId) {
         task = await pollAgentAnalysisTask(taskId)
         pollFailures = 0
       } catch (pollError) {
+        // 登录过期不是通信故障：立刻干净收尾，别重试 5 次再抛出误导性的"通信失败"
+        if (pollError.code === 'UNAUTHORIZED') {
+          clearActiveTask()
+          agentTaskRunning.value = false
+          endStreamingView(true)
+          return null
+        }
         pollFailures++
         if (pollFailures >= 5) {
           agentTaskRunning.value = false
@@ -387,6 +394,10 @@ export async function askFollowUp(question) {
         status = await pollAgentAnalysisTask(followUpTaskId)
         pollFailures = 0
       } catch (pollError) {
+        // 登录过期：静默退出，全局已经提示过一次，不再往对话里塞失败气泡
+        if (pollError.code === 'UNAUTHORIZED') {
+          return
+        }
         pollFailures++
         if (pollFailures >= 5) {
           throw new Error('与后端连续5次通信失败，请检查服务状态')
@@ -432,4 +443,27 @@ export async function stopFollowUp() {
   } catch (error) {
     message.error(error.message || '停止失败')
   }
+}
+
+/**
+ * 登出清场：先让正在跑的轮询循环自行终止（它每轮开头查 agentTaskStopping），
+ * 再抹掉本地任务痕迹——否则同一浏览器换个人登录会续上前一个人的分析任务。
+ */
+export function abortAndResetAnalysis() {
+  agentTaskStopping.value = true
+  clearActiveTask()
+  agentTaskRunning.value = false
+  agentProgress.value = []
+  agentPartialReport.value = ''
+  reportStreaming.value = false
+  agentProgressVisible.value = false
+  analysisDialogVisible.value = false
+  screenshotFiles.value = []
+  logFileList.value = []
+  analysisForm.logId = ''
+  followUpChat.value = []
+  followUpStreamText.value = ''
+  followUpStep.value = ''
+  followUpAsking.value = false
+  followUpTaskId = ''
 }

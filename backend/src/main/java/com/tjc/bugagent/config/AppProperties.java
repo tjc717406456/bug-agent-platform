@@ -20,6 +20,11 @@ public class AppProperties {
     private final Eval eval = new Eval();
     private final Log log = new Log();
     private final Ai ai = new Ai();
+    private final Auth auth = new Auth();
+
+    public Auth getAuth() {
+        return auth;
+    }
 
     public Ai getAi() {
         return ai;
@@ -97,6 +102,60 @@ public class AppProperties {
     /**
      * AI 调用参数。流式开关出问题可一键关掉退回整段收取。
      */
+    /** 鉴权配置：token 有效期、初始管理员、登录失败限流。 */
+    public static class Auth {
+        /** 登录 token 在 Redis 的存活时间（秒），默认 12 小时；活跃用户会自动滑动续期。 */
+        private long tokenTtlSeconds = 12 * 3600;
+        /** 初始管理员登录名。 */
+        private String adminUsername = "admin";
+        /** 初始管理员密码；留空则首次启动随机生成并在日志打印一次。生产建议用环境变量注入。 */
+        private String adminInitialPassword;
+        /** 同一账号连续登录失败多少次后锁定。 */
+        private int maxLoginFailures = 5;
+        /** 触发锁定后的冷却时间（秒）。 */
+        private long loginLockSeconds = 300;
+
+        public long getTokenTtlSeconds() {
+            return tokenTtlSeconds;
+        }
+
+        public void setTokenTtlSeconds(long tokenTtlSeconds) {
+            this.tokenTtlSeconds = tokenTtlSeconds;
+        }
+
+        public String getAdminUsername() {
+            return adminUsername;
+        }
+
+        public void setAdminUsername(String adminUsername) {
+            this.adminUsername = adminUsername;
+        }
+
+        public String getAdminInitialPassword() {
+            return adminInitialPassword;
+        }
+
+        public void setAdminInitialPassword(String adminInitialPassword) {
+            this.adminInitialPassword = adminInitialPassword;
+        }
+
+        public int getMaxLoginFailures() {
+            return maxLoginFailures;
+        }
+
+        public void setMaxLoginFailures(int maxLoginFailures) {
+            this.maxLoginFailures = maxLoginFailures;
+        }
+
+        public long getLoginLockSeconds() {
+            return loginLockSeconds;
+        }
+
+        public void setLoginLockSeconds(long loginLockSeconds) {
+            this.loginLockSeconds = loginLockSeconds;
+        }
+    }
+
     public static class Ai {
         // 开启 SSE 流式收取，逐块到达不再整段干等，治慢网关读超时；与某中转不兼容时配 false 退回非流式
         private boolean streamEnabled = true;

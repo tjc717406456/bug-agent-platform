@@ -10,6 +10,13 @@
         order by id desc
     </select>
 
+    <!-- 普通用户绑定数据源时只需要看到 key 和库名，凭据列压根不查出来 -->
+    <select id="listKeys" resultType="com.tjc.bugagent.dbhub.DbhubDatasourceConfig">
+        select datasource_key as `key`, database_name as `database`
+        from dbhub_datasource_config
+        order by id desc
+    </select>
+
     <select id="getByKey" resultType="com.tjc.bugagent.dbhub.DbhubDatasourceConfig">
         select datasource_key as `key`, host, port, username as user, password, database_name as `database`
         from dbhub_datasource_config

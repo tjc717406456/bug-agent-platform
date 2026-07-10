@@ -8,6 +8,16 @@ public class Project {
     private String name;
     private String code;
     private String description;
+    /** 所属用户；项目私有，仅所有者与管理员可见 */
+    private Long ownerId;
+
+    public Long getOwnerId() {
+        return ownerId;
+    }
+
+    public void setOwnerId(Long ownerId) {
+        this.ownerId = ownerId;
+    }
 
     public Long getId() {
         return id;

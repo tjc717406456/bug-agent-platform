@@ -1,5 +1,6 @@
 package com.tjc.bugagent.codegraph;
 
+import com.tjc.bugagent.auth.ProjectAccessGuard;
 import com.tjc.bugagent.common.ApiResponse;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -16,9 +17,11 @@ import java.util.List;
 @RequestMapping("/projects/{projectId}/versions/{versionId}/codegraph")
 public class CodeGraphController {
     private final CodeGraphQueryService codeGraphQueryService;
+    private final ProjectAccessGuard guard;
 
-    public CodeGraphController(CodeGraphQueryService codeGraphQueryService) {
+    public CodeGraphController(CodeGraphQueryService codeGraphQueryService, ProjectAccessGuard guard) {
         this.codeGraphQueryService = codeGraphQueryService;
+        this.guard = guard;
     }
 
     /**
@@ -28,6 +31,7 @@ public class CodeGraphController {
     public ApiResponse<List<ApiRouteOption>> listRoutes(@PathVariable Long projectId,
                                                         @PathVariable Long versionId,
                                                         @RequestParam(required = false) String keyword) {
+        guard.assertOwned(projectId);
         return ApiResponse.ok(codeGraphQueryService.listApiRoutes(projectId, versionId, keyword));
     }
 }

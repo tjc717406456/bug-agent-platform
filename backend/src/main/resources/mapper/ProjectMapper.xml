@@ -5,7 +5,7 @@
     <!-- 列名下划线靠 map-underscore-to-camel-case 自动映射到驼峰字段，无需 resultMap -->
 
     <select id="list" resultType="com.tjc.bugagent.project.Project">
-        select id, name, code, description
+        select id, name, code, description, owner_id
         from project
         <where>
             <if test="name != null and name != ''">
@@ -14,25 +14,30 @@
             <if test="code != null and code != ''">
                 and code like concat('%', #{code}, '%')
             </if>
+            <!-- ownerId 为空表示管理员，不加归属过滤，看全部项目 -->
+            <if test="ownerId != null">
+                and owner_id = #{ownerId}
+            </if>
         </where>
         order by id desc
     </select>
 
     <select id="findById" resultType="com.tjc.bugagent.project.Project">
-        select id, name, code, description from project where id = #{id}
+        select id, name, code, description, owner_id from project where id = #{id}
     </select>
 
-    <select id="findByCode" resultType="com.tjc.bugagent.project.Project">
-        select id, name, code, description from project where code = #{code}
+    <select id="findOwnerId" resultType="java.lang.Long">
+        select owner_id from project where id = #{id}
     </select>
 
     <select id="countByCodeExcludingId" resultType="int">
-        select count(1) from project where code = #{code} and id <![CDATA[ <> ]]> #{id}
+        select count(1) from project
+        where code = #{code} and owner_id = #{ownerId} and id <![CDATA[ <> ]]> #{id}
     </select>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
-        insert into project(name, code, description, created_at, updated_at)
-        values (#{name}, #{code}, #{description}, now(), now())
+        insert into project(name, code, owner_id, description, created_at, updated_at)
+        values (#{name}, #{code}, #{ownerId}, #{description}, now(), now())
     </insert>
 
     <update id="update">

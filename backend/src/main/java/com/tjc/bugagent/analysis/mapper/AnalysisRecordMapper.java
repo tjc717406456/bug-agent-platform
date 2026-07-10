@@ -17,13 +17,13 @@ public interface AnalysisRecordMapper {
     /** 写入一次分析记录，自增主键回填到 record.id（useGeneratedKeys） */
     void insert(AnalysisRecordInsert record);
 
-    /** 历史列表总条数，projectId/apiPath/recordType 可选 */
+    /** 历史列表总条数，projectId/apiPath/recordType 可选；ownerId 非空时只统计该用户名下项目的记录 */
     long countList(@Param("projectId") Long projectId, @Param("apiPath") String apiPath,
-                   @Param("recordType") String recordType);
+                   @Param("recordType") String recordType, @Param("ownerId") Long ownerId);
 
-    /** 历史列表精简字段，按 id 倒序分页 */
+    /** 历史列表精简字段，按 id 倒序分页；ownerId 非空时只出该用户名下项目的记录（管理员传 null） */
     List<AnalysisRecord> selectSummaryList(@Param("projectId") Long projectId, @Param("apiPath") String apiPath,
-                                           @Param("recordType") String recordType,
+                                           @Param("recordType") String recordType, @Param("ownerId") Long ownerId,
                                            @Param("limit") int limit, @Param("offset") int offset);
 
     /** 批量删除 */
@@ -31,6 +31,9 @@ public interface AnalysisRecordMapper {
 
     /** 取单条完整记录 */
     AnalysisRecord selectDetail(@Param("id") Long id);
+
+    /** 只取记录归属的项目 id，供权限校验用；记录不存在返回 null */
+    Long findProjectId(@Param("id") Long id);
 
     /** 标注反馈，返回受影响行数（0 表示记录不存在） */
     int updateFeedback(@Param("recordId") Long recordId, @Param("verdict") String verdict,

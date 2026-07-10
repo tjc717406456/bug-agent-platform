@@ -15,6 +15,9 @@ import java.util.List;
 
 /**
  * AI configuration API.
+ *
+ * <p>整个 /ai-config 前缀已被 AuthInterceptor 限定为管理员可访问：这里存的是 AI apiKey，
+ * 且 activate 是全局互斥开关，一个人切模型会影响所有人。普通用户看当前模型走 /meta/active-model。
  */
 @RestController
 @RequestMapping("/ai-config")

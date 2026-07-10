@@ -29,6 +29,20 @@ mybatis:
 app:
   workspace-root: ./workspace
   task-ttl-seconds: 1800
+  auth:
+    # 登录 token 在 Redis 的存活时间；活跃用户自动滑动续期
+    token-ttl-seconds: 43200
+    admin-username: admin
+    # 留空则首次启动随机生成初始密码并在日志打印一次。生产用环境变量注入：
+    #   BUGAGENT_ADMIN_PASSWORD=xxx  →  admin-initial-password: ${BUGAGENT_ADMIN_PASSWORD:}
+    admin-initial-password: ${BUGAGENT_ADMIN_PASSWORD:}
+    max-login-failures: 5
+    login-lock-seconds: 300
+  security:
+    # AI apiKey 与数据库密码的落盘加密主密钥：base64 编码的 32 字节。留空则不加密（本地开发用）。
+    # 生成：openssl rand -base64 32     生产用环境变量注入，切勿写进代码仓库。
+    # 注意：密钥丢失后已加密的密钥无法恢复，务必与数据库一起备份。
+    master-key: ${BUGAGENT_MASTER_KEY:}
   async:
     core-pool-size: 2
     max-pool-size: 8

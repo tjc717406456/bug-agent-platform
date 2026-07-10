@@ -19,6 +19,16 @@ public class AgentAnalysisTaskStatus {
     private List<String> progress = new ArrayList<String>();
     // 收口报告流式生成的累计快照，前端轮询期间渐进渲染；任务完成后清空（正式报告在 result 里）
     private String partialReport;
+    // 提交任务的用户；轮询/停止时据此判权，顺带记录"这次分析是谁跑的"
+    private Long ownerId;
+
+    public Long getOwnerId() {
+        return ownerId;
+    }
+
+    public void setOwnerId(Long ownerId) {
+        this.ownerId = ownerId;
+    }
 
     public List<String> getProgress() {
         return progress;

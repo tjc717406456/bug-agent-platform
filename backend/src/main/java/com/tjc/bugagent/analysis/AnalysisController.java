@@ -6,6 +6,7 @@ import com.tjc.bugagent.analysis.agent.AgentAnalysisTaskStatus;
 import com.tjc.bugagent.analysis.agent.AgentAnalysisTaskSubmitResult;
 import com.tjc.bugagent.analysis.log.LogStorageService;
 import com.tjc.bugagent.analysis.log.ScreenshotStorageService;
+import com.tjc.bugagent.auth.ProjectAccessGuard;
 import com.tjc.bugagent.common.ApiResponse;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -32,6 +33,7 @@ public class AnalysisController {
     private final AnalysisFeedbackService analysisFeedbackService;
     private final LogStorageService logStorageService;
     private final AnalysisRecordService analysisRecordService;
+    private final ProjectAccessGuard guard;
     private final ObjectMapper objectMapper;
 
     public AnalysisController(AgentAnalysisTaskService agentAnalysisTaskService,
@@ -39,22 +41,26 @@ public class AnalysisController {
                               AnalysisFeedbackService analysisFeedbackService,
                               LogStorageService logStorageService,
                               AnalysisRecordService analysisRecordService,
+                              ProjectAccessGuard guard,
                               ObjectMapper objectMapper) {
         this.agentAnalysisTaskService = agentAnalysisTaskService;
         this.screenshotStorageService = screenshotStorageService;
         this.analysisFeedbackService = analysisFeedbackService;
         this.logStorageService = logStorageService;
         this.analysisRecordService = analysisRecordService;
+        this.guard = guard;
         this.objectMapper = objectMapper;
     }
 
     /**
      * 提交带截图的异步 Agent 分析任务。
+     * 归属校验必须在这里（servlet 线程）完成——异步执行体读不到登录上下文。
      */
     @PostMapping("/agent/tasks/screenshots")
     public ApiResponse<AgentAnalysisTaskSubmitResult> submitAgentTaskWithScreenshots(@RequestParam("request") String requestJson,
                                                                                      @RequestParam(value = "screenshots", required = false) MultipartFile[] screenshots) throws Exception {
         AnalysisRequest request = objectMapper.readValue(requestJson, AnalysisRequest.class);
+        guard.assertOwned(request.getProjectId());
         String screenshotPaths = screenshotStorageService.saveScreenshots(request.getProjectId(), screenshots);
         request.setScreenshotPaths(screenshotPaths);
         return ApiResponse.ok(agentAnalysisTaskService.submit(request));
@@ -65,6 +71,7 @@ public class AnalysisController {
      */
     @PostMapping("/explain/tasks")
     public ApiResponse<AgentAnalysisTaskSubmitResult> submitExplainTask(@Valid @RequestBody AnalysisRequest request) {
+        guard.assertOwned(request.getProjectId());
         return ApiResponse.ok(agentAnalysisTaskService.submitExplain(request));
     }
 
@@ -91,6 +98,8 @@ public class AnalysisController {
     @PostMapping("/records/{recordId}/followup/tasks")
     public ApiResponse<AgentAnalysisTaskSubmitResult> submitFollowUp(@PathVariable Long recordId,
                                                                      @RequestBody Map<String, String> body) {
+        // 追问在异步线程里跑，记录归属必须在此处校验完
+        guard.assertRecordOwned(recordId);
         return ApiResponse.ok(agentAnalysisTaskService.submitFollowUp(recordId, body.get("question")));
     }
 
@@ -99,6 +108,7 @@ public class AnalysisController {
      */
     @PutMapping("/records/{recordId}/feedback")
     public ApiResponse<String> feedback(@PathVariable Long recordId, @Valid @RequestBody AnalysisFeedbackRequest request) {
+        guard.assertRecordOwned(recordId);
         analysisFeedbackService.saveFeedback(recordId, request);
         return ApiResponse.ok("ok");
     }
@@ -120,7 +130,7 @@ public class AnalysisController {
                                                        @RequestParam(required = false) String recordType,
                                                        @RequestParam(defaultValue = "0") int page,
                                                        @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.ok(analysisRecordService.list(projectId, apiPath, recordType, page, size));
+        return ApiResponse.ok(analysisRecordService.list(projectId, apiPath, recordType, guard.ownerFilter(), page, size));
     }
 
     /**
@@ -128,14 +138,20 @@ public class AnalysisController {
      */
     @GetMapping("/records/{recordId}")
     public ApiResponse<AnalysisRecord> getRecord(@PathVariable Long recordId) {
+        guard.assertRecordOwned(recordId);
         return ApiResponse.ok(analysisRecordService.get(recordId));
     }
 
     /**
-     * 批量删除分析记录。
+     * 批量删除分析记录。逐条校验归属：只要有一条不属于自己，整批拒绝，不做部分删除。
      */
     @PostMapping("/records/batch-delete")
     public ApiResponse<String> batchDeleteRecords(@RequestBody List<Long> ids) {
+        if (ids != null) {
+            for (Long id : ids) {
+                guard.assertRecordOwned(id);
+            }
+        }
         analysisRecordService.deleteByIds(ids);
         return ApiResponse.ok("ok");
     }

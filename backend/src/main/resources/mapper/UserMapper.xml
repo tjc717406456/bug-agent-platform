@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tjc.bugagent.auth.mapper.UserMapper">
+
+    <!-- 登录校验才需要 password_hash，其余查询一律不带出 -->
+    <select id="findByUsername" resultType="com.tjc.bugagent.auth.User">
+        select id, username, password_hash, role, status, display_name, must_change_password, last_login_at, created_at
+        from users where username = #{username}
+    </select>
+
+    <select id="findById" resultType="com.tjc.bugagent.auth.User">
+        select id, username, password_hash, role, status, display_name, must_change_password, last_login_at, created_at
+        from users where id = #{id}
+    </select>
+
+    <select id="listAll" resultType="com.tjc.bugagent.auth.User">
+        select id, username, role, status, display_name, must_change_password, last_login_at, created_at
+        from users order by id
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        insert into users(username, password_hash, role, status, display_name, must_change_password, created_at, updated_at)
+        values (#{username}, #{passwordHash}, #{role}, #{status}, #{displayName}, #{mustChangePassword}, now(), now())
+    </insert>
+
+    <update id="updateProfile">
+        update users set role = #{role}, status = #{status}, display_name = #{displayName}, updated_at = now()
+        where id = #{id}
+    </update>
+
+    <update id="updatePassword">
+        update users set password_hash = #{passwordHash}, must_change_password = #{mustChangePassword}, updated_at = now()
+        where id = #{id}
+    </update>
+
+    <update id="touchLastLogin">
+        update users set last_login_at = now() where id = #{id}
+    </update>
+
+    <select id="countAdmins" resultType="int">
+        select count(1) from users where role = 'ADMIN'
+    </select>
+
+    <!-- 防止把最后一个可用管理员降级/禁用，导致系统再也没人能管 -->
+    <select id="countActiveAdminsExcept" resultType="int">
+        select count(1) from users where role = 'ADMIN' and status = 'ACTIVE' and id &lt;&gt; #{id}
+    </select>
+
+</mapper>

@@ -13,6 +13,9 @@ import java.util.List;
 
 /**
  * dbhub 数据源管理接口。
+ *
+ * <p>整个 /dbhub/datasources 前缀已被 AuthInterceptor 限定为管理员可访问：这里存的是生产库连接凭据。
+ * 普通用户绑定数据源时只从 /meta/datasource-keys 取脱敏后的 key 列表。
  */
 @RestController
 @RequestMapping("/dbhub/datasources")

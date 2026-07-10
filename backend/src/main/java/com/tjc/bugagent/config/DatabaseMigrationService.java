@@ -1,19 +1,31 @@
 package com.tjc.bugagent.config;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.PostConstruct;
+import java.security.SecureRandom;
 
 /**
  * 补齐旧库缺失的小版本字段和配置表。
  */
 @Component
 public class DatabaseMigrationService {
-    private final JdbcTemplate jdbcTemplate;
+    private static final Logger log = LoggerFactory.getLogger(DatabaseMigrationService.class);
+    // 随机初始密码字符集：去掉 0/O、1/l/I 这类易混字符，管理员照着日志抄不会抄错
+    private static final String PASSWORD_ALPHABET = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-    public DatabaseMigrationService(JdbcTemplate jdbcTemplate) {
+    private final JdbcTemplate jdbcTemplate;
+    private final PasswordEncoder passwordEncoder;
+    private final AppProperties appProperties;
+
+    public DatabaseMigrationService(JdbcTemplate jdbcTemplate, PasswordEncoder passwordEncoder, AppProperties appProperties) {
         this.jdbcTemplate = jdbcTemplate;
+        this.passwordEncoder = passwordEncoder;
+        this.appProperties = appProperties;
     }
 
     /**
@@ -29,7 +41,124 @@ public class DatabaseMigrationService {
         ensureAnalysisMetricsColumns();
         ensureAnalysisRecordTypeColumn();
         ensureAiVisionColumn();
+        // 鉴权相关：先补 owner_id 列与唯一键，再 seed 管理员并回填存量项目归属，顺序不可颠倒
+        ensureAuthTables();
+        ensureProjectOwnerColumn();
+        ensureAuthBootstrap();
         ensureTableComments();
+    }
+
+    /** 旧库补建 users / audit_log（新库由 schema.sql 建）。 */
+    private void ensureAuthTables() {
+        jdbcTemplate.execute("create table if not exists users (" +
+                "id bigint primary key auto_increment," +
+                "username varchar(64) not null unique," +
+                "password_hash varchar(100) not null," +
+                "role varchar(16) not null default 'USER'," +
+                "status varchar(16) not null default 'ACTIVE'," +
+                "display_name varchar(128)," +
+                "must_change_password tinyint not null default 0," +
+                "last_login_at datetime," +
+                "created_at datetime not null," +
+                "updated_at datetime not null" +
+                ")");
+        jdbcTemplate.execute("create table if not exists audit_log (" +
+                "id bigint primary key auto_increment," +
+                "actor_user_id bigint," +
+                "actor_username varchar(64)," +
+                "action varchar(64) not null," +
+                "target_type varchar(32)," +
+                "target_id varchar(64)," +
+                "detail varchar(1024)," +
+                "ip varchar(64)," +
+                "success tinyint not null default 1," +
+                "created_at datetime not null," +
+                "key idx_audit_actor(actor_user_id)," +
+                "key idx_audit_created(created_at)" +
+                ")");
+    }
+
+    /**
+     * 给项目补所属用户列，并把「code 全局唯一」改成「同一所有者下唯一」——
+     * 否则多用户环境里 A 占了某个 code，B 永远无法使用同名编码。
+     * 列保持可空：存量行先补列再回填，不让 DDL 卡在 not null 上。
+     */
+    private void ensureProjectOwnerColumn() {
+        if (!tableExists("project")) {
+            return;
+        }
+        addColumnIfMissing("project", "owner_id", "bigint comment '所属用户ID' after code");
+        if (!indexExists("project", "idx_project_owner")) {
+            jdbcTemplate.execute("alter table project add index idx_project_owner(owner_id)");
+        }
+        if (!indexExists("project", "uk_project_owner_code")) {
+            // 旧库里 `code varchar(64) not null unique` 会生成名为 code 的唯一索引，先摘掉再建复合唯一键
+            if (indexExists("project", "code")) {
+                jdbcTemplate.execute("alter table project drop index code");
+            }
+            jdbcTemplate.execute("alter table project add unique key uk_project_owner_code(owner_id, code)");
+        }
+    }
+
+    /**
+     * 首个管理员与存量项目归属：users 为空时创建管理员，再把没有归属的项目挂到它名下。
+     * 初始密码优先取配置（可由环境变量注入），否则随机生成并只在创建那一刻打印一次；库里只存 bcrypt。
+     */
+    private void ensureAuthBootstrap() {
+        Long adminId = seedAdminIfAbsent();
+        if (adminId == null) {
+            adminId = jdbcTemplate.query("select id from users where role = 'ADMIN' order by id limit 1",
+                    rs -> rs.next() ? rs.getLong(1) : null);
+        }
+        if (adminId != null && tableExists("project")) {
+            int backfilled = jdbcTemplate.update("update project set owner_id = ? where owner_id is null", adminId);
+            if (backfilled > 0) {
+                log.info("存量项目归属回填完成：{} 个项目已挂到管理员(userId={})", backfilled, adminId);
+            }
+        }
+    }
+
+    /** users 表为空才创建管理员，返回新建的 id；已有用户返回 null。 */
+    private Long seedAdminIfAbsent() {
+        Integer userCount = jdbcTemplate.queryForObject("select count(1) from users", Integer.class);
+        if (userCount != null && userCount > 0) {
+            return null;
+        }
+        AppProperties.Auth auth = appProperties.getAuth();
+        String username = auth.getAdminUsername();
+        String configured = auth.getAdminInitialPassword();
+        boolean generated = configured == null || configured.trim().isEmpty();
+        String password = generated ? randomPassword(16) : configured.trim();
+        jdbcTemplate.update("insert into users(username, password_hash, role, status, display_name, must_change_password, created_at, updated_at) " +
+                        "values (?, ?, 'ADMIN', 'ACTIVE', ?, 0, now(), now())",
+                username, passwordEncoder.encode(password), "管理员");
+        Long adminId = jdbcTemplate.queryForObject("select id from users where username = ?", Long.class, username);
+        if (generated) {
+            // 明文只在这一刻出现在日志里，库里永远只有 bcrypt 哈希
+            log.warn("===============================================================");
+            log.warn(" 已创建初始管理员账号：{} / {}", username, password);
+            log.warn(" 该密码仅打印这一次，请妥善保存；可登录后在「修改密码」中更换。");
+            log.warn("===============================================================");
+        } else {
+            log.info("已按配置创建初始管理员账号：{}（密码来自 app.auth.admin-initial-password）", username);
+        }
+        return adminId;
+    }
+
+    private String randomPassword(int length) {
+        SecureRandom random = new SecureRandom();
+        StringBuilder builder = new StringBuilder(length);
+        for (int i = 0; i < length; i++) {
+            builder.append(PASSWORD_ALPHABET.charAt(random.nextInt(PASSWORD_ALPHABET.length())));
+        }
+        return builder.toString();
+    }
+
+    private boolean indexExists(String tableName, String indexName) {
+        Integer count = jdbcTemplate.queryForObject(
+                "select count(1) from information_schema.statistics where table_schema = database() and table_name = ? and index_name = ?",
+                Integer.class, tableName, indexName);
+        return count != null && count > 0;
     }
 
     /** 给分析记录补类型列：ANALYSIS bug分析 / EXPLAIN 接口讲解——讲解落库后同样支持追问与历史回看。 */

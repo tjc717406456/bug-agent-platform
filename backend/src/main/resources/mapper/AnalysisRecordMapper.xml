@@ -25,6 +25,10 @@
         <if test="recordType != null and recordType.trim() != ''">
             and record_type = #{recordType}
         </if>
+        <!-- 记录不冗余 owner_id：通过所属项目间接归属。ownerId 为空表示管理员，看全部 -->
+        <if test="ownerId != null">
+            and project_id in (select id from project where owner_id = #{ownerId})
+        </if>
     </sql>
 
     <select id="countList" resultType="long">
@@ -52,6 +56,10 @@
         select id, project_id, api_path, record_type, user_description, conclusion, confidence, evidence_json,
             auto_verify, feedback_verdict, actual_root_cause, expect_keywords, created_at
         from analysis_record where id = #{id}
+    </select>
+
+    <select id="findProjectId" resultType="java.lang.Long">
+        select project_id from analysis_record where id = #{id}
     </select>
 
     <update id="updateFeedback">

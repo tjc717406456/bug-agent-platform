@@ -11,6 +11,9 @@ import java.util.Map;
 
 /**
  * 评估跑批接口：跑用例集给分析准确率打分。
+ *
+ * <p>整个 /eval 前缀已被 AuthInterceptor 限定为管理员可访问：跑批会消耗大量 token，
+ * 且用例池取自全部用户的标注记录。
  */
 @RestController
 @RequestMapping("/eval")

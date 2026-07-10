@@ -1,10 +1,42 @@
+create table if not exists users (
+  id bigint primary key auto_increment comment '用户ID',
+  username varchar(64) not null unique comment '登录名',
+  password_hash varchar(100) not null comment 'bcrypt 密码哈希',
+  role varchar(16) not null default 'USER' comment '角色:ADMIN/USER',
+  status varchar(16) not null default 'ACTIVE' comment '状态:ACTIVE/DISABLED',
+  display_name varchar(128) comment '显示名',
+  must_change_password tinyint not null default 0 comment '首次登录须改密',
+  last_login_at datetime comment '最近登录时间',
+  created_at datetime not null comment '创建时间',
+  updated_at datetime not null comment '更新时间'
+);
+
+create table if not exists audit_log (
+  id bigint primary key auto_increment comment '审计ID',
+  actor_user_id bigint comment '操作人ID',
+  actor_username varchar(64) comment '操作人登录名',
+  action varchar(64) not null comment '动作',
+  target_type varchar(32) comment '目标类型',
+  target_id varchar(64) comment '目标ID',
+  detail varchar(1024) comment '详情',
+  ip varchar(64) comment '来源IP',
+  success tinyint not null default 1 comment '是否成功',
+  created_at datetime not null comment '发生时间',
+  key idx_audit_actor(actor_user_id),
+  key idx_audit_created(created_at)
+);
+
+-- 项目编码在“同一个所有者下”唯一：多用户下不同人可各自使用同名 code
 create table if not exists project (
   id bigint primary key auto_increment comment '项目ID',
   name varchar(128) not null comment '项目名称',
-  code varchar(64) not null unique comment '项目编码',
+  code varchar(64) not null comment '项目编码',
+  owner_id bigint comment '所属用户ID',
   description varchar(512) comment '项目说明',
   created_at datetime not null comment '创建时间',
-  updated_at datetime not null comment '更新时间'
+  updated_at datetime not null comment '更新时间',
+  unique key uk_project_owner_code(owner_id, code),
+  key idx_project_owner(owner_id)
 );
 
 create table if not exists project_version (
