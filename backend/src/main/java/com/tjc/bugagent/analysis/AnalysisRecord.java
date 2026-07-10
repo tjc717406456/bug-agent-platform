@@ -17,6 +17,7 @@ public class AnalysisRecord {
     private String feedbackVerdict;
     private String actualRootCause;
     private String expectKeywords;
+    private String createdByName;
     private String createdAt;
 
     public Long getId() {
@@ -113,6 +114,14 @@ public class AnalysisRecord {
 
     public void setExpectKeywords(String expectKeywords) {
         this.expectKeywords = expectKeywords;
+    }
+
+    public String getCreatedByName() {
+        return createdByName;
+    }
+
+    public void setCreatedByName(String createdByName) {
+        this.createdByName = createdByName;
     }
 
     public String getCreatedAt() {

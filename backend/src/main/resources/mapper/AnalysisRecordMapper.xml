@@ -8,40 +8,47 @@
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         insert into analysis_record(project_id, version_id, api_path, record_type, user_description, request_body, response_body,
             stack_trace, screenshot_paths, trace_id, request_time, conclusion, confidence, evidence_json,
-            auto_verify, auto_verify_keywords, rounds_count, total_tokens, created_at)
+            auto_verify, auto_verify_keywords, rounds_count, total_tokens, created_by, created_at)
         values (#{projectId}, #{versionId}, #{apiPath}, #{recordType}, #{userDescription}, #{requestBody}, #{responseBody},
             #{stackTrace}, #{screenshotPaths}, #{traceId}, #{requestTime}, #{conclusion}, #{confidence}, #{evidenceJson},
-            #{autoVerify}, #{autoVerifyKeywords}, #{roundsCount}, #{totalTokens}, now())
+            #{autoVerify}, #{autoVerifyKeywords}, #{roundsCount}, #{totalTokens}, #{createdBy}, now())
     </insert>
 
     <sql id="listWhere">
         where 1 = 1
         <if test="projectId != null">
-            and project_id = #{projectId}
+            and r.project_id = #{projectId}
         </if>
         <if test="apiPath != null and apiPath.trim() != ''">
-            and api_path like concat('%', trim(#{apiPath}), '%')
+            and r.api_path like concat('%', trim(#{apiPath}), '%')
         </if>
         <if test="recordType != null and recordType.trim() != ''">
-            and record_type = #{recordType}
+            and r.record_type = #{recordType}
         </if>
-        <!-- 记录不冗余 owner_id：通过所属项目间接归属。ownerId 为空表示管理员，看全部 -->
+        <!-- 记录不冗余 owner_id：通过所属项目间接归属。ownerId 为空表示管理员看全部；
+             普通用户能看到「自有 ∪ 被授权」项目下的全部记录（项目内历史共享） -->
         <if test="ownerId != null">
-            and project_id in (select id from project where owner_id = #{ownerId})
+            and r.project_id in (
+                select id from project where owner_id = #{ownerId}
+                union
+                select project_id from project_member where user_id = #{ownerId}
+            )
         </if>
     </sql>
 
     <select id="countList" resultType="long">
-        select count(*) from analysis_record
+        select count(*) from analysis_record r
         <include refid="listWhere"/>
     </select>
 
     <select id="selectSummaryList" resultType="com.tjc.bugagent.analysis.AnalysisRecord">
-        select id, project_id, api_path, record_type, confidence, auto_verify, feedback_verdict,
-            substring(conclusion, 1, 300) as conclusion, created_at
-        from analysis_record
+        select r.id, r.project_id, r.api_path, r.record_type, r.confidence, r.auto_verify, r.feedback_verdict,
+            substring(r.conclusion, 1, 300) as conclusion, r.created_at,
+            coalesce(u.display_name, u.username) as created_by_name
+        from analysis_record r
+        left join users u on u.id = r.created_by
         <include refid="listWhere"/>
-        order by id desc
+        order by r.id desc
         limit #{limit} offset #{offset}
     </select>
 

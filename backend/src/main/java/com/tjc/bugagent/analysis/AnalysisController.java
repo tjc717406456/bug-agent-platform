@@ -60,7 +60,7 @@ public class AnalysisController {
     public ApiResponse<AgentAnalysisTaskSubmitResult> submitAgentTaskWithScreenshots(@RequestParam("request") String requestJson,
                                                                                      @RequestParam(value = "screenshots", required = false) MultipartFile[] screenshots) throws Exception {
         AnalysisRequest request = objectMapper.readValue(requestJson, AnalysisRequest.class);
-        guard.assertOwned(request.getProjectId());
+        guard.assertCanAccess(request.getProjectId());
         String screenshotPaths = screenshotStorageService.saveScreenshots(request.getProjectId(), screenshots);
         request.setScreenshotPaths(screenshotPaths);
         return ApiResponse.ok(agentAnalysisTaskService.submit(request));
@@ -71,7 +71,7 @@ public class AnalysisController {
      */
     @PostMapping("/explain/tasks")
     public ApiResponse<AgentAnalysisTaskSubmitResult> submitExplainTask(@Valid @RequestBody AnalysisRequest request) {
-        guard.assertOwned(request.getProjectId());
+        guard.assertCanAccess(request.getProjectId());
         return ApiResponse.ok(agentAnalysisTaskService.submitExplain(request));
     }
 
@@ -99,7 +99,7 @@ public class AnalysisController {
     public ApiResponse<AgentAnalysisTaskSubmitResult> submitFollowUp(@PathVariable Long recordId,
                                                                      @RequestBody Map<String, String> body) {
         // 追问在异步线程里跑，记录归属必须在此处校验完
-        guard.assertRecordOwned(recordId);
+        guard.assertRecordAccessible(recordId);
         return ApiResponse.ok(agentAnalysisTaskService.submitFollowUp(recordId, body.get("question")));
     }
 
@@ -108,7 +108,7 @@ public class AnalysisController {
      */
     @PutMapping("/records/{recordId}/feedback")
     public ApiResponse<String> feedback(@PathVariable Long recordId, @Valid @RequestBody AnalysisFeedbackRequest request) {
-        guard.assertRecordOwned(recordId);
+        guard.assertRecordAccessible(recordId);
         analysisFeedbackService.saveFeedback(recordId, request);
         return ApiResponse.ok("ok");
     }
@@ -138,7 +138,7 @@ public class AnalysisController {
      */
     @GetMapping("/records/{recordId}")
     public ApiResponse<AnalysisRecord> getRecord(@PathVariable Long recordId) {
-        guard.assertRecordOwned(recordId);
+        guard.assertRecordAccessible(recordId);
         return ApiResponse.ok(analysisRecordService.get(recordId));
     }
 
@@ -149,7 +149,7 @@ public class AnalysisController {
     public ApiResponse<String> batchDeleteRecords(@RequestBody List<Long> ids) {
         if (ids != null) {
             for (Long id : ids) {
-                guard.assertRecordOwned(id);
+                guard.assertRecordAccessible(id);
             }
         }
         analysisRecordService.deleteByIds(ids);

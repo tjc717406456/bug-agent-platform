@@ -39,6 +39,16 @@ create table if not exists project (
   key idx_project_owner(owner_id)
 );
 
+-- 项目可见范围：管理员勾选哪些用户能看到并分析该项目（管理员天然可见全部，不入表）
+create table if not exists project_member (
+  id bigint primary key auto_increment comment '授权ID',
+  project_id bigint not null comment '项目ID',
+  user_id bigint not null comment '被授权用户ID',
+  created_at datetime not null comment '授权时间',
+  unique key uk_member(project_id, user_id),
+  key idx_member_user(user_id)
+);
+
 create table if not exists project_version (
   id bigint primary key auto_increment comment '版本ID',
   project_id bigint not null comment '项目ID',
@@ -134,6 +144,7 @@ create table if not exists analysis_record (
   conclusion mediumtext comment '分析结论',
   confidence varchar(32) comment '置信度',
   evidence_json mediumtext comment '分析证据JSON',
+  created_by bigint comment '发起人用户ID',
   created_at datetime not null comment '创建时间',
   key idx_analysis_project(project_id),
   key idx_analysis_api(api_path)

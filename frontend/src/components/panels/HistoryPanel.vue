@@ -57,6 +57,9 @@
           <span v-else>-</span>
         </template>
       </a-table-column>
+      <a-table-column title="发起人" data-index="createdByName" :width="100">
+        <template #default="{ record }">{{ record.createdByName || '-' }}</template>
+      </a-table-column>
       <a-table-column title="时间" data-index="createdAt" :width="170" />
       <a-table-column title="操作" :width="80">
         <template #default="{ record }">

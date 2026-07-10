@@ -23,6 +23,16 @@ public class AnalysisRequest {
     private String logId;
     // 本次是否强制走深度模式（多假设并行）；null 时按全局 hypothesis-mode 配置
     private Boolean deepMode;
+    // 发起人，提交时在 servlet 线程从登录上下文盖章（异步执行体读不到），客户端传值会被覆盖
+    private Long ownerId;
+
+    public Long getOwnerId() {
+        return ownerId;
+    }
+
+    public void setOwnerId(Long ownerId) {
+        this.ownerId = ownerId;
+    }
 
     public Boolean getDeepMode() {
         return deepMode;

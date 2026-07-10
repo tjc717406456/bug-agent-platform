@@ -28,13 +28,13 @@ public class SourceImportController {
 
     @PostMapping("/git")
     public ApiResponse<Long> importGit(@PathVariable Long projectId, @Valid @RequestBody GitImportRequest request) throws Exception {
-        guard.assertOwned(projectId);
+        guard.assertAdmin();
         return ApiResponse.ok(sourceImportService.importGit(projectId, request));
     }
 
     @PostMapping("/zip")
     public ApiResponse<Long> importZip(@PathVariable Long projectId, @RequestParam("file") MultipartFile file) throws Exception {
-        guard.assertOwned(projectId);
+        guard.assertAdmin();
         return ApiResponse.ok(sourceImportService.importZip(projectId, file));
     }
 }

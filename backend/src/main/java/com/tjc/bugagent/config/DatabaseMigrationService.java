@@ -44,7 +44,29 @@ public class DatabaseMigrationService {
         ensureAuthTables();
         ensureProjectOwnerColumn();
         ensureAuthBootstrap();
+        ensureProjectMemberTable();
+        ensureAnalysisCreatedByColumn();
         ensureTableComments();
+    }
+
+    /** 旧库补建项目可见范围授权表（新库由 schema.sql 建）。 */
+    private void ensureProjectMemberTable() {
+        jdbcTemplate.execute("create table if not exists project_member (" +
+                "id bigint primary key auto_increment," +
+                "project_id bigint not null," +
+                "user_id bigint not null," +
+                "created_at datetime not null," +
+                "unique key uk_member(project_id, user_id)," +
+                "key idx_member_user(user_id)" +
+                ")");
+    }
+
+    /** 分析记录补发起人列：项目内历史共享后要能看出这条是谁跑的。 */
+    private void ensureAnalysisCreatedByColumn() {
+        if (!tableExists("analysis_record")) {
+            return;
+        }
+        addColumnIfMissing("analysis_record", "created_by", "bigint comment '发起人用户ID' after evidence_json");
     }
 
     /** 旧库补建 users / audit_log（新库由 schema.sql 建）。 */

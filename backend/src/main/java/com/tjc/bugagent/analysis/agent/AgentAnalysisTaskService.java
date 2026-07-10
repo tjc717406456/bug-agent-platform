@@ -33,6 +33,8 @@ public class AgentAnalysisTaskService {
      */
     public AgentAnalysisTaskSubmitResult submit(AnalysisRequest request) {
         AgentAnalysisTaskStatus status = newPendingTask("任务已提交");
+        // 发起人随请求带进异步体：落库记 created_by，共享历史里能看出谁跑的
+        request.setOwnerId(status.getOwnerId());
         taskStore.save(status);
         taskRunner.run(status.getTaskId(), request, status);
         return submitResult(status);
@@ -43,6 +45,7 @@ public class AgentAnalysisTaskService {
      */
     public AgentAnalysisTaskSubmitResult submitExplain(AnalysisRequest request) {
         AgentAnalysisTaskStatus status = newPendingTask("任务已提交");
+        request.setOwnerId(status.getOwnerId());
         taskStore.save(status);
         taskRunner.runExplain(status.getTaskId(), request, status);
         return submitResult(status);

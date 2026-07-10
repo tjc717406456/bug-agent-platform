@@ -2,11 +2,14 @@ import { ref, reactive, computed } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   listProjects, listVersions, listDatasources, createProject, updateProject, deleteProject,
-  listApiRoutes, importGit, importZip, deleteVersion, saveDatasource
+  listApiRoutes, importGit, importZip, deleteVersion, saveDatasource,
+  getProjectMembers, saveProjectMembers
 } from '../../api/client'
 import { currentProject, analysisForm, analysisResult, confirm } from '../core'
 import { reloadDbhubDatasources } from './dbhubStore'
 import { loadAiConfigs } from './aiConfigStore'
+import { isAdmin } from './authStore'
+import { loadUsers, users } from './usersStore'
 
 export const projects = ref([])
 export const versions = ref([])
@@ -20,6 +23,8 @@ export const selectedApiPrefix = ref('')
 export const projectDialogVisible = ref(false)
 
 export const projectForm = reactive({ id: null, name: '', code: '', description: '' })
+// 项目可见范围：勾选的普通用户 id 列表（管理员天然可见全部，不在此列）
+export const projectMemberIds = ref([])
 export const projectQuery = reactive({ name: '', code: '' })
 export const gitForm = reactive({ repoUrl: '', branchName: '', accessToken: '' })
 export const datasourceForm = reactive({ env: 'test', dbhubKey: '' })
@@ -118,6 +123,8 @@ export async function saveProjectAction() {
     return
   }
   const saved = projectForm.id ? await updateProject(projectForm.id, projectForm) : await createProject(projectForm)
+  // 可见范围全量替换：勾选列表即最终授权状态
+  await saveProjectMembers(saved.id, projectMemberIds.value)
   message.success(projectForm.id ? '项目已修改' : '项目已创建')
   projectDialogVisible.value = false
   resetProjectForm()
@@ -127,17 +134,25 @@ export async function saveProjectAction() {
   await loadAll()
 }
 
-export function openProjectDialog(row) {
+export async function openProjectDialog(row) {
+  // 项目由管理员维护，普通用户双击行/点按钮都不给开弹窗
+  if (!isAdmin.value) return
   if (row) {
     Object.assign(projectForm, { id: row.id, name: row.name, code: row.code, description: row.description || '' })
   } else {
     resetProjectForm()
   }
   projectDialogVisible.value = true
+  // 勾选项要用的用户列表与已授权名单异步补齐，不挡弹窗打开
+  if (!users.value.length) {
+    loadUsers().catch(() => {})
+  }
+  projectMemberIds.value = row ? await getProjectMembers(row.id).catch(() => []) : []
 }
 
 export function resetProjectForm() {
   Object.assign(projectForm, { id: null, name: '', code: '', description: '' })
+  projectMemberIds.value = []
 }
 
 export async function deleteProjectAction(row) {
@@ -286,4 +301,5 @@ export function resetProjectState() {
   selectedApiPrefix.value = ''
   zipFile.value = null
   projectDialogVisible.value = false
+  projectMemberIds.value = []
 }

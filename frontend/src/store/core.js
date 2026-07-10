@@ -8,8 +8,8 @@ export const currentProject = ref(null)
 // 当前侧边栏页持久化，刷新后不回弹「项目管理」
 const PANEL_STORAGE_KEY = 'bug-agent-active-panel'
 const PANEL_KEYS = new Set(['projects', 'source', 'ai-settings', 'dbhub-sources', 'project-dbhub', 'analysis', 'history', 'users'])
-// 只有管理员能进的面板：AI 密钥、生产库凭据、用户管理
-export const ADMIN_PANELS = new Set(['ai-settings', 'dbhub-sources', 'users'])
+// 只有管理员能进的面板：AI 密钥、生产库凭据、用户管理，以及项目维护类（源码导入、数据源绑定）
+export const ADMIN_PANELS = new Set(['ai-settings', 'dbhub-sources', 'users', 'source', 'project-dbhub'])
 
 function loadActivePanel() {
   if (typeof window === 'undefined') return 'projects'

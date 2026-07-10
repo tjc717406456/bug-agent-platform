@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tjc.bugagent.project.mapper.ProjectMemberMapper">
+
+    <select id="listUserIds" resultType="java.lang.Long">
+        select user_id from project_member where project_id = #{projectId} order by id
+    </select>
+
+    <select id="countMember" resultType="int">
+        select count(1) from project_member where project_id = #{projectId} and user_id = #{userId}
+    </select>
+
+    <delete id="deleteByProject">
+        delete from project_member where project_id = #{projectId}
+    </delete>
+
+    <insert id="insertAll">
+        insert into project_member(project_id, user_id, created_at) values
+        <foreach collection="userIds" item="userId" separator=",">
+            (#{projectId}, #{userId}, now())
+        </foreach>
+    </insert>
+
+</mapper>

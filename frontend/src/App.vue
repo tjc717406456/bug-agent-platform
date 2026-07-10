@@ -32,12 +32,12 @@
 
       <a-layout-content class="main">
         <ProjectsPanel v-show="activePanel === 'projects'" />
-        <SourcePanel v-show="activePanel === 'source'" />
         <!-- 管理面板双重把关：菜单隐藏 + 这里不渲染，普通用户改状态也进不来 -->
+        <SourcePanel v-if="isAdmin" v-show="activePanel === 'source'" />
         <AiSettingsPanel v-if="isAdmin" v-show="activePanel === 'ai-settings'" />
         <DbhubSourcesPanel v-if="isAdmin" v-show="activePanel === 'dbhub-sources'" />
         <UsersPanel v-if="isAdmin" v-show="activePanel === 'users'" />
-        <ProjectDbhubPanel v-show="activePanel === 'project-dbhub'" />
+        <ProjectDbhubPanel v-if="isAdmin" v-show="activePanel === 'project-dbhub'" />
         <AnalysisPanel v-show="activePanel === 'analysis'" />
         <HistoryPanel v-show="activePanel === 'history'" />
       </a-layout-content>

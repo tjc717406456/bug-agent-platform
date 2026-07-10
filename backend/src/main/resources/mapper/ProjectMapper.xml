@@ -14,9 +14,10 @@
             <if test="code != null and code != ''">
                 and code like concat('%', #{code}, '%')
             </if>
-            <!-- ownerId 为空表示管理员，不加归属过滤，看全部项目 -->
+            <!-- ownerId 为空表示管理员，不加过滤看全部；普通用户看「自有 ∪ 被授权」的项目 -->
             <if test="ownerId != null">
-                and owner_id = #{ownerId}
+                and (owner_id = #{ownerId}
+                    or id in (select project_id from project_member where user_id = #{ownerId}))
             </if>
         </where>
         order by id desc

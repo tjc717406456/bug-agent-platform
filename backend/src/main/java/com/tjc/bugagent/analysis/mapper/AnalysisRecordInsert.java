@@ -24,6 +24,8 @@ public class AnalysisRecordInsert {
     private int totalTokens;
     // ANALYSIS bug分析 / EXPLAIN 接口讲解
     private String recordType;
+    // 发起人用户ID，项目内历史共享后用于展示"谁跑的"
+    private Long createdBy;
 
     public String getRecordType() {
         return recordType;
@@ -31,6 +33,14 @@ public class AnalysisRecordInsert {
 
     public void setRecordType(String recordType) {
         this.recordType = recordType;
+    }
+
+    public Long getCreatedBy() {
+        return createdBy;
+    }
+
+    public void setCreatedBy(Long createdBy) {
+        this.createdBy = createdBy;
     }
 
     public Long getId() {

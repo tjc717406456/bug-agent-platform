@@ -31,7 +31,7 @@ public class CodeGraphController {
     public ApiResponse<List<ApiRouteOption>> listRoutes(@PathVariable Long projectId,
                                                         @PathVariable Long versionId,
                                                         @RequestParam(required = false) String keyword) {
-        guard.assertOwned(projectId);
+        guard.assertCanAccess(projectId);
         return ApiResponse.ok(codeGraphQueryService.listApiRoutes(projectId, versionId, keyword));
     }
 }

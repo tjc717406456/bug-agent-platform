@@ -62,6 +62,14 @@ export function listVersions(projectId) {
   return request(`/projects/${projectId}/versions`)
 }
 
+export function getProjectMembers(projectId) {
+  return request(`/projects/${projectId}/members`)
+}
+
+export function saveProjectMembers(projectId, userIds) {
+  return request(`/projects/${projectId}/members`, { method: 'PUT', body: JSON.stringify(userIds) })
+}
+
 export function deleteVersion(projectId, versionId) {
   return request(`/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}`, { method: 'DELETE' })
 }

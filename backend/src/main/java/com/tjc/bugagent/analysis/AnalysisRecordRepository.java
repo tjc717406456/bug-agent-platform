@@ -45,6 +45,7 @@ public class AnalysisRecordRepository {
         record.setAutoVerifyKeywords(verifyKeywords);
         record.setRoundsCount(roundsCount);
         record.setTotalTokens(totalTokens);
+        record.setCreatedBy(request.getOwnerId());
         analysisRecordMapper.insert(record);
         return record.getId();
     }
@@ -65,6 +66,7 @@ public class AnalysisRecordRepository {
         record.setEvidenceJson(evidence);
         record.setRoundsCount(roundsCount);
         record.setTotalTokens(totalTokens);
+        record.setCreatedBy(request.getOwnerId());
         analysisRecordMapper.insert(record);
         return record.getId();
     }

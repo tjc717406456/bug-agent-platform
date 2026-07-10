@@ -2,6 +2,7 @@ package com.tjc.bugagent.project;
 
 import com.tjc.bugagent.project.mapper.ProjectDatasourceMapper;
 import com.tjc.bugagent.project.mapper.ProjectMapper;
+import com.tjc.bugagent.project.mapper.ProjectMemberMapper;
 import com.tjc.bugagent.project.mapper.ProjectVersionMapper;
 import org.apache.commons.io.FileUtils;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -19,13 +20,16 @@ public class ProjectService {
     private final JdbcTemplate jdbcTemplate;
     private final ProjectDatasourceMapper projectDatasourceMapper;
     private final ProjectMapper projectMapper;
+    private final ProjectMemberMapper projectMemberMapper;
     private final ProjectVersionMapper projectVersionMapper;
 
     public ProjectService(JdbcTemplate jdbcTemplate, ProjectDatasourceMapper projectDatasourceMapper,
-                          ProjectMapper projectMapper, ProjectVersionMapper projectVersionMapper) {
+                          ProjectMapper projectMapper, ProjectMemberMapper projectMemberMapper,
+                          ProjectVersionMapper projectVersionMapper) {
         this.jdbcTemplate = jdbcTemplate;
         this.projectDatasourceMapper = projectDatasourceMapper;
         this.projectMapper = projectMapper;
+        this.projectMemberMapper = projectMemberMapper;
         this.projectVersionMapper = projectVersionMapper;
     }
 
@@ -76,8 +80,22 @@ public class ProjectService {
         jdbcTemplate.update("delete from code_edge where project_id = ?", projectId);
         jdbcTemplate.update("delete from code_node where project_id = ?", projectId);
         jdbcTemplate.update("delete from project_datasource where project_id = ?", projectId);
+        projectMemberMapper.deleteByProject(projectId);
         projectVersionMapper.deleteByProject(projectId);
         projectMapper.deleteById(projectId);
+    }
+
+    public List<Long> listMembers(Long projectId) {
+        return projectMemberMapper.listUserIds(projectId);
+    }
+
+    /** 全量替换项目可见范围：先清后插，勾选列表即最终状态。 */
+    @Transactional(rollbackFor = Exception.class)
+    public void saveMembers(Long projectId, List<Long> userIds) {
+        projectMemberMapper.deleteByProject(projectId);
+        if (userIds != null && !userIds.isEmpty()) {
+            projectMemberMapper.insertAll(projectId, userIds);
+        }
     }
 
     public Project getProject(Long projectId) {
