@@ -1,6 +1,7 @@
 import { ref, reactive } from 'vue'
 import { message } from 'ant-design-vue'
 import { listAiConfigs, createAiConfig, updateAiConfig, activateAiConfig, deleteAiConfig, testAiConfig, testEmbeddingConfig } from '../../api/client'
+import { isAdmin } from './authStore'
 import { confirm } from '../core'
 
 export const aiConfigs = ref([])
@@ -11,6 +12,12 @@ export const editingAiId = ref(null)
 export const aiForm = reactive({ provider: 'openai-compatible', baseUrl: '', modelName: '', apiKey: '', timeoutSeconds: 60, enabled: true, supportsVision: false, role: 'PRIMARY' })
 
 export async function loadAiConfigs() {
+  // AI 配置是管理员专属，普通用户请求会 403，没必要发这一趟
+  if (!isAdmin.value) {
+    aiConfigs.value = []
+    selectedAiConfigId.value = null
+    return
+  }
   aiConfigs.value = await listAiConfigs().catch(() => [])
   // 选中态只认主/辅模型，embedding 是独立开关不参与单选
   const chats = aiConfigs.value.filter((item) => item.role !== 'EMBEDDING')
@@ -92,4 +99,11 @@ export async function testAiAction() {
 export async function testEmbeddingAction() {
   const result = await testEmbeddingConfig()
   message.info(result)
+}
+
+/** 登出清场：AI 配置含密钥信息，只有管理员可见 */
+export function resetAiConfigState() {
+  aiConfigs.value = []
+  selectedAiConfigId.value = null
+  aiDialogVisible.value = false
 }

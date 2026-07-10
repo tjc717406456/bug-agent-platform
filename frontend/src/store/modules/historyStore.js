@@ -112,3 +112,13 @@ export async function submitFeedbackAction() {
     await loadHistory()
   }
 }
+
+/** 登出清场：历史记录属于上一位用户，必须抹掉 */
+export function resetHistoryState() {
+  analysisRecords.value = []
+  selectedHistoryKeys.value = []
+  historyPagination.current = 1
+  historyPagination.total = 0
+  Object.assign(historyQuery, { projectId: null, apiPath: '', recordType: '' })
+  resetFeedback()
+}

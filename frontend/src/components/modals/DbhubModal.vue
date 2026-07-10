@@ -8,7 +8,7 @@
       <a-form-item label="端口"><a-input-number v-model:value="dbhubForm.port" :min="1" :max="65535" style="width: 100%" /></a-form-item>
       <a-form-item label="库名"><a-input v-model:value="dbhubForm.database" /></a-form-item>
       <a-form-item label="用户名"><a-input v-model:value="dbhubForm.user" /></a-form-item>
-      <a-form-item label="密码"><a-input-password v-model:value="dbhubForm.password" /></a-form-item>
+      <a-form-item label="密码"><a-input-password v-model:value="dbhubForm.password" autocomplete="new-password" /></a-form-item>
     </a-form>
     <template #footer>
       <a-button @click="dbhubDialogVisible = false">取消</a-button>

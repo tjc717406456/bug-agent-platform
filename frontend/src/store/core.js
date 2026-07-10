@@ -7,7 +7,9 @@ export const currentProject = ref(null)
 
 // 当前侧边栏页持久化，刷新后不回弹「项目管理」
 const PANEL_STORAGE_KEY = 'bug-agent-active-panel'
-const PANEL_KEYS = new Set(['projects', 'source', 'ai-settings', 'dbhub-sources', 'project-dbhub', 'analysis', 'history'])
+const PANEL_KEYS = new Set(['projects', 'source', 'ai-settings', 'dbhub-sources', 'project-dbhub', 'analysis', 'history', 'users'])
+// 只有管理员能进的面板：AI 密钥、生产库凭据、用户管理
+export const ADMIN_PANELS = new Set(['ai-settings', 'dbhub-sources', 'users'])
 
 function loadActivePanel() {
   if (typeof window === 'undefined') return 'projects'
@@ -20,6 +22,17 @@ export const activePanel = ref(loadActivePanel())
 export function saveActivePanel(panel) {
   if (typeof window !== 'undefined' && PANEL_KEYS.has(panel)) {
     window.localStorage.setItem(PANEL_STORAGE_KEY, panel)
+  }
+}
+
+/**
+ * 上一个用户是管理员、停在管理面板，换普通用户登录后 localStorage 还留着那个面板，
+ * 会直接落到一个看不见内容的空页。登录/恢复会话后调一次把它拨回项目页。
+ */
+export function sanitizeActivePanel(isAdmin) {
+  if (!isAdmin && ADMIN_PANELS.has(activePanel.value)) {
+    activePanel.value = 'projects'
+    saveActivePanel('projects')
   }
 }
 

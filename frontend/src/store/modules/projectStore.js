@@ -274,3 +274,16 @@ export async function saveDatasourceAction() {
   message.success('数据源已保存')
   await loadProjectRelated()
 }
+
+/** 登出清场：换用户后不能残留上一位的项目列表与选择 */
+export function resetProjectState() {
+  projects.value = []
+  versions.value = []
+  datasources.value = []
+  apiRoutes.value = []
+  selectedProjectId.value = null
+  datasourceProjectId.value = null
+  selectedApiPrefix.value = ''
+  zipFile.value = null
+  projectDialogVisible.value = false
+}

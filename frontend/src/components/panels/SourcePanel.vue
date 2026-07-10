@@ -8,9 +8,11 @@
     <div v-else class="split">
       <a-card title="Git 拉取" :bordered="false">
         <a-form layout="vertical">
-          <a-form-item label="仓库地址"><a-input v-model:value="gitForm.repoUrl" /></a-form-item>
-          <a-form-item label="分支"><a-input v-model:value="gitForm.branchName" placeholder="可空" /></a-form-item>
-          <a-form-item label="Token"><a-input-password v-model:value="gitForm.accessToken" placeholder="首版预留" /></a-form-item>
+          <!-- autocomplete 关掉：Token 是 password 类型，浏览器会把这当登录表单，
+               往「分支」灌用户名、往 Token 灌保存的登录密码 -->
+          <a-form-item label="仓库地址"><a-input v-model:value="gitForm.repoUrl" autocomplete="off" /></a-form-item>
+          <a-form-item label="分支"><a-input v-model:value="gitForm.branchName" placeholder="可空" autocomplete="off" /></a-form-item>
+          <a-form-item label="Token"><a-input-password v-model:value="gitForm.accessToken" placeholder="首版预留" autocomplete="new-password" /></a-form-item>
           <a-button type="primary" @click="importGitAction"><template #icon><DownloadOutlined /></template>导入 Git</a-button>
         </a-form>
       </a-card>

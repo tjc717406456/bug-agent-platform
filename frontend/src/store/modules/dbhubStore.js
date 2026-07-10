@@ -1,7 +1,8 @@
 import { ref, reactive, computed } from 'vue'
 import { message } from 'ant-design-vue'
-import { listDbhubDatasources, saveDbhubDatasource, testDbhubDatasource, deleteDbhubDatasource } from '../../api/client'
+import { listDbhubDatasources, saveDbhubDatasource, testDbhubDatasource, deleteDbhubDatasource, listDatasourceKeys } from '../../api/client'
 import { confirm } from '../core'
+import { isAdmin } from './authStore'
 
 export const dbhubDatasources = ref([])
 export const selectedDbhubDatasources = ref([])
@@ -33,10 +34,13 @@ export const dbhubRowSelection = computed(() => ({
 }))
 
 // 供 project.loadAll 复用，重新拉全局 dbhub 数据源池
+/**
+ * 数据源列表按角色分流：管理员拿完整配置（要改 host/账号），
+ * 普通用户只拿脱敏的 key + 库名——够在「项目dbhub绑定」里选一个了，看不到任何凭据。
+ */
 export async function reloadDbhubDatasources(ignoreError = false) {
-  dbhubDatasources.value = ignoreError
-    ? await listDbhubDatasources().catch(() => [])
-    : await listDbhubDatasources()
+  const loader = isAdmin.value ? listDbhubDatasources : listDatasourceKeys
+  dbhubDatasources.value = ignoreError ? await loader().catch(() => []) : await loader()
 }
 
 export function dbhubRowEvents(record) {
@@ -97,4 +101,11 @@ export async function deleteSelectedDbhubDatasources() {
   selectedDbhubDatasources.value = []
   selectedDbhubKeys.value = []
   await reloadDbhubDatasources()
+}
+
+/** 登出清场：数据源配置只有管理员可见，换成普通用户必须清空 */
+export function resetDbhubState() {
+  dbhubDatasources.value = []
+  selectedDbhubKeys.value = []
+  dbhubDialogVisible.value = false
 }

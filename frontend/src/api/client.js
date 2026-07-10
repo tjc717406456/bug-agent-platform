@@ -1,13 +1,35 @@
+import { getToken, notifyUnauthorized } from './authToken'
+
 const API_PREFIX = '/api'
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API_PREFIX}${path}`, {
-    headers: options.body instanceof FormData ? undefined : { 'Content-Type': 'application/json' },
-    ...options
-  })
+  // Authorization 必须无条件附上：FormData 请求（截图/日志/ZIP 上传）也要带，
+  // 只有 Content-Type 需要跳过——那由浏览器按 multipart 边界自己生成
+  const headers = { ...(options.headers || {}) }
+  if (!(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json'
+  }
+  const token = getToken()
+  if (token) {
+    headers.Authorization = `Bearer ${token}`
+  }
+
+  const response = await fetch(`${API_PREFIX}${path}`, { ...options, headers })
+
+  // 401 = 未登录/过期，清 token 跳登录页；403 = 越权，只提示不登出
+  if (response.status === 401) {
+    notifyUnauthorized()
+    const error = new Error('登录已过期，请重新登录')
+    error.code = 'UNAUTHORIZED'
+    throw error
+  }
   const body = await response.json().catch(() => null)
   if (!response.ok || !body?.success) {
-    throw new Error(body?.message || `HTTP ${response.status}`)
+    const error = new Error(body?.message || `HTTP ${response.status}`)
+    if (response.status === 403) {
+      error.code = 'FORBIDDEN'
+    }
+    throw error
   }
   return body.data
 }
@@ -170,3 +192,46 @@ export function batchDeleteAnalysisRecords(ids) {
   return request('/analysis/records/batch-delete', { method: 'POST', body: JSON.stringify(ids) })
 }
 
+
+// ===== 鉴权 =====
+export function login(username, password) {
+  return request('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })
+}
+
+export function logoutApi() {
+  return request('/auth/logout', { method: 'POST' })
+}
+
+export function getMe() {
+  return request('/auth/me')
+}
+
+export function changePassword(oldPassword, newPassword) {
+  return request('/auth/change-password', { method: 'POST', body: JSON.stringify({ oldPassword, newPassword }) })
+}
+
+// ===== 用户管理（管理员） =====
+export function listUsers() {
+  return request('/users')
+}
+
+export function createUser(payload) {
+  return request('/users', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function updateUser(userId, payload) {
+  return request(`/users/${encodeURIComponent(userId)}`, { method: 'PUT', body: JSON.stringify(payload) })
+}
+
+export function resetUserPassword(userId, password) {
+  return request(`/users/${encodeURIComponent(userId)}/reset-password`, { method: 'POST', body: JSON.stringify({ password }) })
+}
+
+// ===== 脱敏元信息（所有登录用户可读） =====
+export function getActiveModel() {
+  return request('/meta/active-model')
+}
+
+export function listDatasourceKeys() {
+  return request('/meta/datasource-keys')
+}
