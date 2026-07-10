@@ -34,7 +34,6 @@ public class DatabaseMigrationService {
     @PostConstruct
     public void migrate() {
         ensureDbhubDatasourceConfigTable();
-        ensureDefaultDbhubDatasources();
         ensureAnalysisScreenshotColumn();
         ensureAnalysisFeedbackColumns();
         ensureAnalysisEmbeddingColumn();
@@ -244,22 +243,6 @@ public class DatabaseMigrationService {
                 "created_at datetime not null," +
                 "updated_at datetime not null" +
                 ")");
-    }
-
-    /**
-     * 写入本地开发默认数据源。
-     */
-    private void ensureDefaultDbhubDatasources() {
-        insertDefaultDatasource("bug_agent", "bug_agent");
-        insertDefaultDatasource("user_bug_demo", "user_bug_demo");
-    }
-
-    private void insertDefaultDatasource(String key, String database) {
-        jdbcTemplate.update(
-                "insert into dbhub_datasource_config(datasource_key, host, port, username, password, database_name, created_at, updated_at) " +
-                        "select ?, 'localhost', 3306, 'root', '1234', ?, now(), now() " +
-                        "where not exists (select 1 from dbhub_datasource_config where datasource_key = ?)",
-                key, database, key);
     }
 
     /**
