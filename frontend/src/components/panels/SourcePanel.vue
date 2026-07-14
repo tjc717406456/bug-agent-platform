@@ -19,9 +19,10 @@
       <a-card title="ZIP 上传" :bordered="false">
         <a-upload-dragger :max-count="1" accept=".zip" :file-list="zipFileList" :before-upload="beforeZipUpload" @remove="removeZip">
           <p class="ant-upload-drag-icon"><InboxOutlined /></p>
-          <p class="ant-upload-text">拖入 ZIP 或点击选择</p>
+          <p class="ant-upload-text">拖入 ZIP 或点击选择（≤200MB）</p>
         </a-upload-dragger>
-        <a-button type="primary" class="top-gap" @click="importZipAction"><template #icon><UploadOutlined /></template>上传并索引</a-button>
+        <div v-if="zipImportProgress" style="margin-top:8px;color:#1677ff">{{ zipImportProgress }}</div>
+        <a-button type="primary" class="top-gap" :loading="zipImporting" :disabled="zipImporting" @click="importZipAction"><template #icon><UploadOutlined /></template>{{ zipImporting ? '正在导入' : '上传并索引' }}</a-button>
       </a-card>
     </div>
     <a-table class="top-gap" :data-source="versions" :pagination="false" row-key="id" size="middle">
@@ -42,5 +43,5 @@
 import { DownloadOutlined, InboxOutlined, UploadOutlined } from '@ant-design/icons-vue'
 import { useAppStore } from '../../store/useAppStore'
 
-const { currentProject, gitForm, importGitAction, zipFileList, beforeZipUpload, removeZip, importZipAction, versions, deleteVersionAction } = useAppStore()
+const { currentProject, gitForm, importGitAction, zipFileList, zipImporting, zipImportProgress, beforeZipUpload, removeZip, importZipAction, versions, deleteVersionAction } = useAppStore()
 </script>

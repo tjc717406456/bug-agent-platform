@@ -71,4 +71,10 @@
         where id = #{id}
     </update>
 
+    <update id="updateSourcePath">
+        update project_version
+        set source_path = #{sourcePath}
+        where id = #{id}
+    </update>
+
 </mapper>

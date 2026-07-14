@@ -87,10 +87,52 @@ export function importGit(projectId, payload) {
   return request(`/projects/${projectId}/sources/git`, { method: 'POST', body: JSON.stringify(payload) })
 }
 
-export function importZip(projectId, file) {
+export function importZip(projectId, file, onProgress) {
   const form = new FormData()
   form.append('file', file)
-  return request(`/projects/${projectId}/sources/zip`, { method: 'POST', body: form })
+  const url = API_PREFIX + '/projects/' + encodeURIComponent(projectId) + '/sources/zip'
+  const startedAt = Date.now()
+  console.info('HTTP请求', { url, method: 'POST', fileName: file.name, fileSize: file.size })
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', url)
+    const token = getToken()
+    if (token) {
+      xhr.setRequestHeader('Authorization', 'Bearer ' + token)
+    }
+    xhr.upload.onprogress = event => {
+      if (event.lengthComputable && onProgress) {
+        onProgress(event.loaded, event.total, Date.now() - startedAt)
+      }
+    }
+    xhr.onload = () => {
+      const elapsedMs = Date.now() - startedAt
+      let body = null
+      try {
+        body = JSON.parse(xhr.responseText)
+      } catch (error) {
+        body = null
+      }
+      console.info('HTTP响应', { url, status: xhr.status, elapsedMs, success: body?.success })
+      if (xhr.status === 401) {
+        notifyUnauthorized()
+        const error = new Error('登录已过期，请重新登录')
+        error.code = 'UNAUTHORIZED'
+        reject(error)
+        return
+      }
+      if (xhr.status < 200 || xhr.status >= 300 || !body?.success) {
+        reject(new Error(body?.message || 'HTTP ' + xhr.status))
+        return
+      }
+      resolve(body.data)
+    }
+    xhr.onerror = () => {
+      console.info('HTTP响应', { url, status: 0, elapsedMs: Date.now() - startedAt, success: false })
+      reject(new Error('ZIP 上传网络异常'))
+    }
+    xhr.send(form)
+  })
 }
 
 export function saveDatasource(projectId, payload) {
@@ -179,10 +221,52 @@ export function submitAnalysisFeedback(recordId, payload) {
   return request(`/analysis/records/${encodeURIComponent(recordId)}/feedback`, { method: 'PUT', body: JSON.stringify(payload) })
 }
 
-export function uploadLog(file) {
+export function uploadLog(file, onProgress) {
   const form = new FormData()
   form.append('file', file)
-  return request('/analysis/logs/upload', { method: 'POST', body: form })
+  const url = API_PREFIX + '/analysis/logs/upload'
+  const startedAt = Date.now()
+  console.info('HTTP请求', { url, method: 'POST', fileName: file.name, fileSize: file.size })
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', url)
+    const token = getToken()
+    if (token) {
+      xhr.setRequestHeader('Authorization', 'Bearer ' + token)
+    }
+    xhr.upload.onprogress = event => {
+      if (event.lengthComputable && onProgress) {
+        onProgress(event.loaded, event.total, Date.now() - startedAt)
+      }
+    }
+    xhr.onload = () => {
+      const elapsedMs = Date.now() - startedAt
+      let body = null
+      try {
+        body = JSON.parse(xhr.responseText)
+      } catch (error) {
+        body = null
+      }
+      console.info('HTTP响应', { url, status: xhr.status, elapsedMs, success: body?.success })
+      if (xhr.status === 401) {
+        notifyUnauthorized()
+        const error = new Error('登录已过期，请重新登录')
+        error.code = 'UNAUTHORIZED'
+        reject(error)
+        return
+      }
+      if (xhr.status < 200 || xhr.status >= 300 || !body?.success) {
+        reject(new Error(body?.message || 'HTTP ' + xhr.status))
+        return
+      }
+      resolve(body.data)
+    }
+    xhr.onerror = () => {
+      console.info('HTTP响应', { url, status: 0, elapsedMs: Date.now() - startedAt, success: false })
+      reject(new Error('日志上传网络异常'))
+    }
+    xhr.send(form)
+  })
 }
 
 export function listAnalysisRecords(params = {}) {

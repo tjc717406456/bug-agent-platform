@@ -6,6 +6,8 @@ import com.tjc.bugagent.config.AppProperties;
 import com.tjc.bugagent.project.ProjectVersion;
 import com.tjc.bugagent.project.mapper.ProjectVersionMapper;
 import org.apache.commons.io.FileUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -15,25 +17,27 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 /**
  * Imports project source and starts indexing.
  */
 @Service
 public class SourceImportService {
+    private static final Logger log = LoggerFactory.getLogger(SourceImportService.class);
     private final AppProperties appProperties;
     private final ProjectVersionMapper projectVersionMapper;
     private final CodeGraphRepository codeGraphRepository;
     private final CodeGraphIndexService codeGraphIndexService;
+    private final SourceImportTaskRunner sourceImportTaskRunner;
 
     public SourceImportService(AppProperties appProperties, ProjectVersionMapper projectVersionMapper,
-                               CodeGraphRepository codeGraphRepository, CodeGraphIndexService codeGraphIndexService) {
+                               CodeGraphRepository codeGraphRepository, CodeGraphIndexService codeGraphIndexService,
+                               SourceImportTaskRunner sourceImportTaskRunner) {
         this.appProperties = appProperties;
         this.projectVersionMapper = projectVersionMapper;
         this.codeGraphRepository = codeGraphRepository;
         this.codeGraphIndexService = codeGraphIndexService;
+        this.sourceImportTaskRunner = sourceImportTaskRunner;
     }
 
     public Long importGit(Long projectId, GitImportRequest request) throws IOException, InterruptedException {
@@ -59,14 +63,37 @@ public class SourceImportService {
     }
 
     public Long importZip(Long projectId, MultipartFile file) throws IOException {
-        Path target = workspacePath(projectId, "zip");
-        unzip(file, target);
-        Path sourceRoot = findSourceRoot(target);
-        // 新源码已就绪，清掉该项目的旧版本（图谱 + 磁盘），保证一个项目只留当前一份
-        pruneProjectVersions(projectId);
-        Long versionId = createVersion(projectId, "ZIP", null, sourceRoot.toFile().getAbsolutePath());
-        codeGraphIndexService.indexAsync(projectId, versionId, sourceRoot);
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("ZIP 文件为空");
+        }
+        Path importRoot = workspacePath(projectId, "zip");
+        Path zipPath = importRoot.resolve("source.zip");
+        long startedAt = System.currentTimeMillis();
+        log.info("开始接收 ZIP 源码 projectId={} fileName={} size={} target={}", projectId,
+                file.getOriginalFilename(), file.getSize(), zipPath);
+        file.transferTo(zipPath.toFile());
+        Long versionId = createVersion(projectId, "ZIP", null, importRoot.toFile().getAbsolutePath());
+        projectVersionMapper.updateMessage(versionId, "ZIP 上传完成，等待后台解压");
+        log.info("ZIP 上传落盘完成 projectId={} versionId={} fileName={} size={} elapsedMs={}", projectId,
+                versionId, file.getOriginalFilename(), file.getSize(), System.currentTimeMillis() - startedAt);
+        try {
+            sourceImportTaskRunner.runZipImport(projectId, versionId, zipPath, importRoot.resolve("source"));
+        } catch (RuntimeException exception) {
+            projectVersionMapper.deleteByIdAndProject(versionId, projectId);
+            FileUtils.deleteQuietly(importRoot.toFile());
+            throw new IllegalStateException("源码导入任务队列已满，请稍后重试", exception);
+        }
         return versionId;
+    }
+
+    private Long createVersion(Long projectId, String sourceType, String branchName, String sourcePath) {
+        ProjectVersion version = new ProjectVersion();
+        version.setProjectId(projectId);
+        version.setSourceType(sourceType);
+        version.setBranchName(branchName);
+        version.setSourcePath(sourcePath);
+        projectVersionMapper.insertVersion(version);
+        return version.getId();
     }
 
     private String[] buildGitCommand(GitImportRequest request) {
@@ -77,7 +104,9 @@ public class SourceImportService {
     }
 
     private Path workspacePath(Long projectId, String type) throws IOException {
-        Path path = new File(appProperties.getWorkspaceRoot(), "project-" + projectId + File.separator + type + "-" + UUID.randomUUID()).toPath();
+        Path path = new File(appProperties.getWorkspaceRoot(),
+                "project-" + projectId + File.separator + type + "-" + UUID.randomUUID())
+                .toPath().toAbsolutePath().normalize();
         Files.createDirectories(path);
         return path;
     }
@@ -118,44 +147,4 @@ public class SourceImportService {
         return dir;
     }
 
-    private Long createVersion(Long projectId, String sourceType, String branchName, String sourcePath) {
-        ProjectVersion version = new ProjectVersion();
-        version.setProjectId(projectId);
-        version.setSourceType(sourceType);
-        version.setBranchName(branchName);
-        version.setSourcePath(sourcePath);
-        projectVersionMapper.insertVersion(version);
-        return version.getId();
-    }
-
-    private void unzip(MultipartFile file, Path target) throws IOException {
-        target = target.toAbsolutePath().normalize();
-        Files.createDirectories(target);
-        try (ZipInputStream inputStream = new ZipInputStream(file.getInputStream())) {
-            ZipEntry entry;
-            while ((entry = inputStream.getNextEntry()) != null) {
-                Path entryPath = target.resolve(entry.getName()).normalize();
-                if (!entryPath.startsWith(target)) {
-                    throw new IllegalStateException("invalid zip entry: " + entry.getName());
-                }
-                if (entry.isDirectory()) {
-                    Files.createDirectories(entryPath);
-                } else {
-                    Files.createDirectories(entryPath.getParent());
-                    Files.copy(inputStream, entryPath);
-                }
-            }
-        }
-    }
-
-    private Path findSourceRoot(Path target) throws IOException {
-        if (Files.exists(target.resolve("pom.xml")) || Files.exists(target.resolve("build.gradle"))) {
-            return target;
-        }
-        return Files.list(target)
-                .filter(Files::isDirectory)
-                .filter(path -> Files.exists(path.resolve("pom.xml")) || Files.exists(path.resolve("build.gradle")) || Files.exists(path.resolve("src")))
-                .findFirst()
-                .orElse(target);
-    }
 }

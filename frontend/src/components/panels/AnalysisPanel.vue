@@ -80,10 +80,11 @@
             <a-col :span="8">
               <a-upload-dragger :max-count="1" accept=".log,.txt" :file-list="logFileList" :before-upload="beforeLogUpload" @remove="removeLog">
                 <p class="ant-upload-drag-icon"><InboxOutlined /></p>
-                <p class="ant-upload-text">拖入 .log 文件或点击选择（≤10MB）</p>
+                <p class="ant-upload-text">拖入 .log 文件或点击选择（≤50MB）</p>
               </a-upload-dragger>
+              <div v-if="logUploadProgress" style="margin-top:6px;text-align:center;color:#1677ff">{{ logUploadProgress }}</div>
               <a-button type="link" size="small" block @click="openLogSplit">
-                <template #icon><ScissorOutlined /></template>大文件超 10MB？按时间切割
+                <template #icon><ScissorOutlined /></template>大文件超 50MB？按时间切割
               </a-button>
             </a-col>
           </a-row>
@@ -143,6 +144,7 @@ const {
   changeApiPath,
   logFileList,
   logUploading,
+  logUploadProgress,
   beforeLogUpload,
   removeLog,
   screenshotFileList,

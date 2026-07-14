@@ -7,6 +7,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import javax.annotation.PostConstruct;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -29,6 +30,15 @@ public class LogStorageService {
     }
 
     /**
+     * 创建日志目录和上传临时目录，确保容器内的临时文件与最终日志位于同一 workspace 卷。
+     */
+    @PostConstruct
+    public void initializeDirectories() throws IOException {
+        Files.createDirectories(Paths.get(appProperties.getLog().getDir()).toAbsolutePath().normalize());
+        Files.createDirectories(Paths.get(appProperties.getLog().getUploadTempDir()).toAbsolutePath().normalize());
+    }
+
+    /**
      * 保存日志文件（超过大小上限直接拒绝），返回 logId（文件名），分析时凭它再读。
      */
     public String save(MultipartFile file) throws IOException {
@@ -42,7 +52,12 @@ public class LogStorageService {
         Path dir = Paths.get(appProperties.getLog().getDir()).toAbsolutePath().normalize();
         Files.createDirectories(dir);
         String logId = UUID.randomUUID() + ".log";
-        file.transferTo(dir.resolve(logId).toFile());
+        Path target = dir.resolve(logId);
+        long startedAt = System.currentTimeMillis();
+        log.info("开始保存上传日志 fileName={} size={} target={}", file.getOriginalFilename(), file.getSize(), target);
+        file.transferTo(target.toFile());
+        log.info("上传日志保存完成 logId={} size={} elapsedMs={}", logId, file.getSize(),
+                System.currentTimeMillis() - startedAt);
         return logId;
     }
 

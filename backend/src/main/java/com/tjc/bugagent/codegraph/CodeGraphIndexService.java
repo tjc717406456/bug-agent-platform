@@ -31,8 +31,15 @@ public class CodeGraphIndexService {
     /**
      * 异步索引指定版本源码。
      */
-    @Async
+    @Async("sourceImportExecutor")
     public void indexAsync(Long projectId, Long versionId, Path sourceRoot) {
+        index(projectId, versionId, sourceRoot);
+    }
+
+    /**
+     * 同步执行一次索引并返回结果，供已经处于后台线程的源码导入任务串联后续清理。
+     */
+    public boolean index(Long projectId, Long versionId, Path sourceRoot) {
         try {
             indexStatusRepository.markIndexing(versionId);
             codeGraphRepository.clearVersion(projectId, versionId);
@@ -43,8 +50,10 @@ public class CodeGraphIndexService {
             updateMessage(versionId, "linking mapper sql");
             linkMapperMethods(projectId, versionId);
             indexStatusRepository.markSuccess(versionId);
+            return true;
         } catch (Exception exception) {
             indexStatusRepository.markFailed(versionId, CodeGraphText.trim(exception.getMessage(), 3000));
+            return false;
         }
     }
 

@@ -495,7 +495,8 @@ public class AppProperties {
      */
     public static class Log {
         private String dir = "./workspace/logs";
-        private long maxBytes = 10 * 1024 * 1024;
+        private String uploadTempDir = "./workspace/upload-tmp";
+        private long maxBytes = 50 * 1024 * 1024;
         private int retentionDays = 1;
 
         public String getDir() {
@@ -504,6 +505,14 @@ public class AppProperties {
 
         public void setDir(String dir) {
             this.dir = dir;
+        }
+
+        public String getUploadTempDir() {
+            return uploadTempDir;
+        }
+
+        public void setUploadTempDir(String uploadTempDir) {
+            this.uploadTempDir = uploadTempDir;
         }
 
         public long getMaxBytes() {

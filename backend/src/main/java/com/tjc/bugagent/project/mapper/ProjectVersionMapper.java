@@ -45,4 +45,7 @@ public interface ProjectVersionMapper {
 
     /** 刷新当前进度消息 */
     void updateMessage(@Param("id") Long id, @Param("message") String message);
+
+    /** ZIP 解压完成后更新实际源码根目录。 */
+    void updateSourcePath(@Param("id") Long id, @Param("sourcePath") String sourcePath);
 }

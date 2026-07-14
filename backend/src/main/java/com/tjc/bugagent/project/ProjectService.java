@@ -1,5 +1,6 @@
 package com.tjc.bugagent.project;
 
+import com.tjc.bugagent.config.AppProperties;
 import com.tjc.bugagent.project.mapper.ProjectDatasourceMapper;
 import com.tjc.bugagent.project.mapper.ProjectMapper;
 import com.tjc.bugagent.project.mapper.ProjectMemberMapper;
@@ -8,6 +9,8 @@ import org.apache.commons.io.FileUtils;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.io.File;
 import java.util.List;
@@ -22,15 +25,17 @@ public class ProjectService {
     private final ProjectMapper projectMapper;
     private final ProjectMemberMapper projectMemberMapper;
     private final ProjectVersionMapper projectVersionMapper;
+    private final AppProperties appProperties;
 
     public ProjectService(JdbcTemplate jdbcTemplate, ProjectDatasourceMapper projectDatasourceMapper,
                           ProjectMapper projectMapper, ProjectMemberMapper projectMemberMapper,
-                          ProjectVersionMapper projectVersionMapper) {
+                          ProjectVersionMapper projectVersionMapper, AppProperties appProperties) {
         this.jdbcTemplate = jdbcTemplate;
         this.projectDatasourceMapper = projectDatasourceMapper;
         this.projectMapper = projectMapper;
         this.projectMemberMapper = projectMemberMapper;
         this.projectVersionMapper = projectVersionMapper;
+        this.appProperties = appProperties;
     }
 
     /**
@@ -83,6 +88,29 @@ public class ProjectService {
         projectMemberMapper.deleteByProject(projectId);
         projectVersionMapper.deleteByProject(projectId);
         projectMapper.deleteById(projectId);
+        deleteProjectFilesAfterCommit(projectId);
+    }
+
+    /**
+     * 数据库删除提交成功后再清理项目源码和截图，避免事务回滚时文件已经没了。
+     */
+    private void deleteProjectFilesAfterCommit(Long projectId) {
+        Runnable cleanup = () -> {
+            File workspace = new File(appProperties.getWorkspaceRoot()).getAbsoluteFile();
+            FileUtils.deleteQuietly(new File(workspace, "project-" + projectId));
+            FileUtils.deleteQuietly(new File(workspace,
+                    "screenshots" + File.separator + "project-" + projectId));
+        };
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            cleanup.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                cleanup.run();
+            }
+        });
     }
 
     public List<Long> listMembers(Long projectId) {

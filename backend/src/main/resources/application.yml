@@ -14,6 +14,7 @@ spring:
     port: 6379
   servlet:
     multipart:
+      location: ${user.dir}/workspace/upload-tmp
       max-file-size: 200MB
       max-request-size: 220MB
   sql:
@@ -84,5 +85,6 @@ app:
     cases-path: ./workspace/eval-cases.json
   log:
     dir: ./workspace/logs
+    upload-temp-dir: ./workspace/upload-tmp
     max-bytes: 52428800
     retention-days: 1

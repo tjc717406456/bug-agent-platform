@@ -17,6 +17,8 @@ export const datasources = ref([])
 export const selectedProjectId = ref(null)
 export const datasourceProjectId = ref(null)
 export const zipFile = ref(null)
+export const zipImporting = ref(false)
+export const zipImportProgress = ref('')
 export const apiRoutes = ref([])
 export const routesLoading = ref(false)
 export const selectedApiPrefix = ref('')
@@ -255,12 +257,22 @@ export async function importGitAction() {
 }
 
 export function beforeZipUpload(file) {
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    message.warning('请选择 ZIP 文件')
+    return false
+  }
+  if (file.size > 200 * 1024 * 1024) {
+    message.warning('ZIP 文件不能超过 200MB')
+    return false
+  }
   zipFile.value = file
+  zipImportProgress.value = ''
   return false
 }
 
 export function removeZip() {
   zipFile.value = null
+  zipImportProgress.value = ''
 }
 
 export async function deleteVersionAction(row) {
@@ -275,9 +287,50 @@ export async function importZipAction() {
     message.warning('请选择 ZIP 文件')
     return
   }
-  await importZip(currentProject.value.id, zipFile.value)
-  message.success('ZIP 导入任务已提交')
-  await loadProjectRelated()
+  const projectId = currentProject.value.id
+  zipImporting.value = true
+  zipImportProgress.value = '准备上传…'
+  try {
+    const versionId = await importZip(projectId, zipFile.value, (loaded, total, elapsedMs) => {
+      const percent = Math.min(100, Math.round(loaded * 100 / total))
+      const elapsedSeconds = Math.max(elapsedMs / 1000, 0.1)
+      const speed = loaded / 1024 / 1024 / elapsedSeconds
+      zipImportProgress.value = percent >= 100
+        ? '上传完成，服务器正在保存 ZIP…'
+        : '上传 ' + percent + '% · ' + speed.toFixed(1) + ' MB/s · ' + elapsedSeconds.toFixed(1) + 's'
+    })
+    zipImportProgress.value = '上传完成，后端正在解压源码…'
+    message.success('ZIP 上传完成，正在后台解压并建立索引')
+    await waitZipImport(projectId, versionId)
+  } catch (error) {
+    message.error(error.message || 'ZIP 导入失败')
+  } finally {
+    zipImporting.value = false
+  }
+}
+
+async function waitZipImport(projectId, versionId) {
+  while (currentProject.value?.id === projectId) {
+    const latestVersions = await listVersions(projectId)
+    versions.value = latestVersions
+    const version = latestVersions.find(item => item.id === Number(versionId))
+    if (!version) {
+      throw new Error('ZIP 导入版本不存在')
+    }
+    zipImportProgress.value = version.indexMessage || '后台正在处理源码…'
+    if (version.indexStatus === 'SUCCESS') {
+      zipImportProgress.value = '源码索引完成'
+      zipFile.value = null
+      message.success('源码索引完成')
+      await loadProjectRelated()
+      return
+    }
+    if (version.indexStatus === 'FAILED') {
+      throw new Error(version.indexMessage || '源码索引失败')
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000))
+  }
+  zipImportProgress.value = '导入任务仍在后台执行，可切回项目查看状态'
 }
 
 export async function saveDatasourceAction() {
@@ -300,6 +353,8 @@ export function resetProjectState() {
   datasourceProjectId.value = null
   selectedApiPrefix.value = ''
   zipFile.value = null
+  zipImporting.value = false
+  zipImportProgress.value = ''
   projectDialogVisible.value = false
   projectMemberIds.value = []
 }

@@ -24,6 +24,7 @@ function endStreamingView(closeDialog) {
 export const logFileList = ref([])
 // 日志上传中标记：上传未拿到 logId 前禁掉分析按钮，避免漏带日志就开跑
 export const logUploading = ref(false)
+export const logUploadProgress = ref('')
 // 本地日志按时间切割弹窗的开关（纯前端处理，原始文件不上传）
 export const logSplitVisible = ref(false)
 export function openLogSplit() {
@@ -87,13 +88,22 @@ export async function beforeLogUpload(file) {
   }
   logFileList.value = [file]
   logUploading.value = true
+  logUploadProgress.value = '准备上传…'
   try {
-    analysisForm.logId = await uploadLog(file)
+    analysisForm.logId = await uploadLog(file, (loaded, total, elapsedMs) => {
+      const percent = Math.min(100, Math.round(loaded * 100 / total))
+      const elapsedSeconds = Math.max(elapsedMs / 1000, 0.1)
+      const speed = loaded / 1024 / 1024 / elapsedSeconds
+      logUploadProgress.value = '已上传 ' + percent + '% · ' + speed.toFixed(1)
+        + ' MB/s · ' + elapsedSeconds.toFixed(1) + 's'
+    })
+    logUploadProgress.value = '上传完成'
     message.success('日志已上传，分析时自动读取')
   } catch (error) {
     message.error(error.message || '日志上传失败')
     logFileList.value = []
     analysisForm.logId = ''
+    logUploadProgress.value = ''
   } finally {
     logUploading.value = false
   }
@@ -103,6 +113,7 @@ export async function beforeLogUpload(file) {
 export function removeLog() {
   logFileList.value = []
   analysisForm.logId = ''
+  logUploadProgress.value = ''
 }
 
 // 解析扩展复制出来的结构文本（接口/请求参数/请求体/响应），拆不出接口就返回 null
@@ -474,6 +485,7 @@ export function abortAndResetAnalysis() {
   analysisDialogVisible.value = false
   screenshotFiles.value = []
   logFileList.value = []
+  logUploadProgress.value = ''
   analysisForm.logId = ''
   followUpChat.value = []
   followUpStreamText.value = ''
