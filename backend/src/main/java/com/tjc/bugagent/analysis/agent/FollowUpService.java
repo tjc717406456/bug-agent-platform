@@ -46,10 +46,8 @@ public class FollowUpService {
 
     private final AnalysisRecordService analysisRecordService;
     private final ProjectService projectService;
-    private final AgentToolExecutor agentToolExecutor;
-    private final ToolFanoutExecutor toolFanoutExecutor;
     private final AgentConversation conversation;
-    private final AgentToolCallParser toolCallParser;
+    private final AgentRunner agentRunner;
     private final AiClient aiClient;
     private final AppProperties appProperties;
     private final StringRedisTemplate redisTemplate;
@@ -57,20 +55,16 @@ public class FollowUpService {
 
     public FollowUpService(AnalysisRecordService analysisRecordService,
                            ProjectService projectService,
-                           AgentToolExecutor agentToolExecutor,
-                           ToolFanoutExecutor toolFanoutExecutor,
                            AgentConversation conversation,
-                           AgentToolCallParser toolCallParser,
+                           AgentRunner agentRunner,
                            AiClient aiClient,
                            AppProperties appProperties,
                            StringRedisTemplate redisTemplate,
                            ObjectMapper objectMapper) {
         this.analysisRecordService = analysisRecordService;
         this.projectService = projectService;
-        this.agentToolExecutor = agentToolExecutor;
-        this.toolFanoutExecutor = toolFanoutExecutor;
         this.conversation = conversation;
-        this.toolCallParser = toolCallParser;
+        this.agentRunner = agentRunner;
         this.aiClient = aiClient;
         this.appProperties = appProperties;
         this.redisTemplate = redisTemplate;
@@ -96,64 +90,59 @@ public class FollowUpService {
         }
         ProjectDatasource datasource = projectService.firstEnabledDatasource(record.getProjectId());
         AgentToolExecutor.AgentToolContext toolContext = new AgentToolExecutor.AgentToolContext(
-                record.getProjectId(), version.getId(), record.getApiPath(), datasource);
+                progress.executionScope(record.getProjectId(), version.getId(), datasource),
+                record.getApiPath(), null, null);
 
         List<Map<String, Object>> messages = buildMessages(record, question);
         progress.onStep("追问已收到，基于已有证据作答");
         log.info("追问开始 recordId={} apiPath={} question={}", recordId, record.getApiPath(), trim(question, 100));
 
-        AtomicInteger tokens = new AtomicInteger();
-        String answer = null;
-        int iterationsRun = 0;
-        for (int iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
-            iterationsRun = iteration;
-            if (progress.isCancelled()) {
-                throw new AnalysisCancelledException();
-            }
-            conversation.decayOldToolMessages(messages, appProperties.getAgent().getKeepRecentRounds());
-            AiToolCallResult aiResult = aiClient.chatWithMessagesUtility(messages, agentToolExecutor.toolSchemas());
-            tokens.addAndGet(aiResult.getTotalTokens());
-            if (!isBlank(aiResult.getContent())) {
-                log.info("追问第{}轮 · 思考: {}", iteration, trim(safe(aiResult.getContent()), 200));
-            }
-            if (aiResult.isFailed()) {
-                answer = "⚠️ AI 服务暂不可用，追问在第 " + iteration + " 轮中断，请稍后重试。";
-                break;
-            }
-            List<AgentToolCall> calls = toolCallParser.parseToolCalls(aiResult);
-            AgentToolCall finish = toolCallParser.findFinish(calls);
-            if (finish != null) {
-                // 模型直接用纯文字作答（没走工具协议）：正文就是答案，不折腾第二发
-                if (finish.isDegraded() && !isBlank(aiResult.getContent())) {
-                    answer = aiResult.getContent();
-                    progress.onPartialReport(answer);
-                    break;
+        AgentRunSpec spec = new AgentRunSpec();
+        spec.setMessages(messages);
+        spec.setToolContext(toolContext);
+        spec.setMaxIterations(MAX_ITERATIONS);
+        spec.setKeepRecentRounds(appProperties.getAgent().getKeepRecentRounds());
+        spec.setVerificationEnabled(true);
+        spec.setModelRole(AgentRunSpec.ModelRole.UTILITY);
+        spec.setProgress(progress);
+        spec.setModelFailureMessage("⚠️ AI 服务暂不可用，追问中断，请稍后重试。");
+        spec.setPolicy(new AgentRunPolicy() {
+            public void afterModelResponse(AgentRunContext context, AiToolCallResult response) {
+                if (!isBlank(response.getContent())) {
+                    log.info("追问第{}轮 · 思考: {}", context.getIteration(), trim(safe(response.getContent()), 200));
                 }
-                // finish 参数里带了成段回答就直接用；只是收口信号则流式生成完整回答
-                String argReport = finish.stringArg("report");
-                if (!isBlank(argReport) && argReport.trim().length() >= 300) {
-                    answer = argReport;
-                    progress.onPartialReport(answer);
-                    break;
+            }
+
+            public AgentRunDirective onFinish(AgentRunContext context, AiToolCallResult response, AgentToolCall finish) {
+                if (finish.isDegraded() && !isBlank(response.getContent())) {
+                    progress.onPartialReport(response.getContent());
+                    return AgentRunDirective.stop(response.getContent(), AgentStopReason.FINISH_TOOL);
                 }
-                conversation.appendAssistantMessage(messages, aiResult);
-                conversation.appendFinishAck(messages, aiResult, finish);
-                answer = streamAnswer(messages, progress, tokens);
-                break;
+                String report = finish.stringArg("report");
+                if (!isBlank(report) && report.trim().length() >= 300) {
+                    progress.onPartialReport(report);
+                    return AgentRunDirective.stop(report, AgentStopReason.FINISH_TOOL);
+                }
+                conversation.appendAssistantMessage(context.getMessages(), response);
+                conversation.appendFinishAck(context.getMessages(), response, finish);
+                return AgentRunDirective.stop(streamAnswer(context.getMessages(), progress, context), AgentStopReason.FINISH_TOOL);
             }
-            // 补查证据：一轮内多工具并行，回填后继续
-            List<AgentToolResult> results = toolFanoutExecutor.executeAll(calls, toolContext);
-            conversation.appendAssistantMessage(messages, aiResult);
-            conversation.appendToolMessages(messages, aiResult, calls, results);
-            for (int i = 0; i < calls.size(); i++) {
-                progress.onStep("追问查证 第" + iteration + "轮 · " + safe(calls.get(i).getAction())
-                        + " · " + trim(safe(results.get(i).getSummary()), 40));
+
+            public AgentRunDirective afterTools(AgentRunContext context, AiToolCallResult response,
+                                                List<AgentToolCall> calls, List<AgentToolResult> results) {
+                for (int index = 0; index < calls.size(); index++) {
+                    progress.onStep("追问查证 第" + context.getIteration() + "轮 · " + safe(calls.get(index).getAction())
+                            + " · " + trim(safe(results.get(index).getSummary()), 40));
+                }
+                return AgentRunDirective.continueRun();
             }
-        }
-        if (isBlank(answer)) {
-            // 到顶没收口：直接流式逼答
-            answer = streamAnswer(messages, progress, tokens);
-        }
+
+            public String finalizeRun(AgentRunContext context) {
+                return streamAnswer(context.getMessages(), progress, context);
+            }
+        });
+        AgentRunResult runResult = agentRunner.run(spec);
+        String answer = runResult.getFinalContent();
         if (isBlank(answer)) {
             answer = "本次追问未能生成回答，请换个问法重试。";
         }
@@ -163,10 +152,11 @@ public class FollowUpService {
         AnalysisResult result = new AnalysisResult();
         result.setId(recordId);
         result.setConclusion(answer);
-        result.setRounds(iterationsRun);
-        result.setTotalTokens(tokens.get());
+        result.setRounds(runResult.getIterations());
+        result.setTotalTokens(runResult.getTotalTokens());
         result.setElapsedMs(System.currentTimeMillis() - startMs);
-        log.info("追问完成 recordId={} 轮数={} token={} 耗时={}ms", recordId, iterationsRun, tokens.get(), result.getElapsedMs());
+        log.info("追问完成 recordId={} 轮数={} token={} 停止原因={} 耗时={}ms", recordId, runResult.getIterations(),
+                runResult.getTotalTokens(), runResult.getStopReason(), result.getElapsedMs());
         return result;
     }
 
@@ -219,6 +209,13 @@ public class FollowUpService {
         }
         progress.onPartialReport(prose.getContent());
         return prose.getContent();
+    }
+
+    private String streamAnswer(List<Map<String, Object>> messages, AnalysisProgressListener progress, AgentRunContext context) {
+        AtomicInteger tokens = new AtomicInteger();
+        String answer = streamAnswer(messages, progress, tokens);
+        context.addTokens(tokens.get());
+        return answer;
     }
 
     /** 读取最近的问答对；Redis 不可用退化为无历史（单轮照答）。 */

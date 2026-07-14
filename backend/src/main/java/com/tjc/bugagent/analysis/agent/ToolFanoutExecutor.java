@@ -21,11 +21,13 @@ import java.util.concurrent.TimeoutException;
 public class ToolFanoutExecutor {
 
     private final AgentToolExecutor agentToolExecutor;
+    private final AgentToolRegistry toolRegistry;
     private final AppProperties appProperties;
     private final ExecutorService toolFanoutPool;
 
-    public ToolFanoutExecutor(AgentToolExecutor agentToolExecutor, AppProperties appProperties) {
+    public ToolFanoutExecutor(AgentToolExecutor agentToolExecutor, AgentToolRegistry toolRegistry, AppProperties appProperties) {
         this.agentToolExecutor = agentToolExecutor;
+        this.toolRegistry = toolRegistry;
         this.appProperties = appProperties;
         int poolSize = Math.max(1, appProperties.getAgent().getToolFanoutPoolSize());
         this.toolFanoutPool = Executors.newFixedThreadPool(poolSize, runnable -> {
@@ -47,7 +49,11 @@ public class ToolFanoutExecutor {
         int timeoutSeconds = Math.max(1, appProperties.getAgent().getToolTimeoutSeconds());
         List<CompletableFuture<AgentToolResult>> futures = new ArrayList<CompletableFuture<AgentToolResult>>();
         for (AgentToolCall call : calls) {
-            futures.add(CompletableFuture.supplyAsync(() -> safeExecute(call, context), toolFanoutPool));
+            if (toolRegistry.isConcurrencySafe(call.getAction())) {
+                futures.add(CompletableFuture.supplyAsync(() -> safeExecute(call, context), toolFanoutPool));
+            } else {
+                futures.add(CompletableFuture.completedFuture(safeExecute(call, context)));
+            }
         }
         List<AgentToolResult> results = new ArrayList<AgentToolResult>(calls.size());
         for (int index = 0; index < futures.size(); index++) {

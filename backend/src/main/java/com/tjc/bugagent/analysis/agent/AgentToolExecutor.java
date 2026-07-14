@@ -19,6 +19,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -46,15 +49,16 @@ public class AgentToolExecutor {
     private final DbhubClient dbhubClient;
     private final ProjectService projectService;
     private final SourceReader sourceReader;
-    private final AgentToolSchemas agentToolSchemas;
+    private final AgentToolRegistry toolRegistry;
 
     public AgentToolExecutor(CodeGraphQueryService codeGraphQueryService, DbhubClient dbhubClient,
-                             ProjectService projectService, SourceReader sourceReader, AgentToolSchemas agentToolSchemas) {
+                             ProjectService projectService, SourceReader sourceReader, AgentToolRegistry toolRegistry) {
         this.codeGraphQueryService = codeGraphQueryService;
         this.dbhubClient = dbhubClient;
         this.projectService = projectService;
         this.sourceReader = sourceReader;
-        this.agentToolSchemas = agentToolSchemas;
+        this.toolRegistry = toolRegistry;
+        registerTools();
     }
 
     /**
@@ -63,6 +67,9 @@ public class AgentToolExecutor {
      * 并行假设链重复查同一段代码/同一条链路时直接复用，省重复查询和重复 token。
      */
     public AgentToolResult execute(AgentToolCall call, AgentToolContext context) {
+        if (toolRegistry != null) {
+            return toolRegistry.execute(call, context);
+        }
         String action = call.getAction();
         if (isBlank(action)) {
             return AgentToolResult.fail("unknown", "缺少 action");
@@ -124,14 +131,65 @@ public class AgentToolExecutor {
      * 返回 OpenAI tools 字段使用的函数定义（全量）。
      */
     public List<Map<String, Object>> toolSchemas() {
-        return agentToolSchemas.toolSchemas();
+        return toolRegistry == null ? Collections.<Map<String, Object>>emptyList() : toolRegistry.definitions(true);
     }
 
     /**
      * 分阶段工具集，定义见 {@link AgentToolSchemas}。
      */
     public List<Map<String, Object>> toolSchemas(boolean allowQueryDatabase) {
-        return agentToolSchemas.toolSchemas(allowQueryDatabase);
+        return toolRegistry == null ? Collections.<Map<String, Object>>emptyList() : toolRegistry.definitions(allowQueryDatabase);
+    }
+
+    /** 注册所有内置取证工具，Schema 与执行入口保持同一真相源。 */
+    private void registerTools() {
+        if (toolRegistry == null) {
+            return;
+        }
+        register("search_code", "按方法名/类名搜已索引的 Java 方法和 Mapper；搜不到字面量时改用 grep_source",
+                AgentToolPhase.DISCOVERY, true, true, true, this::searchCode, "keyword");
+        register("get_code_detail", "读关键源码片段，按 nodeId 或 className/methodName 查",
+                AgentToolPhase.DISCOVERY, true, true, true, this::getCodeDetail);
+        register("trace_call_chain", "按接口路径重追调用链、SQL 和表",
+                AgentToolPhase.DISCOVERY, true, true, true, this::traceCallChain);
+        register("search_sql", "按关键词搜 SQL/Mapper 节点",
+                AgentToolPhase.DISCOVERY, true, true, true, this::searchSql, "keyword");
+        register("grep_source", "源码全文 grep 字面量、枚举、常量、注解和配置",
+                AgentToolPhase.DISCOVERY, true, true, true, this::grepSource, "keyword");
+        register("find_callers", "反向查某节点的上游调用者",
+                AgentToolPhase.DISCOVERY, true, true, true, this::findCallers, "nodeId");
+        register("search_log", "检索本次日志原文；传 L<行号> 可查看附近上下文",
+                AgentToolPhase.DISCOVERY, true, true, true, this::searchLog, "keyword");
+        register("describe_tables", "查表结构、数据量和最近样例",
+                AgentToolPhase.DISCOVERY, true, true, true, this::describeTables, "tables");
+        register("query_database", "执行只读 SQL 核对数据",
+                AgentToolPhase.VERIFICATION, true, true, true, this::queryDatabase, "sql");
+        register("finish", "证据足够后宣布收口，report 可留空或只写结论概要",
+                AgentToolPhase.TERMINAL, false, false, false,
+                (call, context) -> AgentToolResult.ok("finish", "Agent 已输出最终报告", call.stringArg("report")));
+    }
+
+    private void register(String name, String description, AgentToolPhase phase, boolean concurrencySafe,
+                          boolean cacheable, boolean contributesEvidence,
+                          java.util.function.BiFunction<AgentToolCall, AgentToolContext, AgentToolResult> executor,
+                          String... required) {
+        Map<String, Object> properties = new LinkedHashMap<String, Object>();
+        List<String> parameterNames = new ArrayList<String>(Arrays.asList(required));
+        if ("get_code_detail".equals(name)) {
+            parameterNames.addAll(Arrays.asList("nodeId", "className", "methodName"));
+        } else if ("trace_call_chain".equals(name)) {
+            parameterNames.add("apiPath");
+        } else if ("finish".equals(name)) {
+            parameterNames.add("report");
+        }
+        for (String parameter : parameterNames) {
+            Map<String, Object> property = new LinkedHashMap<String, Object>();
+            property.put("type", "nodeId".equals(parameter) ? "integer" : "string");
+            property.put("description", parameter);
+            properties.put(parameter, property);
+        }
+        toolRegistry.register(new RegisteredAgentTool(name, description, properties, Arrays.asList(required),
+                phase, concurrencySafe, cacheable, contributesEvidence, executor));
     }
 
     private AgentToolResult searchCode(AgentToolCall call, AgentToolContext context) {
@@ -424,6 +482,9 @@ public class AgentToolExecutor {
         if (tables.isEmpty()) {
             return AgentToolResult.fail("describe_tables", "缺少 tables");
         }
+        if (context.getScope() != null && !context.getScope().allowsTables(tables)) {
+            return AgentToolResult.fail("describe_tables", "请求包含项目白名单之外的表");
+        }
         String evidence = dbhubClient.describeTables(context.getDatasource().getDbhubKey(), tables);
         return AgentToolResult.ok("describe_tables", "已查询表结构: " + tables, evidence);
     }
@@ -435,6 +496,9 @@ public class AgentToolExecutor {
         String sql = call.stringArg("sql");
         if (!ReadonlySqlGuard.isReadonly(sql)) {
             return AgentToolResult.fail("query_database", "只允许只读 SQL，请改用 SELECT/SHOW/DESC 重写: " + sql);
+        }
+        if (context.getScope() != null && !context.getScope().allowsSql(sql)) {
+            return AgentToolResult.fail("query_database", "SQL 包含项目白名单之外的表，或无法确认表范围");
         }
         // SQL 原文落 info 便于追溯执行了啥；结果正文含业务数据，只在 debug 打
         log.info("query_database 执行 SQL: {}", sql);
@@ -548,6 +612,16 @@ public class AgentToolExecutor {
             resultCache.putIfAbsent(key, result);
         }
 
+        Map<String, AgentToolResult> cachedResultsSnapshot() {
+            return new java.util.LinkedHashMap<String, AgentToolResult>(resultCache);
+        }
+
+        void restoreCachedResults(Map<String, AgentToolResult> results) {
+            if (results != null) {
+                resultCache.putAll(results);
+            }
+        }
+
         private final Long projectId;
         private final Long versionId;
         private final String apiPath;
@@ -556,6 +630,7 @@ public class AgentToolExecutor {
         private final String logText;
         // 上传日志文件路径；search_log 按需流式 grep，避免把大文件全文攥在内存里
         private final String logPath;
+        private final ProjectExecutionScope scope;
 
         public AgentToolContext(Long projectId, Long versionId, String apiPath, ProjectDatasource datasource) {
             this(projectId, versionId, apiPath, datasource, null, null);
@@ -566,10 +641,18 @@ public class AgentToolExecutor {
         }
 
         public AgentToolContext(Long projectId, Long versionId, String apiPath, ProjectDatasource datasource, String logText, String logPath) {
-            this.projectId = projectId;
-            this.versionId = versionId;
+            this(ProjectExecutionScope.create(null, null, projectId, versionId, datasource), apiPath, logText, logPath);
+        }
+
+        public AgentToolContext(ProjectExecutionScope scope, String apiPath, String logText, String logPath) {
+            if (scope == null || scope.getProjectId() == null || scope.getVersionId() == null) {
+                throw new IllegalArgumentException("Agent 工具执行范围缺少项目或版本");
+            }
+            this.scope = scope;
+            this.projectId = scope.getProjectId();
+            this.versionId = scope.getVersionId();
             this.apiPath = apiPath;
-            this.datasource = datasource;
+            this.datasource = scope.getDatasource();
             this.logText = logText;
             this.logPath = logPath;
         }
@@ -597,7 +680,9 @@ public class AgentToolExecutor {
         public String getLogPath() {
             return logPath;
         }
+
+        public ProjectExecutionScope getScope() {
+            return scope;
+        }
     }
 }
-
-

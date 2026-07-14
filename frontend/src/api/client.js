@@ -160,6 +160,10 @@ export function stopAgentAnalysisTask(taskId) {
   return request(`/analysis/agent/tasks/${encodeURIComponent(taskId)}/stop`, { method: 'POST' })
 }
 
+export function resumeAgentAnalysisTask(taskId) {
+  return request(`/analysis/agent/tasks/${encodeURIComponent(taskId)}/resume`, { method: 'POST' })
+}
+
 export function submitApiExplainTask(payload) {
   return request('/analysis/explain/tasks', { method: 'POST', body: JSON.stringify(payload) })
 }

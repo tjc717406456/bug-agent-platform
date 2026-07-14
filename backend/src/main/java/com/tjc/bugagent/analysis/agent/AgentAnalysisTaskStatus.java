@@ -21,6 +21,12 @@ public class AgentAnalysisTaskStatus {
     private String partialReport;
     // 提交任务的用户；轮询/停止时据此判权，顺带记录"这次分析是谁跑的"
     private Long ownerId;
+    // 最近一次状态/检查点更新时间；用于识别进程重启后遗留的幽灵 RUNNING 任务
+    private long heartbeatAt;
+    // 最近完整轮次检查点，供运行态诊断和后续断点恢复使用
+    private AgentRunCheckpoint checkpoint;
+    // Runner 的结构化停止原因
+    private String stopReason;
 
     public Long getOwnerId() {
         return ownerId;
@@ -29,6 +35,13 @@ public class AgentAnalysisTaskStatus {
     public void setOwnerId(Long ownerId) {
         this.ownerId = ownerId;
     }
+
+    public long getHeartbeatAt() { return heartbeatAt; }
+    public void setHeartbeatAt(long heartbeatAt) { this.heartbeatAt = heartbeatAt; }
+    public AgentRunCheckpoint getCheckpoint() { return checkpoint; }
+    public void setCheckpoint(AgentRunCheckpoint checkpoint) { this.checkpoint = checkpoint; }
+    public String getStopReason() { return stopReason; }
+    public void setStopReason(String stopReason) { this.stopReason = stopReason; }
 
     public List<String> getProgress() {
         return progress;
@@ -41,7 +54,7 @@ public class AgentAnalysisTaskStatus {
     /**
      * 追加一条进度，超出上限丢掉最早的。
      */
-    public void addProgress(String step) {
+    public synchronized void addProgress(String step) {
         progress.add(step);
         while (progress.size() > MAX_PROGRESS) {
             progress.remove(0);

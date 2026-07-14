@@ -111,8 +111,10 @@
                   <a-switch v-model:checked="analysisForm.deepMode" size="small" />深度分析
                 </span>
               </a-tooltip>
-              <a-button type="primary" style="background:#52c41a;border-color:#52c41a" :disabled="logUploading" :loading="logUploading" @click="agentAnalyzeAction"><template #icon><BarChartOutlined /></template>{{ logUploading ? '日志上传中' : 'Agent分析' }}</a-button>
-              <a-button class="left-gap" style="background:#fa8c16;border-color:#fa8c16;color:#fff" @click="apiAnalyzeAction"><template #icon><BarChartOutlined /></template>接口分析</a-button>
+              <a-button type="primary" style="background:#52c41a;border-color:#52c41a" :disabled="logUploading" :loading="logUploading" @click="agentAnalyzeAction"><template #icon><BarChartOutlined /></template>{{ logUploading ? '日志上传中' : 'Bug分析' }}</a-button>
+              <a-tooltip title="只需要选择对应接口地址即可">
+                <a-button class="left-gap" style="background:#fa8c16;border-color:#fa8c16;color:#fff" @click="apiAnalyzeAction"><template #icon><BarChartOutlined /></template>接口讲解</a-button>
+              </a-tooltip>
             </div>
           </a-col>
         </a-row>

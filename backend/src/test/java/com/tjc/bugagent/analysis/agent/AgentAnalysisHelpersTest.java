@@ -2,6 +2,11 @@ package com.tjc.bugagent.analysis.agent;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -97,5 +102,44 @@ class AgentAnalysisHelpersTest {
         assertTrue(plain.contains("user_name"), plain);
         assertFalse(plain.contains("##"), plain);
         assertFalse(plain.contains("通俗结论"), plain);
+    }
+
+    @Test
+    void finalReportWrapsSingleParagraphIntoRequiredStructure() {
+        AgentRoundReporter reporter = new AgentRoundReporter();
+        List<Map<String, Object>> rounds = new ArrayList<Map<String, Object>>();
+        Map<String, Object> round = new LinkedHashMap<String, Object>();
+        round.put("iteration", 25);
+        round.put("action", "search_log");
+        round.put("toolSummary", "设备未返回ACK");
+        round.put("toolEvidence", "09:34:34 sendWithAck等待30秒后返回false");
+        rounds.add(round);
+
+        String report = reporter.ensureAnalysisReportFormat("亮灯命令已发出，但设备没有返回ACK。", rounds);
+
+        assertTrue(reporter.isCompleteAnalysisReport(report), report);
+        assertTrue(report.contains("【通俗结论】"), report);
+        assertTrue(report.contains("【问题结论】"), report);
+        assertTrue(report.contains("【证据链路】"), report);
+        assertTrue(report.contains("【关键代码/SQL/数据证据】"), report);
+        assertTrue(report.contains("09:34:34"), report);
+        assertTrue(report.contains("【根因类型】"), report);
+        assertTrue(report.contains("【建议处理人】"), report);
+        assertTrue(report.contains("【置信度】"), report);
+    }
+
+    @Test
+    void finalReportKeepsAlreadyCompleteReportUnchanged() {
+        AgentRoundReporter reporter = new AgentRoundReporter();
+        String report = "【通俗结论】设备无响应\n"
+                + "【问题结论】ACK超时\n"
+                + "【证据链路】发送后等待30秒\n"
+                + "【关键代码/SQL/数据证据】sendWithAck=false\n"
+                + "【根因类型】设备通信异常\n"
+                + "【建议处理人】设备开发\n"
+                + "【置信度】HIGH";
+
+        assertEquals(report, reporter.ensureAnalysisReportFormat(report,
+                new ArrayList<Map<String, Object>>()));
     }
 }

@@ -52,6 +52,8 @@ app:
     min-idle: 0
     connection-timeout-ms: 10000
   agent:
+    # RUNNING 任务超过此时间没有检查点/进度心跳，轮询时标记为 INTERRUPTED
+    task-stale-seconds: 600
     max-iterations: 32
     initial-evidence-limit: 24000
     sql-text-limit: 2000

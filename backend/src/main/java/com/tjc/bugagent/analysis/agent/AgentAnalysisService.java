@@ -21,6 +21,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -50,7 +51,6 @@ public class AgentAnalysisService {
     private final PlainAnswerResolver plainAnswerResolver;
     private final AgentToolCallParser toolCallParser;
     private final InitialEvidenceBuilder initialEvidenceBuilder;
-    private final ToolFanoutExecutor toolFanoutExecutor;
     private final AnalysisRecordRepository recordRepository;
     private final AgentConversation conversation;
     private final AgentRoundReporter reporter;
@@ -58,6 +58,7 @@ public class AgentAnalysisService {
     private final SimilarCaseRetriever similarCaseRetriever;
     private final HypothesisScout hypothesisScout;
     private final HypothesisFanoutExecutor hypothesisFanoutExecutor;
+    private final AgentRunner agentRunner;
 
     public AgentAnalysisService(ProjectService projectService,
                                 CodeGraphQueryService codeGraphQueryService,
@@ -71,14 +72,14 @@ public class AgentAnalysisService {
                                 PlainAnswerResolver plainAnswerResolver,
                                 AgentToolCallParser toolCallParser,
                                 InitialEvidenceBuilder initialEvidenceBuilder,
-                                ToolFanoutExecutor toolFanoutExecutor,
                                 AnalysisRecordRepository recordRepository,
                                 AgentConversation conversation,
                                 AgentRoundReporter reporter,
                                 AgentConvergenceJudge judge,
                                 SimilarCaseRetriever similarCaseRetriever,
                                 HypothesisScout hypothesisScout,
-                                HypothesisFanoutExecutor hypothesisFanoutExecutor) {
+                                HypothesisFanoutExecutor hypothesisFanoutExecutor,
+                                AgentRunner agentRunner) {
         this.projectService = projectService;
         this.codeGraphQueryService = codeGraphQueryService;
         this.agentToolExecutor = agentToolExecutor;
@@ -91,7 +92,6 @@ public class AgentAnalysisService {
         this.plainAnswerResolver = plainAnswerResolver;
         this.toolCallParser = toolCallParser;
         this.initialEvidenceBuilder = initialEvidenceBuilder;
-        this.toolFanoutExecutor = toolFanoutExecutor;
         this.recordRepository = recordRepository;
         this.conversation = conversation;
         this.reporter = reporter;
@@ -99,6 +99,7 @@ public class AgentAnalysisService {
         this.similarCaseRetriever = similarCaseRetriever;
         this.hypothesisScout = hypothesisScout;
         this.hypothesisFanoutExecutor = hypothesisFanoutExecutor;
+        this.agentRunner = agentRunner;
     }
 
     /**
@@ -121,7 +122,8 @@ public class AgentAnalysisService {
         // 上传的大日志只把路径交给 toolContext，search_log 按需流式 grep，避免全文常驻内存
         String logPath = resolveLogPath(request);
         AgentToolExecutor.AgentToolContext toolContext = new AgentToolExecutor.AgentToolContext(
-                request.getProjectId(), version.getId(), request.getApiPath(), datasource, request.getLogText(), logPath);
+                progress.executionScope(request.getProjectId(), version.getId(), datasource),
+                request.getApiPath(), request.getLogText(), logPath);
 
         // 有日志就先抠出堆栈、SQL、traceId、时间，缺啥补啥，让后续流程自动用上
         LogClues logClues = enrichFromLog(request, logText);
@@ -150,7 +152,8 @@ public class AgentAnalysisService {
             throw new AnalysisCancelledException();
         }
 
-        String finalReport = winner.report;
+        String finalReport = winner.failed ? winner.report
+                : reporter.ensureAnalysisReportFormat(winner.report, winner.rounds);
         String evidence = reporter.buildEvidenceLog(initialEvidence, winner.rounds);
         // 汇总产物用预置的最佳单链置信度；合并轮次现算会把"A链读了码+B链查了库"拼成谁也没独立达到的满分
         String confidence = winner.confidence != null ? winner.confidence
@@ -415,190 +418,218 @@ public class AgentAnalysisService {
         }
 
         List<Map<String, Object>> rounds = new ArrayList<Map<String, Object>>();
-        String finalReport = null;
-        int continuousFailures = 0;
-        int noNewKeyFactRounds = 0;
-        int toolNudges = 0;
-        boolean selfChecked = false;
-        // 分阶段工具集：未读代码/未看表结构前不放 query_database；关了该配置就全程全量
-        boolean phased = appProperties.getAgent().isPhasedTools();
-        boolean verifyUnlocked = !phased;
-        // 预算可见性：过了 2/3 轮提醒一次模型抓紧收口
-        boolean budgetWarned = false;
-        int budgetWarnFrom = Math.max(1, maxIterations * 2 / 3);
-        // 核心证据齐备只软提醒一次，掐不掐由模型和空转保护说了算
-        boolean coreEvidenceHinted = false;
-        // AtomicInteger 当 token 账本传给自检/收尾等旁路调用，Java 8 没出参，别嫌它丑
-        AtomicInteger tokens = new AtomicInteger();
-        // AI 真失败(网关/未配置)的链要打标，报告是错误横幅，不能被当成正经结论参与汇总
-        boolean aiFailed = false;
-        int iterationsRun = 0;
+        AgentRunSpec spec = new AgentRunSpec();
+        spec.setMessages(messages);
+        spec.setToolContext(toolContext);
+        spec.setMaxIterations(maxIterations);
+        spec.setKeepRecentRounds(appProperties.getAgent().getKeepRecentRounds());
+        spec.setVerificationEnabled(!appProperties.getAgent().isPhasedTools());
+        spec.setModelRole(AgentRunSpec.ModelRole.PRIMARY);
+        spec.setProgress(progress);
+        spec.setModelFailureMessage("⚠️ AI 服务暂不可用（网关连接异常/重置），本次分析中断，请稍后重试。");
+        spec.setPolicy(new BugAnalysisRunPolicy(graph, toolContext, initialEvidence, rounds, progress, label, maxIterations));
+        AgentRunResult runResult = agentRunner.run(spec);
+        return new ChainResult(runResult.getFinalContent(), rounds, runResult.getTotalTokens(),
+                runResult.isFailed(), null, runResult.getIterations());
+    }
 
-        for (int iteration = 1; iteration <= maxIterations; iteration++) {
-            iterationsRun = iteration;
-            // 用户手动停止：轮间检测到即中断（本轮内的单次 LLM 请求打不断，停在轮与轮之间）
-            if (progress.isCancelled()) {
-                throw new AnalysisCancelledException();
-            }
-            String forceFinishReason = judge.resolveForceFinishReason(noNewKeyFactRounds);
+    /** Bug 定位的领域策略：收敛、自检和证据判定留在业务层，机械迭代交给 AgentRunner。 */
+    private final class BugAnalysisRunPolicy implements AgentRunPolicy {
+        private final CodeGraphQueryResult graph;
+        private final AgentToolExecutor.AgentToolContext toolContext;
+        private final String initialEvidence;
+        private final List<Map<String, Object>> rounds;
+        private final AnalysisProgressListener progress;
+        private final String label;
+        private final int maxIterations;
+        private int continuousFailures;
+        private int noNewKeyFactRounds;
+        private int toolNudges;
+        private boolean selfChecked;
+        private boolean budgetWarned;
+        private boolean coreEvidenceHinted;
+        private String forceFinishReason;
+
+        private BugAnalysisRunPolicy(CodeGraphQueryResult graph, AgentToolExecutor.AgentToolContext toolContext,
+                                     String initialEvidence, List<Map<String, Object>> rounds,
+                                     AnalysisProgressListener progress, String label, int maxIterations) {
+            this.graph = graph;
+            this.toolContext = toolContext;
+            this.initialEvidence = initialEvidence;
+            this.rounds = rounds;
+            this.progress = progress;
+            this.label = label;
+            this.maxIterations = maxIterations;
+        }
+
+        public void beforeIteration(AgentRunContext context) {
+            forceFinishReason = judge.resolveForceFinishReason(noNewKeyFactRounds);
             if (!isBlank(forceFinishReason)) {
-                log.info("{}第{}轮 · 触发强制收口 · 原因={}", label, iteration, forceFinishReason);
-                messages.add(conversation.message("user", promptBuilder.buildForceFinishInstruction(forceFinishReason)));
+                log.info("{}第{}轮 · 触发强制收口 · 原因={}", label, context.getIteration(), forceFinishReason);
+                context.getMessages().add(conversation.message("user",
+                        promptBuilder.buildForceFinishInstruction(forceFinishReason)));
             } else if (!coreEvidenceHinted && judge.coreEvidenceGathered(graph, rounds)) {
                 coreEvidenceHinted = true;
-                log.info("{}第{}轮 · 核心证据已齐，软提醒收口", label, iteration);
-                messages.add(conversation.message("user", "【收口提示】入口、源码、数据库三类核心证据已齐。"
-                        + "若已能完整解释问题请直接调用 finish；仍有关键断点则只补最必要的证据，不要撒网式追查。"));
-            } else if (!budgetWarned && iteration >= budgetWarnFrom) {
+                context.getMessages().add(conversation.message("user", "【收口提示】入口、源码、数据库三类核心证据已齐。"
+                        + "若已能完整解释问题请直接调用 finish；仍有关键断点则只补最必要的证据。"));
+            } else if (!budgetWarned && context.getIteration() >= Math.max(1, maxIterations * 2 / 3)) {
                 budgetWarned = true;
-                messages.add(conversation.message("user", promptBuilder.buildBudgetReminder(iteration, maxIterations)));
+                context.getMessages().add(conversation.message("user",
+                        promptBuilder.buildBudgetReminder(context.getIteration(), maxIterations)));
             }
-            // 发请求前折叠早期轮次工具结果，控长案例 token 膨胀（报告从 rounds[] 重建，不受影响）
-            conversation.decayOldToolMessages(messages, appProperties.getAgent().getKeepRecentRounds());
-            AiToolCallResult aiResult = aiClient.chatWithMessagesRequired(messages, agentToolExecutor.toolSchemas(verifyUnlocked));
-            tokens.addAndGet(aiResult.getTotalTokens());
-            // 把模型这轮的思考正文落日志（截断防刷屏），补上"思考过程不可见"的排查盲区
-            if (!isBlank(aiResult.getContent())) {
-                log.info("{}第{}轮 · 思考: {}", label, iteration, trim(safe(aiResult.getContent()), 200));
-            }
-            // AI 真失败（网关重置/未配置）：直接中止，别把"AI不可用"当报告收口误导用户
-            if (aiResult.isFailed()) {
-                aiFailed = true;
-                finalReport = "⚠️ AI 服务暂不可用（网关连接异常/重置），本次分析在第 " + iteration + " 轮中断，请稍后重试。";
-                break;
-            }
-            List<AgentToolCall> calls = toolCallParser.parseToolCalls(aiResult);
+        }
 
-            // 强制收口：本轮只允许 finish
-            AgentToolCall finish = toolCallParser.findFinish(calls);
+        public void afterModelResponse(AgentRunContext context, AiToolCallResult response) {
+            if (!isBlank(response.getContent())) {
+                log.info("{}第{}轮 · 思考: {}", label, context.getIteration(), trim(safe(response.getContent()), 200));
+            }
+        }
+
+        public AgentToolCall resolveFinish(AgentRunContext context, List<AgentToolCall> calls, AgentToolCall finish) {
             if (!isBlank(forceFinishReason) && finish == null) {
-                finish = toolCallParser.finishCall(reporter.buildForcedFinishReport(forceFinishReason, rounds));
+                return toolCallParser.finishCall(reporter.buildForcedFinishReport(forceFinishReason, rounds));
             }
-            if (finish != null) {
-                // 模型只用文字描述计划、没真发工具调用：先纠偏逼它走 tool_calls，几次无效再收口
-                if (finish.isDegraded() && isBlank(forceFinishReason) && toolNudges < MAX_TOOL_NUDGES) {
-                    toolNudges++;
-                    conversation.appendAssistantMessage(messages, aiResult);
-                    messages.add(conversation.message("user", promptBuilder.buildToolNudge()));
-                    progress.onStep(label + "第" + iteration + "轮 · 模型只给了计划，提示其直接调用工具");
-                    continue;
+            return finish;
+        }
+
+        public AgentRunDirective onFinish(AgentRunContext context, AiToolCallResult response, AgentToolCall finish) {
+            int iteration = context.getIteration();
+            if (finish.isDegraded() && isBlank(forceFinishReason) && toolNudges < MAX_TOOL_NUDGES) {
+                toolNudges++;
+                conversation.appendAssistantMessage(context.getMessages(), response);
+                context.getMessages().add(conversation.message("user", promptBuilder.buildToolNudge()));
+                progress.onStep(label + "第" + iteration + "轮 · 模型只给了计划，提示其直接调用工具");
+                return AgentRunDirective.continueRun();
+            }
+            if (finish.isDegraded()) {
+                AtomicInteger tokenSink = new AtomicInteger();
+                String report = proseSynthesizeReport(context.getMessages(), tokenSink);
+                context.addTokens(tokenSink.get());
+                if (isBlank(report)) {
+                    String reason = isBlank(forceFinishReason) ? "模型未按协议收口，依据已查证据汇总" : forceFinishReason;
+                    report = reporter.buildForcedFinishReport(reason, rounds);
                 }
-                // 收口这轮模型没吐出 finish 工具调用（degraded，多为上下文过大后 tool-call 协议崩）：
-                // 模型其实会写报告，只是憋不出工具 JSON。先让它「不调工具、纯文字」直接写，绕开协议崩拿真分析；
-                // 纯文字仍空才退回机械汇总，保证给真结论而非空壳。只在崩时多发这一次，不影响正常流程。
-                if (finish.isDegraded()) {
-                    progress.onStep(label + "第" + iteration + "轮 · 模型未按协议收口，改用纯文字直接生成报告");
-                    String prose = proseSynthesizeReport(messages, tokens);
-                    if (isBlank(prose)) {
-                        String reason = isBlank(forceFinishReason) ? "模型未按协议收口，依据已查证据汇总" : forceFinishReason;
-                        prose = reporter.buildForcedFinishReport(reason, rounds);
-                    }
-                    finalReport = prose;
-                    rounds.add(reporter.recordRound(iteration, aiResult, finish,
-                            AgentToolResult.ok("finish", "已据证据生成最终报告", finalReport)));
-                    break;
-                }
-                // 模型自然收口（非强制、非兜底）时，先做一次对抗式自检，抓自洽幻觉
-                boolean canCritique = appProperties.getAgent().isSelfCritique()
-                        && !selfChecked && isBlank(forceFinishReason) && finish.getToolCallId() != null;
-                String report = finish.stringArg("report");
-                // 两段式收口：新协议下模型只发信号（report 留空或一句概要），完整报告改用纯文字流式生成。
-                // 概要级长度(<300字)也算信号——提示词就是教它这么写的，别把一句话概要当终稿收工；
-                // 模型仍把全文塞参数时(远超概要长度)走老路，天然兼容
-                boolean twoPhase = safe(report).trim().length() < 300
-                        && isBlank(forceFinishReason) && finish.getToolCallId() != null;
-                if (twoPhase) {
-                    report = streamFinalReport(messages, aiResult, finish, progress, tokens, label);
-                    if (isBlank(report)) {
-                        // 流式生成失败：跳出走循环后的到顶收尾兜底，别在这硬凑
-                        log.warn("{}第{}轮 · 收口后流式生成报告失败，转收尾兜底", label, iteration);
-                        break;
-                    }
-                }
-                if (canCritique) {
-                    selfChecked = true;
-                    String verdict = judge.runSelfCritique(report, rounds, initialEvidence, tokens);
-                    if (judge.isReviseVerdict(verdict)) {
-                        if (twoPhase) {
-                            // 两段式下 finish 的 tool_call 已在流式前闭合，补上报告正文再塞质疑即可；清掉前端半成品
-                            messages.add(conversation.message("assistant", report));
-                            progress.onPartialReport("");
-                        } else {
-                            // 复核未通过：闭合本次全部 tool_call，把质疑塞回对话，要求补证后再收
-                            conversation.appendAssistantMessage(messages, aiResult);
-                            conversation.appendFinishHold(messages, aiResult, finish);
-                        }
-                        messages.add(conversation.message("user", "对你的初步结论做了独立复核，未通过：" + judge.reviseReason(verdict)
-                                + " 请针对这一点补查证据，确认后再调用 finish。"));
-                        rounds.add(reporter.recordCritique(iteration, report, verdict));
-                        progress.onStep(label + "第" + iteration + "轮 · 结论自检未通过，继续补证");
-                        continue;
-                    }
-                }
-                if (twoPhase) {
-                    rounds.add(reporter.recordRound(iteration, aiResult, finish,
-                            AgentToolResult.ok("finish", "收口信号，报告已流式生成", report)));
-                    finalReport = report;
-                } else {
-                    progress.onStep(label + "证据足够，正在生成最终报告");
-                    AgentToolResult finishResult = agentToolExecutor.execute(finish, toolContext);
-                    rounds.add(reporter.recordRound(iteration, aiResult, finish, finishResult));
-                    finalReport = finishResult.getEvidence();
-                }
-                break;
+                rounds.add(reporter.recordRound(iteration, response, finish,
+                        AgentToolResult.ok("finish", "已据证据生成最终报告", report)));
+                return AgentRunDirective.stop(report, AgentStopReason.FINISH_TOOL);
             }
 
-            // 一轮内的多个查证工具并行执行，减少串行 LLM 往返
-            List<AgentToolResult> results = toolFanoutExecutor.executeAll(calls, toolContext);
-            // 先回填 assistant 的 tool_calls，再逐条回填 tool 结果，保证下一轮请求合法
-            conversation.appendAssistantMessage(messages, aiResult);
-            conversation.appendToolMessages(messages, aiResult, calls, results);
+            boolean canCritique = appProperties.getAgent().isSelfCritique()
+                    && !selfChecked && isBlank(forceFinishReason) && finish.getToolCallId() != null;
+            String report = finish.stringArg("report");
+            boolean twoPhase = safe(report).trim().length() < 300
+                    && isBlank(forceFinishReason) && finish.getToolCallId() != null;
+            if (twoPhase) {
+                AtomicInteger tokenSink = new AtomicInteger();
+                report = streamFinalReport(context.getMessages(), response, finish, progress, tokenSink, label);
+                context.addTokens(tokenSink.get());
+                if (isBlank(report)) {
+                    return AgentRunDirective.stop(null, AgentStopReason.TOOL_ERROR);
+                }
+            }
+            report = reporter.ensureAnalysisReportFormat(report, rounds);
+            if (canCritique) {
+                selfChecked = true;
+                AtomicInteger tokenSink = new AtomicInteger();
+                String verdict = judge.runSelfCritique(report, rounds, initialEvidence, tokenSink);
+                context.addTokens(tokenSink.get());
+                if (judge.isReviseVerdict(verdict)) {
+                    if (twoPhase) {
+                        context.getMessages().add(conversation.message("assistant", report));
+                        progress.onPartialReport("");
+                    } else {
+                        conversation.appendAssistantMessage(context.getMessages(), response);
+                        conversation.appendFinishHold(context.getMessages(), response, finish);
+                    }
+                    context.getMessages().add(conversation.message("user", "对你的初步结论做了独立复核，未通过："
+                            + judge.reviseReason(verdict) + " 请针对这一点补查证据，确认后再调用 finish。"));
+                    rounds.add(reporter.recordCritique(iteration, report, verdict));
+                    progress.onStep(label + "第" + iteration + "轮 · 结论自检未通过，继续补证");
+                    return AgentRunDirective.continueRun();
+                }
+            }
+            if (twoPhase) {
+                rounds.add(reporter.recordRound(iteration, response, finish,
+                        AgentToolResult.ok("finish", "收口信号，报告已流式生成", report)));
+                return AgentRunDirective.stop(report, AgentStopReason.FINISH_TOOL);
+            }
+            progress.onStep(label + "证据足够，正在生成最终报告");
+            AgentToolResult finishResult = agentToolExecutor.execute(finish, toolContext);
+            rounds.add(reporter.recordRound(iteration, response, finish, finishResult));
+            return AgentRunDirective.stop(finishResult.getEvidence(), AgentStopReason.FINISH_TOOL);
+        }
+
+        public AgentRunDirective afterTools(AgentRunContext context, AiToolCallResult response,
+                                            List<AgentToolCall> calls, List<AgentToolResult> results) {
             boolean anyOk = false;
             boolean anyNewFact = false;
             boolean anyHardFailure = false;
-            for (int i = 0; i < calls.size(); i++) {
-                AgentToolCall call = calls.get(i);
-                AgentToolResult toolResult = results.get(i);
-                boolean newKeyFact = judge.isNewKeyFact(rounds, call, toolResult);
-                rounds.add(reporter.recordRound(iteration, aiResult, call, toolResult));
-                progress.onStep(label + "第" + iteration + "轮 · " + reporter.actionName(call.getAction()) + " · " + trim(safe(toolResult.getSummary()), 40));
-                anyOk = anyOk || toolResult.isOk();
-                anyNewFact = anyNewFact || newKeyFact;
-                anyHardFailure = anyHardFailure || toolResult.isHardFailure();
-                // 成功读过代码或看过表结构，就进入取证阶段，解锁 query_database
-                if (!verifyUnlocked && toolResult.isOk() && unlocksVerify(call.getAction())) {
-                    verifyUnlocked = true;
+            for (int index = 0; index < calls.size(); index++) {
+                AgentToolCall call = calls.get(index);
+                AgentToolResult result = results.get(index);
+                boolean newFact = judge.isNewKeyFact(rounds, call, result);
+                rounds.add(reporter.recordRound(context.getIteration(), response, call, result));
+                progress.onStep(label + "第" + context.getIteration() + "轮 · " + reporter.actionName(call.getAction())
+                        + " · " + trim(safe(result.getSummary()), 40));
+                anyOk = anyOk || result.isOk();
+                anyNewFact = anyNewFact || newFact;
+                anyHardFailure = anyHardFailure || result.isHardFailure();
+                if (!context.isVerificationEnabled() && result.isOk() && unlocksVerify(call.getAction())) {
+                    context.setVerificationEnabled(true);
                     progress.onStep(label + "已理解代码/表结构，进入查库取证阶段");
                 }
             }
-
             if (anyOk) {
                 continuousFailures = 0;
                 noNewKeyFactRounds = anyNewFact ? 0 : noNewKeyFactRounds + 1;
             } else if (anyHardFailure) {
-                // 真错误(参数/数据源/异常)才计入掐断
                 continuousFailures++;
             } else {
-                // 整轮都是"查无结果"：正常探索，不算失败；但没新事实，推进收敛兜底防空转
                 noNewKeyFactRounds++;
             }
-            // 每轮落一行结构化日志：让收口/空转行为可观测，才能判断阈值调得对不对
-            log.info("{}第{}轮 · 动作=[{}] · 结果={} · 新事实={} · 空转={}/{} · 失败={}/{}",
-                    label, iteration, actionNames(calls),
-                    anyOk ? "OK" : (anyHardFailure ? "FAIL" : "空"), anyNewFact,
-                    noNewKeyFactRounds, AgentConvergenceJudge.MAX_NO_NEW_FACT_ROUNDS,
+            log.info("{}第{}轮 · 动作=[{}] · 结果={} · 新事实={} · 空转={}/{} · 失败={}/{}", label,
+                    context.getIteration(), actionNames(calls), anyOk ? "OK" : (anyHardFailure ? "FAIL" : "空"),
+                    anyNewFact, noNewKeyFactRounds, AgentConvergenceJudge.MAX_NO_NEW_FACT_ROUNDS,
                     continuousFailures, MAX_CONTINUOUS_FAILURES);
             if (continuousFailures >= MAX_CONTINUOUS_FAILURES) {
-                finalReport = reporter.buildFailureReport(rounds);
-                break;
+                return AgentRunDirective.stop(reporter.buildFailureReport(rounds), AgentStopReason.CONTINUOUS_TOOL_FAILURES);
             }
+            return AgentRunDirective.continueRun();
         }
 
-        if (finalReport == null) {
-            // 到顶仍没收口：直接让模型基于已有证据流式写出完整报告，别甩一句话
-            finalReport = forceSynthesizeReport(messages, toolContext, rounds, maxIterations + 1, tokens, progress, label);
+        public String finalizeRun(AgentRunContext context) {
+            AtomicInteger tokenSink = new AtomicInteger();
+            String report = forceSynthesizeReport(context.getMessages(), toolContext, rounds,
+                    context.getIteration() + 1, tokenSink, progress, label);
+            context.addTokens(tokenSink.get());
+            return report;
         }
-        return new ChainResult(finalReport, rounds, tokens.get(), aiFailed, null, iterationsRun);
+
+        public Map<String, Object> snapshotState(AgentRunContext context) {
+            Map<String, Object> state = new LinkedHashMap<String, Object>();
+            state.put("rounds", new ArrayList<Map<String, Object>>(rounds));
+            state.put("continuousFailures", continuousFailures);
+            state.put("noNewKeyFactRounds", noNewKeyFactRounds);
+            state.put("toolNudges", toolNudges);
+            state.put("selfChecked", selfChecked);
+            state.put("budgetWarned", budgetWarned);
+            state.put("coreEvidenceHinted", coreEvidenceHinted);
+            state.put("forceFinishReason", forceFinishReason);
+            return state;
+        }
+
+        public void restoreState(AgentRunContext context, Map<String, Object> state) {
+            rounds.clear();
+            rounds.addAll(AgentRunStateUtils.rounds(state));
+            continuousFailures = AgentRunStateUtils.intValue(state, "continuousFailures");
+            noNewKeyFactRounds = AgentRunStateUtils.intValue(state, "noNewKeyFactRounds");
+            toolNudges = AgentRunStateUtils.intValue(state, "toolNudges");
+            selfChecked = AgentRunStateUtils.boolValue(state, "selfChecked");
+            budgetWarned = AgentRunStateUtils.boolValue(state, "budgetWarned");
+            coreEvidenceHinted = AgentRunStateUtils.boolValue(state, "coreEvidenceHinted");
+            Object reason = state == null ? null : state.get("forceFinishReason");
+            forceFinishReason = reason == null ? null : String.valueOf(reason);
+        }
     }
 
     /** 一条调查链的产出：最终报告 + 全部轮次记录，不含落库。 */
@@ -625,8 +656,10 @@ public class AgentAnalysisService {
 
     // 收口后纯文字报告的统一指令：两段式流式与 degraded 救场共用一套要求
     private static final String PROSE_REPORT_INSTRUCTION = "现在不要调用任何工具，直接用纯文字写出最终定位报告，"
-            + "包含：通俗结论、问题结论、证据链路、关键代码/SQL/数据证据、根因类型、建议处理人、置信度。"
-            + "证据不足就给最可能的判断并说明剩余风险。";
+            + "必须严格按以下七段标题输出，不得省略标题，不得缩写成单段摘要：\n"
+            + "【通俗结论】\n【问题结论】\n【证据链路】\n【关键代码/SQL/数据证据】\n"
+            + "【根因类型】\n【建议处理人】\n【置信度】\n"
+            + "证据不足时在对应章节写明最可能判断和剩余风险，不得编造证据。";
 
     /**
      * 两段式收口第二段：闭合 finish 信号后，用纯文字流式生成完整报告。
@@ -692,7 +725,8 @@ public class AgentAnalysisService {
         try {
             log.info("{}已达最大轮次，查证结束，开始流式生成最终报告", label);
             progress.onStep(label + "已达最大轮次，开始生成最终报告");
-            messages.add(conversation.message("user", "已达到最大分析轮次。" + PROSE_REPORT_INSTRUCTION));
+            messages.add(conversation.message("user", "已达到最大分析轮次。请基于全部已确认事实和复核意见完成收尾。"
+                    + PROSE_REPORT_INSTRUCTION));
             boolean pushPartial = isBlank(label);
             final long[] lastPushMs = {0};
             AiToolCallResult prose = aiClient.chatProseStream(messages, snapshot -> {
@@ -707,12 +741,13 @@ public class AgentAnalysisService {
             });
             tokenSink.addAndGet(prose.getTotalTokens());
             if (!prose.isFailed() && !isBlank(prose.getContent())) {
+                String report = reporter.ensureAnalysisReportFormat(prose.getContent(), rounds);
                 if (pushPartial) {
-                    progress.onPartialReport(prose.getContent());
+                    progress.onPartialReport(report);
                 }
-                rounds.add(reporter.recordRound(iteration, prose, toolCallParser.finishCall(prose.getContent()),
-                        AgentToolResult.ok("finish", "已达最大轮次，报告以纯文字流式生成", prose.getContent())));
-                return prose.getContent();
+                rounds.add(reporter.recordRound(iteration, prose, toolCallParser.finishCall(report),
+                        AgentToolResult.ok("finish", "已达最大轮次，报告以统一格式生成", report)));
+                return report;
             }
         } catch (Exception exception) {
             // 兜底报告照样给，不让异常打断收尾

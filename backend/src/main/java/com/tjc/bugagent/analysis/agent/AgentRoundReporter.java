@@ -85,9 +85,39 @@ public class AgentRoundReporter {
      * 本地兜底报告：把各轮查到的证据汇总出来，避免只甩一句"达到最大轮次"。
      */
     public String buildMaxRoundReport(List<Map<String, Object>> rounds) {
+        return ensureAnalysisReportFormat("Agent 已达最大分析轮次仍未形成自洽结论，需要结合已收集证据人工研判。", rounds);
+    }
+
+    /**
+     * 校验 Bug 定位报告是否包含统一的七段结构。
+     */
+    public boolean isCompleteAnalysisReport(String report) {
+        if (isBlank(report)) {
+            return false;
+        }
+        return report.contains("【通俗结论】")
+                && report.contains("【问题结论】")
+                && report.contains("【证据链路】")
+                && report.contains("【关键代码/SQL/数据证据】")
+                && report.contains("【根因类型】")
+                && report.contains("【建议处理人】")
+                && report.contains("【置信度】");
+    }
+
+    /**
+     * 把不符合协议的模型输出装入统一报告结构，防止最大轮次收尾用一段短文覆盖完整报告。
+     */
+    public String ensureAnalysisReportFormat(String candidate, List<Map<String, Object>> rounds) {
+        if (isCompleteAnalysisReport(candidate)) {
+            return candidate;
+        }
+        String conclusion = isBlank(candidate)
+                ? "Agent 已达最大分析轮次仍未形成自洽结论，需要结合已收集证据人工研判。"
+                : safe(candidate).trim();
         StringBuilder report = new StringBuilder();
-        report.append("【通俗结论】Agent 已达最大分析轮次仍未自行收口，下面是已查到的证据汇总，供人工判断。\n\n");
-        report.append("【已收集证据】\n");
+        report.append("【通俗结论】").append(firstMeaningfulLine(conclusion)).append("\n\n");
+        report.append("【问题结论】\n").append(conclusion).append("\n\n");
+        report.append("【证据链路】\n");
         if (rounds.isEmpty()) {
             report.append("无\n");
         } else {
@@ -95,16 +125,40 @@ public class AgentRoundReporter {
                 report.append("- 第").append(safe(round.get("iteration"))).append("轮 · ")
                         .append(actionName(safe(round.get("action")))).append("：")
                         .append(trim(safe(round.get("toolSummary")), 80)).append("\n");
-                String summary = extractEvidenceSummary(safe(round.get("toolEvidence")));
-                if (!"无".equals(summary)) {
-                    report.append("    ").append(trim(summary, 200)).append("\n");
-                }
             }
         }
-        report.append("\n【根因类型】未形成自洽结论，需结合上述证据人工研判。\n");
+        report.append("\n【关键代码/SQL/数据证据】\n");
+        appendEvidenceSummaries(report, rounds);
+        report.append("\n【根因类型】待人工确认（最终模型输出未按结构化协议标注）\n");
         report.append("【建议处理人】后端开发\n");
         report.append("【置信度】LOW\n");
         return report.toString();
+    }
+
+    private void appendEvidenceSummaries(StringBuilder report, List<Map<String, Object>> rounds) {
+        int appended = 0;
+        for (int index = rounds.size() - 1; index >= 0 && appended < 5; index--) {
+            Map<String, Object> round = rounds.get(index);
+            String summary = extractEvidenceSummary(safe(round.get("toolEvidence")));
+            if (!"无".equals(summary)) {
+                report.append("- 第").append(safe(round.get("iteration"))).append("轮：")
+                        .append(trim(summary, 300)).append("\n");
+                appended++;
+            }
+        }
+        if (appended == 0) {
+            report.append("无\n");
+        }
+    }
+
+    private String firstMeaningfulLine(String text) {
+        for (String line : safe(text).split("\\r?\\n")) {
+            String value = line.trim();
+            if (!value.isEmpty()) {
+                return trim(value, 240);
+            }
+        }
+        return "当前证据不足，需人工确认。";
     }
 
     /**

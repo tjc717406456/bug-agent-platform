@@ -1,6 +1,6 @@
 import { ref, computed, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { submitAgentAnalysisTaskScreenshots, pollAgentAnalysisTask, stopAgentAnalysisTask, submitApiExplainTask, submitFollowUpTask, uploadLog } from '../../api/client'
+import { submitAgentAnalysisTaskScreenshots, pollAgentAnalysisTask, stopAgentAnalysisTask, resumeAgentAnalysisTask, submitApiExplainTask, submitFollowUpTask, uploadLog } from '../../api/client'
 import { currentProject, analysisForm, analysisResult, analysisDialogVisible, activeReportTab, feedbackEditable, sleep } from '../core'
 
 export const screenshotFiles = ref([])
@@ -239,6 +239,7 @@ export async function waitAgentTask(taskId) {
     // 不设总时长预算：轮询正常、任务还是 RUNNING 就一直陪跑（长分析本来就可能超5分钟，有停止按钮兜底）；
     // 只有连续 poll 异常 ≥5 次（后端真失联）才报错
     let pollFailures = 0
+    let resumed = false
     while (true) {
       // 点了停止：前端立即停轮询收尾，不等后台跑完本轮（后台会自行置 CANCELLED）
       if (agentTaskStopping.value) {
@@ -306,7 +307,13 @@ export async function waitAgentTask(taskId) {
         endStreamingView(true)
         return null
       }
-      if (task.status === 'FAILED' || task.status === 'NOT_FOUND') {
+      if (task.status === 'INTERRUPTED' && !resumed && task.checkpoint && task.checkpoint.phase !== 'COMPLETED') {
+        resumed = true
+        agentProgress.value = [...agentProgress.value, `任务中断，正在从第 ${task.checkpoint.iteration || 0} 轮恢复`].slice(-60)
+        await resumeAgentAnalysisTask(taskId)
+        continue
+      }
+      if (task.status === 'FAILED' || task.status === 'NOT_FOUND' || task.status === 'INTERRUPTED') {
         clearActiveTask()
         agentTaskRunning.value = false
         endStreamingView(true)
@@ -388,6 +395,7 @@ export async function askFollowUp(question) {
     const task = await submitFollowUpTask(recordId, text)
     followUpTaskId = task.taskId
     let pollFailures = 0
+    let resumed = false
     while (true) {
       let status
       try {
@@ -418,7 +426,13 @@ export async function askFollowUp(question) {
         followUpChat.value = [...followUpChat.value, { role: 'a', text: '（已停止）' }]
         break
       }
-      if (status.status === 'FAILED' || status.status === 'NOT_FOUND') {
+      if (status.status === 'INTERRUPTED' && !resumed && status.checkpoint && status.checkpoint.phase !== 'COMPLETED') {
+        resumed = true
+        followUpStep.value = `任务中断，正在从第 ${status.checkpoint.iteration || 0} 轮恢复`
+        await resumeAgentAnalysisTask(followUpTaskId)
+        continue
+      }
+      if (status.status === 'FAILED' || status.status === 'NOT_FOUND' || status.status === 'INTERRUPTED') {
         throw new Error(status.message || '追问失败')
       }
       await sleep(followUpStreamText.value ? 500 : 1000)

@@ -41,7 +41,6 @@ public class ApiExplainService {
     private final CodeGraphQueryService codeGraphQueryService;
     private final InitialEvidenceBuilder initialEvidenceBuilder;
     private final AgentToolExecutor agentToolExecutor;
-    private final ToolFanoutExecutor toolFanoutExecutor;
     private final AgentConversation conversation;
     private final AgentToolCallParser toolCallParser;
     private final AgentRoundReporter reporter;
@@ -50,12 +49,12 @@ public class ApiExplainService {
     private final AiClient aiClient;
     private final AppProperties appProperties;
     private final AnalysisRecordRepository recordRepository;
+    private final AgentRunner agentRunner;
 
     public ApiExplainService(ProjectService projectService,
                              CodeGraphQueryService codeGraphQueryService,
                              InitialEvidenceBuilder initialEvidenceBuilder,
                              AgentToolExecutor agentToolExecutor,
-                             ToolFanoutExecutor toolFanoutExecutor,
                              AgentConversation conversation,
                              AgentToolCallParser toolCallParser,
                              AgentRoundReporter reporter,
@@ -63,12 +62,12 @@ public class ApiExplainService {
                              PlainAnswerResolver plainAnswerResolver,
                              AiClient aiClient,
                              AppProperties appProperties,
-                             AnalysisRecordRepository recordRepository) {
+                             AnalysisRecordRepository recordRepository,
+                             AgentRunner agentRunner) {
         this.projectService = projectService;
         this.codeGraphQueryService = codeGraphQueryService;
         this.initialEvidenceBuilder = initialEvidenceBuilder;
         this.agentToolExecutor = agentToolExecutor;
-        this.toolFanoutExecutor = toolFanoutExecutor;
         this.conversation = conversation;
         this.toolCallParser = toolCallParser;
         this.reporter = reporter;
@@ -77,6 +76,7 @@ public class ApiExplainService {
         this.aiClient = aiClient;
         this.appProperties = appProperties;
         this.recordRepository = recordRepository;
+        this.agentRunner = agentRunner;
     }
 
     /**
@@ -88,7 +88,8 @@ public class ApiExplainService {
         CodeGraphQueryResult graph = codeGraphQueryService.queryByApiPath(request.getProjectId(), version.getId(), request.getApiPath());
         ProjectDatasource datasource = projectService.firstEnabledDatasource(request.getProjectId());
         AgentToolExecutor.AgentToolContext toolContext = new AgentToolExecutor.AgentToolContext(
-                request.getProjectId(), version.getId(), request.getApiPath(), datasource);
+                progress.executionScope(request.getProjectId(), version.getId(), datasource),
+                request.getApiPath(), null, null);
 
         // 讲解不需要日志/堆栈，给个空线索，初始证据按"有才拼"自动跳过这些段落
         String initialEvidence = initialEvidenceBuilder.buildInitialEvidence(request, version, graph, datasource, toolContext, new LogClues());
@@ -100,140 +101,165 @@ public class ApiExplainService {
         messages.add(conversation.message("user", promptBuilder.buildApiExplainUserPrompt(initialEvidence)));
         progress.onStep("已取接口调用链与源码，开始讲解");
 
-        List<Map<String, Object>> rounds = new ArrayList<Map<String, Object>>();
-        String finalReport = null;
-        int continuousFailures = 0;
-        int toolNudges = 0;
-        // AtomicInteger 当账本传给收尾兜底，那笔 LLM 开销也要入账
-        AtomicInteger tokens = new AtomicInteger();
-        // 真实循环圈数，展示"轮"用它；rounds 列表按工具调用逐条记，条数≠轮数
-        int iterationsRun = 0;
-        // 讲解用独立的小轮次预算：没有收敛判定兜底，不能拿 bug 分析的 32 轮裸奔
-        int maxIterations = appProperties.getAgent().getExplainMaxIterations();
-        boolean budgetWarned = false;
-        int budgetWarnFrom = Math.max(1, maxIterations * 2 / 3);
-
-        for (int iteration = 1; iteration <= maxIterations; iteration++) {
-            iterationsRun = iteration;
-            // 用户手动停止：轮间检测到即中断
-            if (progress.isCancelled()) {
-                throw new AnalysisCancelledException();
-            }
-            // 过了 2/3 轮提醒模型抓紧收口，别无限下钻无关细节
-            if (!budgetWarned && iteration >= budgetWarnFrom) {
-                budgetWarned = true;
-                messages.add(conversation.message("user", promptBuilder.buildBudgetReminder(iteration, maxIterations)));
-            }
-            // 发请求前折叠早期轮次工具结果，与 bug 分析同款：肥结果(如全量表结构)不再每轮重发,
-            // 治后期轮次上下文膨胀导致的模型响应变慢/读超时。完整证据仍在 rounds[]，讲解报告不受影响
-            conversation.decayOldToolMessages(messages, appProperties.getAgent().getKeepRecentRounds());
-            AiToolCallResult aiResult = aiClient.chatWithMessagesUtility(messages, agentToolExecutor.toolSchemas());
-            tokens.addAndGet(aiResult.getTotalTokens());
-            // 与 bug 分析同款：模型每轮思考正文落日志(截断防刷屏)，排查"讲歪了"时有迹可循
-            if (!isBlank(aiResult.getContent())) {
-                log.info("第{}轮 · 思考: {}", iteration, trim(safe(aiResult.getContent()), 200));
-            }
-            // AI 真失败（网关重置/未配置）：直接中止，别把"AI不可用"当讲解收口
-            if (aiResult.isFailed()) {
-                finalReport = "⚠️ AI 服务暂不可用（网关连接异常/重置），本次讲解在第 " + iteration + " 轮中断，请稍后重试。";
-                break;
-            }
-            List<AgentToolCall> calls = toolCallParser.parseToolCalls(aiResult);
-
-            AgentToolCall finish = toolCallParser.findFinish(calls);
-            if (finish != null) {
-                // 模型只描述计划没真发工具调用：先纠偏逼它走 tool_calls，几次无效再收口
-                if (finish.isDegraded() && toolNudges < MAX_TOOL_NUDGES) {
-                    toolNudges++;
-                    conversation.appendAssistantMessage(messages, aiResult);
-                    messages.add(conversation.message("user", promptBuilder.buildToolNudge()));
-                    progress.onStep("第" + iteration + "轮 · 模型只给了计划，提示其直接调用工具");
-                    continue;
-                }
-                String argReport = finish.stringArg("report");
-                // 概要级长度(<300字)一律当收口信号走流式生成，别把一句话概要当完整讲解收工
-                if (safe(argReport).trim().length() < 300 && finish.getToolCallId() != null) {
-                    // 两段式收口：finish 只是信号，完整讲解改用纯文字流式生成，前端边生成边看
-                    log.info("第{}轮 · 查证结束，开始流式生成最终讲解", iteration);
-                    progress.onStep("流程已讲清，开始生成说明");
-                    conversation.appendAssistantMessage(messages, aiResult);
-                    conversation.appendFinishAck(messages, aiResult, finish);
-                    messages.add(conversation.message("user", "现在不要调用任何工具，直接用纯文字写出最终接口讲解，"
-                            + "包含：通俗说明、完整流程（入口→服务→Mapper→SQL→表）、关键代码片段（带文件:行号）、涉及的表与数据流向。"));
-                    final long[] lastPushMs = {0};
-                    AiToolCallResult prose = aiClient.chatProseStreamUtility(messages, snapshot -> {
-                        long now = System.currentTimeMillis();
-                        // 800ms 节流：前端 2s 轮询一拍，推太密只是白写任务存储
-                        if (now - lastPushMs[0] >= 400) {
-                            lastPushMs[0] = now;
-                            progress.onPartialReport(snapshot);
-                        }
-                    });
-                    tokens.addAndGet(prose.getTotalTokens());
-                    if (!prose.isFailed() && !isBlank(prose.getContent())) {
-                        progress.onPartialReport(prose.getContent());
-                        finalReport = prose.getContent();
-                        rounds.add(reporter.recordRound(iteration, aiResult, finish,
-                                AgentToolResult.ok("finish", "收口信号，讲解已流式生成", finalReport)));
-                    } else {
-                        // 流式失败：finalReport 保持 null，落到循环后的 forceSynthesizeExplain 兜底
-                        log.warn("第{}轮 · 收口后流式生成讲解失败，转收尾兜底", iteration);
-                    }
-                    break;
-                }
-                log.info("第{}轮 · 查证结束，模型已收口，最终讲解生成完毕", iteration);
-                progress.onStep("流程已讲清，正在生成说明");
-                AgentToolResult finishResult = agentToolExecutor.execute(finish, toolContext);
-                rounds.add(reporter.recordRound(iteration, aiResult, finish, finishResult));
-                finalReport = finishResult.getEvidence();
-                break;
-            }
-
-            List<AgentToolResult> results = toolFanoutExecutor.executeAll(calls, toolContext);
-            conversation.appendAssistantMessage(messages, aiResult);
-            conversation.appendToolMessages(messages, aiResult, calls, results);
-            boolean anyOk = false;
-            boolean anyHardFailure = false;
-            for (int i = 0; i < calls.size(); i++) {
-                AgentToolCall call = calls.get(i);
-                AgentToolResult toolResult = results.get(i);
-                rounds.add(reporter.recordRound(iteration, aiResult, call, toolResult));
-                progress.onStep("第" + iteration + "轮 · " + reporter.actionName(call.getAction()) + " · " + trim(safe(toolResult.getSummary()), 40));
-                anyOk = anyOk || toolResult.isOk();
-                anyHardFailure = anyHardFailure || toolResult.isHardFailure();
-            }
-            // 查无结果是正常探索，只有真错误才计入掐断
-            if (anyOk) {
-                continuousFailures = 0;
-            } else if (anyHardFailure) {
-                continuousFailures++;
-            }
-            // 每轮一行结构化日志，与 bug 分析同款观测口径（讲解没有新事实/空转判定，只记动作与结果）
-            log.info("第{}轮 · 动作=[{}] · 结果={} · 失败={}/{}", iteration, actionNames(calls),
-                    anyOk ? "OK" : (anyHardFailure ? "FAIL" : "空"), continuousFailures, MAX_CONTINUOUS_FAILURES);
-            if (continuousFailures >= MAX_CONTINUOUS_FAILURES) {
-                finalReport = reporter.buildFailureReport(rounds);
-                break;
-            }
-        }
-
-        if (finalReport == null) {
-            finalReport = forceSynthesizeExplain(messages, toolContext, rounds, maxIterations + 1, tokens, progress);
-        }
+        final List<Map<String, Object>> rounds = new ArrayList<Map<String, Object>>();
+        final int maxIterations = appProperties.getAgent().getExplainMaxIterations();
+        AgentRunSpec spec = new AgentRunSpec();
+        spec.setMessages(messages);
+        spec.setToolContext(toolContext);
+        spec.setMaxIterations(maxIterations);
+        spec.setKeepRecentRounds(appProperties.getAgent().getKeepRecentRounds());
+        spec.setVerificationEnabled(true);
+        spec.setModelRole(AgentRunSpec.ModelRole.UTILITY);
+        spec.setProgress(progress);
+        spec.setModelFailureMessage("⚠️ AI 服务暂不可用（网关连接异常/重置），本次讲解中断，请稍后重试。");
+        spec.setPolicy(new ApiExplainRunPolicy(rounds, progress, maxIterations));
+        AgentRunResult runResult = agentRunner.run(spec);
+        String finalReport = runResult.getFinalContent();
 
         String evidence = reporter.buildEvidenceLog(initialEvidence, rounds);
         // 讲解也落库（record_type=EXPLAIN）：历史可回看，且拿到 recordId 就能追问
-        Long recordId = recordRepository.saveExplain(request, version, finalReport, evidence, iterationsRun, tokens.get());
+        Long recordId = recordRepository.saveExplain(request, version, finalReport, evidence,
+                runResult.getIterations(), runResult.getTotalTokens());
         AnalysisResult result = new AnalysisResult();
         result.setId(recordId);
         result.setPlainAnswer(plainAnswerResolver.buildPlainAnswer(finalReport, evidence));
         result.setConclusion(finalReport);
         result.setEvidenceJson(evidence);
-        result.setRounds(iterationsRun);
-        result.setTotalTokens(tokens.get());
+        result.setRounds(runResult.getIterations());
+        result.setTotalTokens(runResult.getTotalTokens());
         result.setElapsedMs(System.currentTimeMillis() - startMs);
-        progress.onStep("✓ 讲解完成 · " + iterationsRun + " 轮查证 · " + tokens.get() + " tokens · " + (result.getElapsedMs() / 1000) + "s");
+        progress.onStep("✓ 讲解完成 · " + runResult.getIterations() + " 轮查证 · "
+                + runResult.getTotalTokens() + " tokens · " + (result.getElapsedMs() / 1000) + "s");
         return result;
+    }
+
+    /** 接口讲解的领域策略：保留纠偏、失败掐断和两段式报告，迭代骨架交给 AgentRunner。 */
+    private final class ApiExplainRunPolicy implements AgentRunPolicy {
+        private final List<Map<String, Object>> rounds;
+        private final AnalysisProgressListener progress;
+        private final int maxIterations;
+        private int continuousFailures;
+        private int toolNudges;
+        private boolean budgetWarned;
+
+        private ApiExplainRunPolicy(List<Map<String, Object>> rounds, AnalysisProgressListener progress, int maxIterations) {
+            this.rounds = rounds;
+            this.progress = progress;
+            this.maxIterations = maxIterations;
+        }
+
+        public void beforeIteration(AgentRunContext context) {
+            int warnFrom = Math.max(1, maxIterations * 2 / 3);
+            if (!budgetWarned && context.getIteration() >= warnFrom) {
+                budgetWarned = true;
+                context.getMessages().add(conversation.message("user",
+                        promptBuilder.buildBudgetReminder(context.getIteration(), maxIterations)));
+            }
+        }
+
+        public void afterModelResponse(AgentRunContext context, AiToolCallResult response) {
+            if (!isBlank(response.getContent())) {
+                log.info("第{}轮 · 思考: {}", context.getIteration(), trim(safe(response.getContent()), 200));
+            }
+        }
+
+        public AgentRunDirective onFinish(AgentRunContext context, AiToolCallResult response, AgentToolCall finish) {
+            int iteration = context.getIteration();
+            if (finish.isDegraded() && toolNudges < MAX_TOOL_NUDGES) {
+                toolNudges++;
+                conversation.appendAssistantMessage(context.getMessages(), response);
+                context.getMessages().add(conversation.message("user", promptBuilder.buildToolNudge()));
+                progress.onStep("第" + iteration + "轮 · 模型只给了计划，提示其直接调用工具");
+                return AgentRunDirective.continueRun();
+            }
+            String report = finish.stringArg("report");
+            if (safe(report).trim().length() < 300 && finish.getToolCallId() != null) {
+                report = streamExplain(context, response, finish);
+                if (isBlank(report)) {
+                    return AgentRunDirective.stop(null, AgentStopReason.TOOL_ERROR);
+                }
+                rounds.add(reporter.recordRound(iteration, response, finish,
+                        AgentToolResult.ok("finish", "收口信号，讲解已流式生成", report)));
+                return AgentRunDirective.stop(report, AgentStopReason.FINISH_TOOL);
+            }
+            progress.onStep("流程已讲清，正在生成说明");
+            AgentToolResult finishResult = agentToolExecutor.execute(finish, context.getToolContext());
+            rounds.add(reporter.recordRound(iteration, response, finish, finishResult));
+            return AgentRunDirective.stop(finishResult.getEvidence(), AgentStopReason.FINISH_TOOL);
+        }
+
+        public AgentRunDirective afterTools(AgentRunContext context, AiToolCallResult response,
+                                            List<AgentToolCall> calls, List<AgentToolResult> results) {
+            boolean anyOk = false;
+            boolean anyHardFailure = false;
+            for (int index = 0; index < calls.size(); index++) {
+                AgentToolCall call = calls.get(index);
+                AgentToolResult result = results.get(index);
+                rounds.add(reporter.recordRound(context.getIteration(), response, call, result));
+                progress.onStep("第" + context.getIteration() + "轮 · " + reporter.actionName(call.getAction())
+                        + " · " + trim(safe(result.getSummary()), 40));
+                anyOk = anyOk || result.isOk();
+                anyHardFailure = anyHardFailure || result.isHardFailure();
+            }
+            if (anyOk) {
+                continuousFailures = 0;
+            } else if (anyHardFailure) {
+                continuousFailures++;
+            }
+            log.info("第{}轮 · 动作=[{}] · 结果={} · 失败={}/{}", context.getIteration(), actionNames(calls),
+                    anyOk ? "OK" : (anyHardFailure ? "FAIL" : "空"), continuousFailures, MAX_CONTINUOUS_FAILURES);
+            if (continuousFailures >= MAX_CONTINUOUS_FAILURES) {
+                return AgentRunDirective.stop(reporter.buildFailureReport(rounds), AgentStopReason.CONTINUOUS_TOOL_FAILURES);
+            }
+            return AgentRunDirective.continueRun();
+        }
+
+        public String finalizeRun(AgentRunContext context) {
+            AtomicInteger tokens = new AtomicInteger();
+            String report = forceSynthesizeExplain(context.getMessages(), context.getToolContext(), rounds,
+                    context.getIteration() + 1, tokens, progress);
+            context.addTokens(tokens.get());
+            return report;
+        }
+
+        public Map<String, Object> snapshotState(AgentRunContext context) {
+            Map<String, Object> state = new java.util.LinkedHashMap<String, Object>();
+            state.put("rounds", new ArrayList<Map<String, Object>>(rounds));
+            state.put("continuousFailures", continuousFailures);
+            state.put("toolNudges", toolNudges);
+            state.put("budgetWarned", budgetWarned);
+            return state;
+        }
+
+        public void restoreState(AgentRunContext context, Map<String, Object> state) {
+            rounds.clear();
+            rounds.addAll(AgentRunStateUtils.rounds(state));
+            continuousFailures = AgentRunStateUtils.intValue(state, "continuousFailures");
+            toolNudges = AgentRunStateUtils.intValue(state, "toolNudges");
+            budgetWarned = AgentRunStateUtils.boolValue(state, "budgetWarned");
+        }
+
+        private String streamExplain(AgentRunContext context, AiToolCallResult response, AgentToolCall finish) {
+            progress.onStep("流程已讲清，开始生成说明");
+            conversation.appendAssistantMessage(context.getMessages(), response);
+            conversation.appendFinishAck(context.getMessages(), response, finish);
+            context.getMessages().add(conversation.message("user", "现在不要调用任何工具，直接用纯文字写出最终接口讲解，"
+                    + "包含：通俗说明、完整流程（入口→服务→Mapper→SQL→表）、关键代码片段（带文件:行号）、涉及的表与数据流向。"));
+            final long[] lastPushMs = {0};
+            AiToolCallResult prose = aiClient.chatProseStreamUtility(context.getMessages(), snapshot -> {
+                long now = System.currentTimeMillis();
+                if (now - lastPushMs[0] >= 400) {
+                    lastPushMs[0] = now;
+                    progress.onPartialReport(snapshot);
+                }
+            });
+            context.addTokens(prose.getTotalTokens());
+            if (prose.isFailed() || isBlank(prose.getContent())) {
+                return null;
+            }
+            progress.onPartialReport(prose.getContent());
+            return prose.getContent();
+        }
     }
 
     /**

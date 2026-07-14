@@ -303,6 +303,16 @@ public class AppProperties {
         private int hypothesisChainIterations = 12;
         // 假设分支并行线程池大小，控并发别撞模型限流
         private int hypothesisPoolSize = 2;
+        // RUNNING 任务超过该秒数没有心跳时，轮询将其修复为 INTERRUPTED
+        private int taskStaleSeconds = 600;
+
+        public int getTaskStaleSeconds() {
+            return taskStaleSeconds;
+        }
+
+        public void setTaskStaleSeconds(int taskStaleSeconds) {
+            this.taskStaleSeconds = taskStaleSeconds;
+        }
 
         public boolean isPhasedTools() {
             return phasedTools;

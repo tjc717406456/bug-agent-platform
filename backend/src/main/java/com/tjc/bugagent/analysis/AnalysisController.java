@@ -93,6 +93,14 @@ public class AnalysisController {
     }
 
     /**
+     * 从最近完整轮次恢复中断或失败的任务。
+     */
+    @PostMapping("/agent/tasks/{taskId}/resume")
+    public ApiResponse<AgentAnalysisTaskSubmitResult> resumeAgentTask(@PathVariable String taskId) {
+        return ApiResponse.ok(agentAnalysisTaskService.resume(taskId));
+    }
+
+    /**
      * 基于一条分析记录发起追问，返回 taskId，轮询复用 poll 接口（含流式快照）。
      */
     @PostMapping("/records/{recordId}/followup/tasks")
