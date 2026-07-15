@@ -18,6 +18,7 @@ public class AgentRunSpec {
     private AnalysisProgressListener progress = AnalysisProgressListener.NOOP;
     private List<AgentRunHook> hooks = new ArrayList<AgentRunHook>();
     private int maxIterations;
+    private int maxTotalTokens;
     private int keepRecentRounds;
     private boolean verificationEnabled;
     private ModelRole modelRole = ModelRole.PRIMARY;
@@ -35,6 +36,8 @@ public class AgentRunSpec {
     public void setHooks(List<AgentRunHook> hooks) { this.hooks = hooks; }
     public int getMaxIterations() { return maxIterations; }
     public void setMaxIterations(int maxIterations) { this.maxIterations = maxIterations; }
+    public int getMaxTotalTokens() { return maxTotalTokens; }
+    public void setMaxTotalTokens(int maxTotalTokens) { this.maxTotalTokens = maxTotalTokens; }
     public int getKeepRecentRounds() { return keepRecentRounds; }
     public void setKeepRecentRounds(int keepRecentRounds) { this.keepRecentRounds = keepRecentRounds; }
     public boolean isVerificationEnabled() { return verificationEnabled; }

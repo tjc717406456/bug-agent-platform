@@ -4,6 +4,7 @@ import com.tjc.bugagent.ai.AiClient;
 import com.tjc.bugagent.ai.AiToolCallResult;
 import com.tjc.bugagent.project.ProjectDatasource;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -20,7 +21,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.times;
 
 /**
  * Agent 内核测试：工具注册、执行范围、统一 Runner、Hook 和检查点。
@@ -73,6 +76,26 @@ class AgentKernelTest {
     }
 
     @Test
+    void projectScopeFiltersSubAgentToolSchemas() {
+        AgentToolRegistry registry = new AgentToolRegistry();
+        registry.register(new RegisteredAgentTool("search_code", "搜索源码", stringProperties("keyword"),
+                Collections.singletonList("keyword"), AgentToolPhase.DISCOVERY, true, true, true,
+                (call, context) -> AgentToolResult.ok("search_code", "ok", "code")));
+        registry.register(new RegisteredAgentTool("search_log", "搜索日志", stringProperties("keyword"),
+                Collections.singletonList("keyword"), AgentToolPhase.DISCOVERY, true, true, true,
+                (call, context) -> AgentToolResult.ok("search_log", "ok", "log")));
+        ProjectExecutionScope parent = ProjectExecutionScope.create("task", 7L, 1L, 2L, null);
+        ProjectExecutionScope logScope = parent.child("task:log", "search_log");
+
+        List<Map<String, Object>> definitions = registry.definitions(false, logScope);
+
+        assertEquals(1, definitions.size());
+        Map<String, Object> function = (Map<String, Object>) definitions.get(0).get("function");
+        assertEquals("search_log", function.get("name"));
+        assertFalse(logScope.allowsTool("search_code"));
+    }
+
+    @Test
     void runnerProducesStructuredResultAndCheckpoint() {
         AiClient aiClient = mock(AiClient.class);
         AgentToolExecutor toolExecutor = mock(AgentToolExecutor.class);
@@ -85,7 +108,8 @@ class AgentKernelTest {
         response.setTotalTokens(12);
         AgentToolCall finish = new AgentToolCall();
         finish.setAction("finish");
-        when(toolExecutor.toolSchemas(anyBoolean())).thenReturn(Collections.<Map<String, Object>>emptyList());
+        when(toolExecutor.toolSchemas(anyBoolean(), any(ProjectExecutionScope.class)))
+                .thenReturn(Collections.<Map<String, Object>>emptyList());
         when(aiClient.chatWithMessagesRequired(any(), any())).thenReturn(response);
         when(parser.parseToolCalls(response)).thenReturn(Collections.singletonList(finish));
         when(parser.findFinish(any())).thenReturn(finish);
@@ -120,6 +144,136 @@ class AgentKernelTest {
         assertEquals(1, checkpoints.size());
         assertEquals("COMPLETED", checkpoints.get(0).getPhase());
         assertEquals("FINISH_TOOL", checkpoints.get(0).getStopReason());
+    }
+
+    @Test
+    void runnerAcceptsFinishBeforeApplyingTokenBudget() {
+        AiClient aiClient = mock(AiClient.class);
+        AgentToolExecutor toolExecutor = mock(AgentToolExecutor.class);
+        AgentToolCallParser parser = mock(AgentToolCallParser.class);
+        ToolFanoutExecutor fanout = mock(ToolFanoutExecutor.class);
+        AgentConversation conversation = mock(AgentConversation.class);
+        AgentRunner runner = new AgentRunner(aiClient, toolExecutor, parser, fanout, conversation);
+        AiToolCallResult response = new AiToolCallResult();
+        response.setTotalTokens(120);
+        AgentToolCall finish = new AgentToolCall();
+        finish.setAction("finish");
+        when(toolExecutor.toolSchemas(anyBoolean(), any(ProjectExecutionScope.class)))
+                .thenReturn(Collections.<Map<String, Object>>emptyList());
+        when(aiClient.chatWithMessagesRequired(any(), any())).thenReturn(response);
+        when(parser.parseToolCalls(response)).thenReturn(Collections.singletonList(finish));
+        when(parser.findFinish(any())).thenReturn(finish);
+        AgentRunSpec spec = new AgentRunSpec();
+        spec.setMessages(new ArrayList<Map<String, Object>>());
+        spec.setToolContext(new AgentToolExecutor.AgentToolContext(1L, 2L, "/x", null));
+        spec.setMaxIterations(2);
+        spec.setMaxTotalTokens(100);
+        spec.setPolicy(new AgentRunPolicy() {
+            public AgentRunDirective onFinish(AgentRunContext context, AiToolCallResult ai, AgentToolCall call) {
+                return AgentRunDirective.stop("完整证据", AgentStopReason.FINISH_TOOL);
+            }
+            public String finalizeRun(AgentRunContext context) { return "预算兜底"; }
+        });
+
+        AgentRunResult result = runner.run(spec);
+
+        assertEquals("完整证据", result.getFinalContent());
+        assertEquals(AgentStopReason.FINISH_TOOL, result.getStopReason());
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void runnerClosesProtocolForFilteredToolCalls() {
+        AiClient aiClient = mock(AiClient.class);
+        AgentToolExecutor toolExecutor = mock(AgentToolExecutor.class);
+        AgentToolCallParser parser = mock(AgentToolCallParser.class);
+        ToolFanoutExecutor fanout = mock(ToolFanoutExecutor.class);
+        AgentConversation conversation = mock(AgentConversation.class);
+        AgentRunner runner = new AgentRunner(aiClient, toolExecutor, parser, fanout, conversation);
+        AiToolCallResult response = new AiToolCallResult();
+        AgentToolCall first = new AgentToolCall();
+        first.setAction("search_code");
+        AgentToolCall second = new AgentToolCall();
+        second.setAction("search_log");
+        List<AgentToolCall> original = Arrays.asList(first, second);
+        when(toolExecutor.toolSchemas(anyBoolean(), any(ProjectExecutionScope.class)))
+                .thenReturn(Collections.<Map<String, Object>>emptyList());
+        when(aiClient.chatWithMessagesRequired(any(), any())).thenReturn(response);
+        when(parser.parseToolCalls(response)).thenReturn(original);
+        when(parser.findFinish(any())).thenReturn(null);
+        when(fanout.executeAll(any(), any())).thenReturn(Collections.singletonList(
+                AgentToolResult.ok("search_code", "命中", "code")));
+        AgentRunSpec spec = new AgentRunSpec();
+        spec.setMessages(new ArrayList<Map<String, Object>>());
+        spec.setToolContext(new AgentToolExecutor.AgentToolContext(1L, 2L, "/x", null));
+        spec.setMaxIterations(1);
+        spec.setPolicy(new AgentRunPolicy() {
+            public List<AgentToolCall> filterToolCalls(AgentRunContext context, List<AgentToolCall> calls) {
+                return Collections.singletonList(calls.get(0));
+            }
+            public AgentRunDirective onFinish(AgentRunContext context, AiToolCallResult ai, AgentToolCall call) {
+                return AgentRunDirective.stop("finish", AgentStopReason.FINISH_TOOL);
+            }
+            public AgentRunDirective afterTools(AgentRunContext context, AiToolCallResult ai,
+                                                List<AgentToolCall> calls, List<AgentToolResult> results) {
+                return AgentRunDirective.stop("done", AgentStopReason.FINISH_TOOL);
+            }
+            public String finalizeRun(AgentRunContext context) { return "fallback"; }
+        });
+
+        AgentRunResult result = runner.run(spec);
+
+        ArgumentCaptor<List> resultCaptor = ArgumentCaptor.forClass(List.class);
+        verify(conversation).appendToolMessages(any(), any(), any(), resultCaptor.capture());
+        List<AgentToolResult> aligned = (List<AgentToolResult>) resultCaptor.getValue();
+        assertEquals("done", result.getFinalContent());
+        assertEquals(2, aligned.size());
+        assertTrue(aligned.get(1).getSummary().contains("预算已满"));
+    }
+
+    @Test
+    void subAgentInvestigationMergesStructuredHandoff() {
+        Map<String, Object> round = new LinkedHashMap<String, Object>();
+        round.put("action", "search_log");
+        Map<String, AgentToolResult> cache = new LinkedHashMap<String, AgentToolResult>();
+        cache.put("search_log|{keyword=order}", AgentToolResult.ok("search_log", "命中", "L1"));
+        AgentRunContext context = new AgentRunContext(new ArrayList<Map<String, Object>>(),
+                new AgentToolExecutor.AgentToolContext(1L, 2L, "/x", null), false);
+        context.setFinalContent("日志证据");
+        context.setStopReason(AgentStopReason.FINISH_TOOL);
+        SubAgentResult result = new SubAgentResult("日志 Agent", new AgentRunResult(context),
+                Collections.singletonList(round), cache);
+
+        SubAgentInvestigation investigation = new SubAgentInvestigation(Collections.singletonList(result));
+
+        assertEquals(1, investigation.rounds().size());
+        assertEquals(1, investigation.cachedToolResults().size());
+        assertTrue(investigation.evidencePrompt().contains("禁止重复相同工具和参数"));
+        assertTrue(investigation.evidencePrompt().contains("第一轮直接调用 finish"));
+    }
+
+    @Test
+    void orchestratorStartsOnlyRequestedSubAgent() {
+        AgentRunner runner = mock(AgentRunner.class);
+        AgentConversation conversation = mock(AgentConversation.class);
+        com.tjc.bugagent.config.AppProperties properties = new com.tjc.bugagent.config.AppProperties();
+        AgentToolExecutor.AgentToolContext parent = new AgentToolExecutor.AgentToolContext(1L, 2L, "/x", null);
+        AgentRunContext resultContext = new AgentRunContext(new ArrayList<Map<String, Object>>(), parent, false);
+        resultContext.setFinalContent("源码证据");
+        resultContext.setStopReason(AgentStopReason.FINISH_TOOL);
+        when(conversation.message(any(), any())).thenReturn(new LinkedHashMap<String, Object>());
+        when(runner.run(any(AgentRunSpec.class))).thenReturn(new AgentRunResult(resultContext));
+        SubAgentOrchestrator orchestrator = new SubAgentOrchestrator(runner, conversation, properties);
+        try {
+            SubAgentInvestigation investigation = orchestrator.investigate(
+                    "只补源码返回分支", parent, com.tjc.bugagent.analysis.AnalysisProgressListener.NOOP, true, false);
+
+            assertEquals(1, investigation.getResults().size());
+            assertEquals("源码 Agent", investigation.getResults().get(0).getRole());
+            verify(runner, times(1)).run(any(AgentRunSpec.class));
+        } finally {
+            orchestrator.shutdown();
+        }
     }
 
     @Test

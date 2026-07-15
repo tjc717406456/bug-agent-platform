@@ -303,6 +303,14 @@ public class AppProperties {
         private int hypothesisChainIterations = 12;
         // 假设分支并行线程池大小，控并发别撞模型限流
         private int hypothesisPoolSize = 2;
+        // 多 Agent 子任务只做前置取证，轮次和累计 Token 都要比主链小
+        private int multiAgentSubIterations = 4;
+        private int multiAgentSubTokenBudget = 30000;
+        // 子 Agent 完成调查后，主 Agent 只补明确缺口；工具预算防止重复开荒
+        private int multiAgentMainToolBudget = 6;
+        // 主 Agent 先自行调查若干轮，仍未收口时才按当前证据缺口委派子 Agent
+        private int multiAgentDelegateAfterIterations = 2;
+        private int multiAgentWaitSeconds = 45;
         // RUNNING 任务超过该秒数没有心跳时，轮询将其修复为 INTERRUPTED
         private int taskStaleSeconds = 600;
 
@@ -360,6 +368,46 @@ public class AppProperties {
 
         public void setHypothesisPoolSize(int hypothesisPoolSize) {
             this.hypothesisPoolSize = hypothesisPoolSize;
+        }
+
+        public int getMultiAgentSubIterations() {
+            return multiAgentSubIterations;
+        }
+
+        public void setMultiAgentSubIterations(int multiAgentSubIterations) {
+            this.multiAgentSubIterations = multiAgentSubIterations;
+        }
+
+        public int getMultiAgentSubTokenBudget() {
+            return multiAgentSubTokenBudget;
+        }
+
+        public void setMultiAgentSubTokenBudget(int multiAgentSubTokenBudget) {
+            this.multiAgentSubTokenBudget = multiAgentSubTokenBudget;
+        }
+
+        public int getMultiAgentMainToolBudget() {
+            return multiAgentMainToolBudget;
+        }
+
+        public void setMultiAgentMainToolBudget(int multiAgentMainToolBudget) {
+            this.multiAgentMainToolBudget = multiAgentMainToolBudget;
+        }
+
+        public int getMultiAgentDelegateAfterIterations() {
+            return multiAgentDelegateAfterIterations;
+        }
+
+        public void setMultiAgentDelegateAfterIterations(int multiAgentDelegateAfterIterations) {
+            this.multiAgentDelegateAfterIterations = multiAgentDelegateAfterIterations;
+        }
+
+        public int getMultiAgentWaitSeconds() {
+            return multiAgentWaitSeconds;
+        }
+
+        public void setMultiAgentWaitSeconds(int multiAgentWaitSeconds) {
+            this.multiAgentWaitSeconds = multiAgentWaitSeconds;
         }
 
         public boolean isEnableSimilarCase() {

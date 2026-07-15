@@ -49,6 +49,18 @@ public final class ProjectExecutionScope {
         return allowedTools.isEmpty() || allowedTools.contains(name);
     }
 
+    /** 从父任务派生工具更少的子 Agent 作用域，项目、版本、数据源和表白名单保持不变。 */
+    public ProjectExecutionScope child(String childTaskId, String... tools) {
+        Set<String> childTools = new LinkedHashSet<String>(Arrays.asList(tools));
+        if (!allowedTools.isEmpty()) {
+            childTools.retainAll(allowedTools);
+            if (childTools.isEmpty()) {
+                throw new IllegalArgumentException("子 Agent 没有可继承的工具权限");
+            }
+        }
+        return new ProjectExecutionScope(childTaskId, ownerId, projectId, versionId, datasource, childTools);
+    }
+
     public boolean allowsTables(Iterable<String> tables) {
         if (allowedTables.isEmpty()) {
             return true;
@@ -101,4 +113,5 @@ public final class ProjectExecutionScope {
     public Long getVersionId() { return versionId; }
     public ProjectDatasource getDatasource() { return datasource; }
     public Set<String> getAllowedTables() { return allowedTables; }
+    public Set<String> getAllowedTools() { return allowedTools; }
 }

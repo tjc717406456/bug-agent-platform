@@ -56,6 +56,24 @@ public class AgentToolRegistry {
         return result;
     }
 
+    /**
+     * 按执行作用域过滤模型可见工具，避免子 Agent 看见无权调用的能力后反复试错。
+     */
+    public List<Map<String, Object>> definitions(boolean allowVerification, ProjectExecutionScope scope) {
+        if (scope == null || scope.getAllowedTools().isEmpty()) {
+            return definitions(allowVerification);
+        }
+        List<Map<String, Object>> result = new ArrayList<Map<String, Object>>();
+        for (AgentTool tool : tools.values()) {
+            if ((!allowVerification && tool.phase() == AgentToolPhase.VERIFICATION)
+                    || !scope.allowsTool(tool.name())) {
+                continue;
+            }
+            result.add(schema(tool));
+        }
+        return Collections.unmodifiableList(result);
+    }
+
     public AgentToolResult execute(AgentToolCall call, AgentToolExecutor.AgentToolContext context) {
         String name = call == null ? null : call.getAction();
         if (name == null || name.trim().isEmpty()) {

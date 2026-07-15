@@ -12,6 +12,8 @@ import java.util.Collections;
 public interface AgentRunPolicy {
     default void beforeIteration(AgentRunContext context) { }
     default void afterModelResponse(AgentRunContext context, AiToolCallResult response) { }
+    /** 按 Workflow 控制本轮真正执行的工具；默认原样放行。 */
+    default List<AgentToolCall> filterToolCalls(AgentRunContext context, List<AgentToolCall> calls) { return calls; }
     default AgentToolCall resolveFinish(AgentRunContext context, List<AgentToolCall> calls, AgentToolCall finish) { return finish; }
     AgentRunDirective onFinish(AgentRunContext context, AiToolCallResult response, AgentToolCall finish);
     default AgentRunDirective afterTools(AgentRunContext context, AiToolCallResult response,

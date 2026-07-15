@@ -72,27 +72,30 @@
           <a-col :span="8"><a-form-item label="响应结果"><a-textarea v-model:value="analysisForm.responseBody" :rows="3" /></a-form-item></a-col>
           <a-col :span="8"><a-form-item label="异常堆栈"><a-textarea v-model:value="analysisForm.stackTrace" :rows="3" placeholder="可选" /></a-form-item></a-col>
         </a-row>
-        <a-form-item label="日志">
-          <a-row :gutter="16">
-            <a-col :span="16">
-              <a-textarea v-model:value="analysisForm.logText" :rows="4" placeholder="可选，粘贴一段日志，或右侧上传 .log 文件，自动抠出堆栈、SQL、traceId、时间" />
-            </a-col>
-            <a-col :span="8">
-              <a-upload-dragger :max-count="1" accept=".log,.txt" :file-list="logFileList" :before-upload="beforeLogUpload" @remove="removeLog">
-                <p class="ant-upload-drag-icon"><InboxOutlined /></p>
-                <p class="ant-upload-text">拖入 .log 文件或点击选择（≤50MB）</p>
+        <a-row :gutter="16" class="analysis-evidence-row">
+          <a-col :xs="24" :xl="12">
+            <a-form-item label="日志">
+              <a-textarea v-model:value="analysisForm.logText" :rows="3" placeholder="可选，粘贴一段日志，或右侧上传 .log 文件，自动抠出堆栈、SQL、traceId、时间" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="12" :xl="6">
+            <a-form-item label="日志文件">
+              <a-upload-dragger class="evidence-upload" :max-count="1" accept=".log,.txt" :file-list="logFileList" :before-upload="beforeLogUpload" @remove="removeLog">
+                <div class="evidence-upload-content">
+                  <InboxOutlined />
+                  <span>拖入或选择 .log 文件<br><small>最大 50MB</small></span>
+                </div>
               </a-upload-dragger>
               <div v-if="logUploadProgress" style="margin-top:6px;text-align:center;color:#1677ff">{{ logUploadProgress }}</div>
               <a-button type="link" size="small" block @click="openLogSplit">
                 <template #icon><ScissorOutlined /></template>大文件超 50MB？按时间切割
               </a-button>
-            </a-col>
-          </a-row>
-        </a-form-item>
-        <a-row :gutter="16" align="middle">
-          <a-col :span="16">
-            <a-form-item label="错误截图" style="margin-bottom:0">
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="12" :xl="6">
+            <a-form-item label="错误截图">
               <a-upload-dragger
+                class="evidence-upload screenshot-upload"
                 multiple
                 :max-count="3"
                 accept="image/png,image/jpeg,image/jpg,image/webp"
@@ -100,25 +103,37 @@
                 :before-upload="beforeScreenshotUpload"
                 @remove="removeScreenshot"
               >
-                <p class="ant-upload-drag-icon"><InboxOutlined /></p>
-                <p class="ant-upload-text">可选，拖入截图或点击选择，最多3张</p>
+                <div class="evidence-upload-content">
+                  <InboxOutlined />
+                  <span>拖入或选择错误截图<br><small>可选，最多 3 张</small></span>
+                </div>
               </a-upload-dragger>
             </a-form-item>
           </a-col>
-          <a-col :span="8">
-            <div class="actions-col">
+        </a-row>
+        <div class="analysis-command-bar">
+          <div class="analysis-mode-options">
+            <span class="analysis-command-label">分析模式</span>
+            <div class="analysis-mode-switches">
               <a-tooltip title="开启后先侦察候选根因，方向存疑时并行分链深挖（更准但更烧 token），方向明确仍走单链；关闭跟随系统配置">
-                <span style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap">
+                <span class="analysis-switch-item">
                   <a-switch v-model:checked="analysisForm.deepMode" size="small" />深度分析
                 </span>
               </a-tooltip>
-              <a-button type="primary" style="background:#52c41a;border-color:#52c41a" :disabled="logUploading" :loading="logUploading" @click="agentAnalyzeAction"><template #icon><BarChartOutlined /></template>{{ logUploading ? '日志上传中' : 'Bug分析' }}</a-button>
-              <a-tooltip title="只需要选择对应接口地址即可">
-                <a-button class="left-gap" style="background:#fa8c16;border-color:#fa8c16;color:#fff" @click="apiAnalyzeAction"><template #icon><BarChartOutlined /></template>接口讲解</a-button>
+              <a-tooltip title="开启后主 Agent 先自行分析，遇到明确的源码或日志证据缺口时才按需委派子 Agent；与深度分析同时开启时优先按需多 Agent">
+                <span class="analysis-switch-item">
+                  <a-switch v-model:checked="analysisForm.multiAgentMode" size="small" />多 Agent 调查
+                </span>
               </a-tooltip>
             </div>
-          </a-col>
-        </a-row>
+          </div>
+          <div class="analysis-submit-actions">
+            <a-button type="primary" class="bug-analysis-button" :disabled="logUploading" :loading="logUploading" @click="agentAnalyzeAction"><template #icon><BarChartOutlined /></template>{{ logUploading ? '日志上传中' : 'Bug分析' }}</a-button>
+            <a-tooltip title="只需要选择对应接口地址即可">
+              <a-button class="api-explain-button" @click="apiAnalyzeAction"><template #icon><BarChartOutlined /></template>接口讲解</a-button>
+            </a-tooltip>
+          </div>
+        </div>
       </a-form>
     </div>
   </section>

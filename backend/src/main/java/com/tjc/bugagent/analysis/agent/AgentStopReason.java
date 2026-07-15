@@ -6,6 +6,8 @@ package com.tjc.bugagent.analysis.agent;
 public enum AgentStopReason {
     FINISH_TOOL,
     MAX_ITERATIONS,
+    TOKEN_BUDGET,
+    TOOL_BUDGET,
     CONTINUOUS_TOOL_FAILURES,
     CANCELLED,
     MODEL_ERROR,

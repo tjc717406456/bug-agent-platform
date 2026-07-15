@@ -77,6 +77,12 @@ app:
     hypothesis-min-score-gap: 25
     hypothesis-chain-iterations: 12
     hypothesis-pool-size: 2
+    # 多 Agent 先分工取证、再由主 Agent 补缺口；两段分别限轮次和累计 Token，避免重复深挖失控
+    multi-agent-sub-iterations: 4
+    multi-agent-sub-token-budget: 30000
+    multi-agent-main-tool-budget: 6
+    multi-agent-delegate-after-iterations: 2
+    multi-agent-wait-seconds: 45
   ai:
     # 关流式：网关掐连接时退流式重试，疑似把 finish 的 tool_call 弄丢→"收尾不调工具"。
     # 关了全程非流式（tool_call 整段解析最可靠）；网关掐了仍非流式重试。验证稳了再决定要不要改回 true。

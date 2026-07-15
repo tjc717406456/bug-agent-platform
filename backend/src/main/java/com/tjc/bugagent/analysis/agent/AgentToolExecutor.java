@@ -141,6 +141,12 @@ public class AgentToolExecutor {
         return toolRegistry == null ? Collections.<Map<String, Object>>emptyList() : toolRegistry.definitions(allowQueryDatabase);
     }
 
+    /** 按任务作用域返回可见工具定义。 */
+    public List<Map<String, Object>> toolSchemas(boolean allowVerification, ProjectExecutionScope scope) {
+        return toolRegistry == null ? Collections.<Map<String, Object>>emptyList()
+                : toolRegistry.definitions(allowVerification, scope);
+    }
+
     /** 注册所有内置取证工具，Schema 与执行入口保持同一真相源。 */
     private void registerTools() {
         if (toolRegistry == null) {

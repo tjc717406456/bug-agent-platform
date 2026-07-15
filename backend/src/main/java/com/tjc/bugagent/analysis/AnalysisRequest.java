@@ -23,6 +23,8 @@ public class AnalysisRequest {
     private String logId;
     // 本次是否强制走深度模式（多假设并行）；null 时按全局 hypothesis-mode 配置
     private Boolean deepMode;
+    // 本次是否启用多 Agent 分工调查；与 deepMode 独立，二者同时开启时优先多 Agent，避免并行套娃
+    private Boolean multiAgentMode;
     // 发起人，提交时在 servlet 线程从登录上下文盖章（异步执行体读不到），客户端传值会被覆盖
     private Long ownerId;
 
@@ -40,6 +42,14 @@ public class AnalysisRequest {
 
     public void setDeepMode(Boolean deepMode) {
         this.deepMode = deepMode;
+    }
+
+    public Boolean getMultiAgentMode() {
+        return multiAgentMode;
+    }
+
+    public void setMultiAgentMode(Boolean multiAgentMode) {
+        this.multiAgentMode = multiAgentMode;
     }
 
     public String getLogText() {

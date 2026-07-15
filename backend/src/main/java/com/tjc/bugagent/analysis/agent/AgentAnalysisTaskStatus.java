@@ -43,8 +43,8 @@ public class AgentAnalysisTaskStatus {
     public String getStopReason() { return stopReason; }
     public void setStopReason(String stopReason) { this.stopReason = stopReason; }
 
-    public List<String> getProgress() {
-        return progress;
+    public synchronized List<String> getProgress() {
+        return new ArrayList<String>(progress);
     }
 
     public void setProgress(List<String> progress) {

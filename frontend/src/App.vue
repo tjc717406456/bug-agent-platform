@@ -133,14 +133,102 @@ onMounted(restoreSession)
   font-size: 12px;
   margin: 0;
 }
-.analysis-actions {
-  padding-top: 0;
+.analysis-evidence-row .ant-form-item {
+  margin-bottom: 12px;
 }
-.actions-col {
+.analysis-evidence-row .evidence-upload .ant-upload-drag {
+  height: 84px;
+  min-height: 0;
+}
+.analysis-evidence-row .evidence-upload .ant-upload-btn {
+  padding: 0 12px !important;
+}
+.analysis-evidence-row .evidence-upload .ant-upload-drag-container {
+  display: block;
+}
+.evidence-upload-content {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
+  gap: 12px;
+  height: 82px;
+  color: #303133;
+  line-height: 1.35;
+  text-align: left;
+}
+.evidence-upload-content .anticon {
+  flex: 0 0 auto;
+  color: #1677ff;
+  font-size: 26px;
+}
+.evidence-upload-content small {
+  color: #8c8c8c;
+  font-size: 12px;
+}
+.analysis-command-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-left: 92px;
+  padding: 14px 16px;
+  border: 1px solid #e5eaf2;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.analysis-mode-options,
+.analysis-mode-switches,
+.analysis-submit-actions,
+.analysis-switch-item {
+  display: flex;
+  align-items: center;
+}
+.analysis-mode-options {
+  gap: 18px;
+}
+.analysis-mode-switches {
+  gap: 22px;
+}
+.analysis-switch-item {
+  gap: 7px;
+  color: #303133;
+  white-space: nowrap;
+}
+.analysis-command-label {
+  color: #7a8494;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.analysis-submit-actions {
   gap: 10px;
+}
+.analysis-submit-actions .ant-btn {
+  min-width: 112px;
+}
+.bug-analysis-button {
+  background: #52c41a;
+  border-color: #52c41a;
+}
+.api-explain-button {
+  color: #fff;
+  background: #fa8c16;
+  border-color: #fa8c16;
+}
+.api-explain-button:hover,
+.api-explain-button:focus {
+  color: #fff !important;
+  background: #ff9c32 !important;
+  border-color: #ff9c32 !important;
+}
+@media (max-width: 1100px) {
+  .analysis-command-bar {
+    align-items: flex-start;
+    flex-direction: column;
+    margin-left: 0;
+  }
+  .analysis-submit-actions {
+    align-self: flex-end;
+  }
 }
 .boot-screen {
   min-height: 100vh;

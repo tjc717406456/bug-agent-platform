@@ -180,6 +180,7 @@ export async function agentAnalyzeAction() {
     payload.versionId = payload.versionId ? Number(payload.versionId) : null
     // 深度模式只在开启时传 true；false 会强制单链、把全局 AUTO 也盖掉，关着就传 null 跟随全局
     payload.deepMode = analysisForm.deepMode ? true : null
+    payload.multiAgentMode = analysisForm.multiAgentMode ? true : null
     const task = await submitAgentAnalysisTaskScreenshots(payload, screenshotFiles.value)
     saveActiveTask(task.taskId)
     const result = await waitAgentTask(task.taskId)

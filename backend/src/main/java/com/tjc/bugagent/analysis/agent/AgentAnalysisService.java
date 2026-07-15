@@ -20,10 +20,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
@@ -59,6 +56,7 @@ public class AgentAnalysisService {
     private final HypothesisScout hypothesisScout;
     private final HypothesisFanoutExecutor hypothesisFanoutExecutor;
     private final AgentRunner agentRunner;
+    private final SubAgentOrchestrator subAgentOrchestrator;
 
     public AgentAnalysisService(ProjectService projectService,
                                 CodeGraphQueryService codeGraphQueryService,
@@ -79,7 +77,8 @@ public class AgentAnalysisService {
                                 SimilarCaseRetriever similarCaseRetriever,
                                 HypothesisScout hypothesisScout,
                                 HypothesisFanoutExecutor hypothesisFanoutExecutor,
-                                AgentRunner agentRunner) {
+                                AgentRunner agentRunner,
+                                SubAgentOrchestrator subAgentOrchestrator) {
         this.projectService = projectService;
         this.codeGraphQueryService = codeGraphQueryService;
         this.agentToolExecutor = agentToolExecutor;
@@ -100,6 +99,7 @@ public class AgentAnalysisService {
         this.hypothesisScout = hypothesisScout;
         this.hypothesisFanoutExecutor = hypothesisFanoutExecutor;
         this.agentRunner = agentRunner;
+        this.subAgentOrchestrator = subAgentOrchestrator;
     }
 
     /**
@@ -228,6 +228,26 @@ public class AgentAnalysisService {
                                       AgentToolExecutor.AgentToolContext toolContext, String initialEvidence,
                                       String initialUserPrompt, List<String> screenshots, String refPrompt,
                                       int maxIterations, AnalysisProgressListener progress) {
+        if (Boolean.TRUE.equals(request.getMultiAgentMode())) {
+            AgentRunCheckpoint resumeCheckpoint = progress.resumeCheckpoint();
+            if (resumeCheckpoint != null) {
+                progress.onStep("检测到主任务检查点，恢复主 Agent 与按需调度状态");
+                return runChain(null, maxIterations, graph, toolContext,
+                        initialEvidence, initialUserPrompt, screenshots, refPrompt, progress, "[主 Agent] ",
+                        Collections.<Map<String, Object>>emptyList(),
+                        0,
+                        AgentRunStateUtils.intValue(resumeCheckpoint.getWorkflowState(), "sideTokens"),
+                        AgentRunStateUtils.intValue(resumeCheckpoint.getWorkflowState(), "sideIterations"), true);
+            }
+            if (Boolean.TRUE.equals(request.getDeepMode())) {
+                progress.onStep("多 Agent 调查已开启，本次暂停多假设并行，避免调查链套娃");
+            }
+            progress.onStep("多 Agent 调度已允许，主 Agent 先自行调查，遇到明确证据缺口时再按需委派");
+            return runChain(null, maxIterations, graph, toolContext,
+                    initialEvidence, initialUserPrompt, screenshots, refPrompt, progress, "[主 Agent] ",
+                    Collections.<Map<String, Object>>emptyList(),
+                    0, 0, 0, true);
+        }
         String mode = resolveHypothesisMode(request);
         log.info("多假设模式 · 全局配置={} · 请求deepMode={} · 实际生效={}",
                 appProperties.getAgent().getHypothesisMode(), request.getDeepMode(), mode);
@@ -403,6 +423,19 @@ public class AgentAnalysisService {
                                  AgentToolExecutor.AgentToolContext toolContext, String initialEvidence,
                                  String initialUserPrompt, List<String> screenshots, String refPrompt,
                                  AnalysisProgressListener progress, String label) {
+        return runChain(hypothesisHint, maxIterations, graph, toolContext, initialEvidence, initialUserPrompt,
+                screenshots, refPrompt, progress, label, Collections.<Map<String, Object>>emptyList(), 0, 0, 0, false);
+    }
+
+    /**
+     * 支持从子 Agent 的结构化轮次继续调查；普通单链传空集合和 0，行为保持不变。
+     */
+    private ChainResult runChain(String hypothesisHint, int maxIterations, CodeGraphQueryResult graph,
+                                 AgentToolExecutor.AgentToolContext toolContext, String initialEvidence,
+                                 String initialUserPrompt, List<String> screenshots, String refPrompt,
+                                 AnalysisProgressListener progress, String label,
+                                 List<Map<String, Object>> seedRounds, int maxTotalTokens,
+                                 int sideTokens, int sideIterations, boolean allowSubAgentDelegation) {
         List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
         messages.add(conversation.message("system", promptBuilder.buildSystemPrompt()));
         if (aiClient.currentModelSupportsVision() && !screenshots.isEmpty()) {
@@ -417,20 +450,25 @@ public class AgentAnalysisService {
             messages.add(conversation.message("user", promptBuilder.buildHypothesisHintPrompt(hypothesisHint)));
         }
 
-        List<Map<String, Object>> rounds = new ArrayList<Map<String, Object>>();
+        List<Map<String, Object>> rounds = seedRounds == null
+                ? new ArrayList<Map<String, Object>>() : new ArrayList<Map<String, Object>>(seedRounds);
         AgentRunSpec spec = new AgentRunSpec();
         spec.setMessages(messages);
         spec.setToolContext(toolContext);
         spec.setMaxIterations(maxIterations);
+        spec.setMaxTotalTokens(maxTotalTokens);
         spec.setKeepRecentRounds(appProperties.getAgent().getKeepRecentRounds());
-        spec.setVerificationEnabled(!appProperties.getAgent().isPhasedTools());
+        spec.setVerificationEnabled(!appProperties.getAgent().isPhasedTools() || unlocksVerification(seedRounds));
         spec.setModelRole(AgentRunSpec.ModelRole.PRIMARY);
         spec.setProgress(progress);
         spec.setModelFailureMessage("⚠️ AI 服务暂不可用（网关连接异常/重置），本次分析中断，请稍后重试。");
-        spec.setPolicy(new BugAnalysisRunPolicy(graph, toolContext, initialEvidence, rounds, progress, label, maxIterations));
+        BugAnalysisRunPolicy policy = new BugAnalysisRunPolicy(graph, toolContext, initialEvidence, rounds, progress,
+                label, maxIterations, sideTokens, sideIterations, allowSubAgentDelegation);
+        spec.setPolicy(policy);
         AgentRunResult runResult = agentRunner.run(spec);
-        return new ChainResult(runResult.getFinalContent(), rounds, runResult.getTotalTokens(),
-                runResult.isFailed(), null, runResult.getIterations());
+        return new ChainResult(runResult.getFinalContent(), rounds,
+                runResult.getTotalTokens() + policy.getSideTokens(), runResult.isFailed(), null,
+                runResult.getIterations() + policy.getSideIterations());
     }
 
     /** Bug 定位的领域策略：收敛、自检和证据判定留在业务层，机械迭代交给 AgentRunner。 */
@@ -449,10 +487,16 @@ public class AgentAnalysisService {
         private boolean budgetWarned;
         private boolean coreEvidenceHinted;
         private String forceFinishReason;
+        private int sideTokens;
+        private int sideIterations;
+        private int mainToolCalls;
+        private final boolean allowSubAgentDelegation;
+        private boolean subAgentsDelegated;
 
         private BugAnalysisRunPolicy(CodeGraphQueryResult graph, AgentToolExecutor.AgentToolContext toolContext,
                                      String initialEvidence, List<Map<String, Object>> rounds,
-                                     AnalysisProgressListener progress, String label, int maxIterations) {
+                                     AnalysisProgressListener progress, String label, int maxIterations,
+                                     int sideTokens, int sideIterations, boolean allowSubAgentDelegation) {
             this.graph = graph;
             this.toolContext = toolContext;
             this.initialEvidence = initialEvidence;
@@ -460,6 +504,28 @@ public class AgentAnalysisService {
             this.progress = progress;
             this.label = label;
             this.maxIterations = maxIterations;
+            this.sideTokens = sideTokens;
+            this.sideIterations = sideIterations;
+            this.allowSubAgentDelegation = allowSubAgentDelegation;
+        }
+
+        @Override
+        public List<AgentToolCall> filterToolCalls(AgentRunContext context, List<AgentToolCall> calls) {
+            if (!isMultiAgentMain() || !subAgentsDelegated) {
+                return calls;
+            }
+            int remaining = Math.max(0, appProperties.getAgent().getMultiAgentMainToolBudget() - mainToolCalls);
+            int allowed = Math.min(2, remaining);
+            List<AgentToolCall> filtered = new ArrayList<AgentToolCall>();
+            for (AgentToolCall call : calls) {
+                if ("finish".equals(call.getAction())) {
+                    filtered.add(call);
+                } else if (allowed > 0) {
+                    filtered.add(call);
+                    allowed--;
+                }
+            }
+            return filtered;
         }
 
         public void beforeIteration(AgentRunContext context) {
@@ -519,6 +585,25 @@ public class AgentAnalysisService {
             String report = finish.stringArg("report");
             boolean twoPhase = safe(report).trim().length() < 300
                     && isBlank(forceFinishReason) && finish.getToolCallId() != null;
+            if (canCritique) {
+                AtomicInteger tokenSink = new AtomicInteger();
+                String critiqueTarget = isBlank(report) ? safe(response.getContent()) : report;
+                String verdict = judge.runSelfCritique(critiqueTarget, rounds, initialEvidence, tokenSink);
+                context.addTokens(tokenSink.get());
+                if (judge.isReviseVerdict(verdict)) {
+                    String reviseReason = judge.reviseReason(verdict);
+                    conversation.appendAssistantMessage(context.getMessages(), response);
+                    conversation.appendFinishHold(context.getMessages(), response, finish);
+                    context.getMessages().add(conversation.message("user", "对你的初步结论做了独立复核，未通过："
+                            + reviseReason + " 请针对这一点补查证据，确认后再调用 finish。"));
+                    rounds.add(reporter.recordCritique(iteration, critiqueTarget, verdict));
+                    progress.onStep(label + "第" + iteration + "轮 · 结论自检未通过："
+                            + trim(reviseReason, 160) + "；继续补证");
+                    return AgentRunDirective.continueRun();
+                }
+                selfChecked = true;
+                progress.onStep(label + "结论概要自检通过，开始生成最终报告");
+            }
             if (twoPhase) {
                 AtomicInteger tokenSink = new AtomicInteger();
                 report = streamFinalReport(context.getMessages(), response, finish, progress, tokenSink, label);
@@ -528,26 +613,6 @@ public class AgentAnalysisService {
                 }
             }
             report = reporter.ensureAnalysisReportFormat(report, rounds);
-            if (canCritique) {
-                selfChecked = true;
-                AtomicInteger tokenSink = new AtomicInteger();
-                String verdict = judge.runSelfCritique(report, rounds, initialEvidence, tokenSink);
-                context.addTokens(tokenSink.get());
-                if (judge.isReviseVerdict(verdict)) {
-                    if (twoPhase) {
-                        context.getMessages().add(conversation.message("assistant", report));
-                        progress.onPartialReport("");
-                    } else {
-                        conversation.appendAssistantMessage(context.getMessages(), response);
-                        conversation.appendFinishHold(context.getMessages(), response, finish);
-                    }
-                    context.getMessages().add(conversation.message("user", "对你的初步结论做了独立复核，未通过："
-                            + judge.reviseReason(verdict) + " 请针对这一点补查证据，确认后再调用 finish。"));
-                    rounds.add(reporter.recordCritique(iteration, report, verdict));
-                    progress.onStep(label + "第" + iteration + "轮 · 结论自检未通过，继续补证");
-                    return AgentRunDirective.continueRun();
-                }
-            }
             if (twoPhase) {
                 rounds.add(reporter.recordRound(iteration, response, finish,
                         AgentToolResult.ok("finish", "收口信号，报告已流式生成", report)));
@@ -594,13 +659,47 @@ public class AgentAnalysisService {
             if (continuousFailures >= MAX_CONTINUOUS_FAILURES) {
                 return AgentRunDirective.stop(reporter.buildFailureReport(rounds), AgentStopReason.CONTINUOUS_TOOL_FAILURES);
             }
+            boolean delegatedThisRound = false;
+            if (shouldDelegate(context)) {
+                boolean codeNeeded = needsCodeAgent(calls);
+                boolean logNeeded = needsLogAgent(calls);
+                if (codeNeeded || logNeeded) {
+                    subAgentsDelegated = true;
+                    delegatedThisRound = true;
+                    progress.onStep(label + "当前调查出现明确缺口，按需委派"
+                            + (codeNeeded ? "源码 Agent" : "")
+                            + (codeNeeded && logNeeded ? "和" : "")
+                            + (logNeeded ? "日志 Agent" : ""));
+                    SubAgentInvestigation investigation = subAgentOrchestrator.investigate(
+                            focusedDelegationEvidence(response, calls), toolContext, progress, codeNeeded, logNeeded);
+                    toolContext.restoreCachedResults(investigation.cachedToolResults());
+                    rounds.addAll(investigation.rounds());
+                    sideTokens += investigation.totalTokens();
+                    sideIterations += investigation.totalIterations();
+                    if (!investigation.getResults().isEmpty()) {
+                        context.getMessages().add(conversation.message("user", investigation.evidencePrompt()));
+                        progress.onStep(label + "子 Agent 已交接定向证据，主 Agent 继续裁决");
+                    }
+                }
+            }
+            if (isMultiAgentMain() && subAgentsDelegated && !delegatedThisRound) {
+                mainToolCalls += calls.size();
+                if (mainToolCalls >= appProperties.getAgent().getMultiAgentMainToolBudget()) {
+                    progress.onStep(label + "已完成补缺口工具预算，停止继续探索并生成报告");
+                    AtomicInteger tokenSink = new AtomicInteger();
+                    String report = forceSynthesizeReport(context.getMessages(), toolContext, rounds,
+                            context.getIteration() + 1, tokenSink, progress, label, AgentStopReason.TOOL_BUDGET);
+                    context.addTokens(tokenSink.get());
+                    return AgentRunDirective.stop(report, AgentStopReason.TOOL_BUDGET);
+                }
+            }
             return AgentRunDirective.continueRun();
         }
 
         public String finalizeRun(AgentRunContext context) {
             AtomicInteger tokenSink = new AtomicInteger();
             String report = forceSynthesizeReport(context.getMessages(), toolContext, rounds,
-                    context.getIteration() + 1, tokenSink, progress, label);
+                    context.getIteration() + 1, tokenSink, progress, label, context.getStopReason());
             context.addTokens(tokenSink.get());
             return report;
         }
@@ -615,6 +714,10 @@ public class AgentAnalysisService {
             state.put("budgetWarned", budgetWarned);
             state.put("coreEvidenceHinted", coreEvidenceHinted);
             state.put("forceFinishReason", forceFinishReason);
+            state.put("sideTokens", sideTokens);
+            state.put("sideIterations", sideIterations);
+            state.put("mainToolCalls", mainToolCalls);
+            state.put("subAgentsDelegated", subAgentsDelegated);
             return state;
         }
 
@@ -629,6 +732,62 @@ public class AgentAnalysisService {
             coreEvidenceHinted = AgentRunStateUtils.boolValue(state, "coreEvidenceHinted");
             Object reason = state == null ? null : state.get("forceFinishReason");
             forceFinishReason = reason == null ? null : String.valueOf(reason);
+            sideTokens = AgentRunStateUtils.intValue(state, "sideTokens");
+            sideIterations = AgentRunStateUtils.intValue(state, "sideIterations");
+            mainToolCalls = AgentRunStateUtils.intValue(state, "mainToolCalls");
+            subAgentsDelegated = AgentRunStateUtils.boolValue(state, "subAgentsDelegated");
+        }
+
+        private int getSideTokens() { return sideTokens; }
+        private int getSideIterations() { return sideIterations; }
+        private boolean isMultiAgentMain() { return safe(label).startsWith("[主 Agent]"); }
+
+        private boolean shouldDelegate(AgentRunContext context) {
+            if (!allowSubAgentDelegation || subAgentsDelegated) {
+                return false;
+            }
+            int threshold = Math.max(1, appProperties.getAgent().getMultiAgentDelegateAfterIterations());
+            return (context.getIteration() >= threshold && noNewKeyFactRounds > 0)
+                    || context.getIteration() >= threshold + 2;
+        }
+
+        private boolean needsCodeAgent(List<AgentToolCall> calls) {
+            for (AgentToolCall call : calls) {
+                String action = safe(call.getAction());
+                if ("search_code".equals(action) || "get_code_detail".equals(action)
+                        || "trace_call_chain".equals(action) || "search_sql".equals(action)
+                        || "grep_source".equals(action) || "find_callers".equals(action)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean needsLogAgent(List<AgentToolCall> calls) {
+            for (AgentToolCall call : calls) {
+                if ("search_log".equals(call.getAction())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private String focusedDelegationEvidence(AiToolCallResult response, List<AgentToolCall> calls) {
+            StringBuilder evidence = new StringBuilder();
+            evidence.append("【主 Agent 当前未闭合断点】\n")
+                    .append(trim(safe(response.getContent()), 1200)).append("\n")
+                    .append("【本轮尝试工具】\n").append(actionNames(calls)).append("\n")
+                    .append("【最近结构化证据】\n");
+            int from = Math.max(0, rounds.size() - 6);
+            for (int index = from; index < rounds.size(); index++) {
+                Map<String, Object> round = rounds.get(index);
+                evidence.append("- ").append(safe(round.get("action"))).append(' ')
+                        .append(trim(safe(round.get("arguments")), 180)).append("：")
+                        .append(trim(safe(round.get("toolSummary")), 240)).append("\n")
+                        .append(trim(safe(round.get("toolEvidence")), 600)).append("\n");
+            }
+            evidence.append("只调查上述未闭合断点，不要从接口入口重新开始。");
+            return AgentTextUtils.trim(evidence.toString(), 6000);
         }
     }
 
@@ -672,7 +831,7 @@ public class AgentAnalysisService {
         conversation.appendFinishAck(messages, aiResult, finish);
         messages.add(conversation.message("user", PROSE_REPORT_INSTRUCTION));
         progress.onStep(label + "证据足够，开始生成最终报告");
-        boolean pushPartial = isBlank(label);
+        boolean pushPartial = !isHypothesisBranch(label);
         final long[] lastPushMs = {0};
         AiToolCallResult prose = aiClient.chatProseStream(messages, snapshot -> {
             if (!pushPartial) {
@@ -721,13 +880,15 @@ public class AgentAnalysisService {
      */
     private String forceSynthesizeReport(List<Map<String, Object>> messages, AgentToolExecutor.AgentToolContext toolContext,
                                          List<Map<String, Object>> rounds, int iteration, AtomicInteger tokenSink,
-                                         AnalysisProgressListener progress, String label) {
+                                         AnalysisProgressListener progress, String label, AgentStopReason stopReason) {
         try {
-            log.info("{}已达最大轮次，查证结束，开始流式生成最终报告", label);
-            progress.onStep(label + "已达最大轮次，开始生成最终报告");
-            messages.add(conversation.message("user", "已达到最大分析轮次。请基于全部已确认事实和复核意见完成收尾。"
+            String finishReason = stopReason == AgentStopReason.TOKEN_BUDGET ? "已达到本次 Token 预算"
+                    : stopReason == AgentStopReason.TOOL_BUDGET ? "已完成本次补缺口工具预算" : "已达到最大分析轮次";
+            log.info("{}{}，查证结束，开始流式生成最终报告", label, finishReason);
+            progress.onStep(label + finishReason + "，开始生成最终报告");
+            messages.add(conversation.message("user", finishReason + "。请基于全部已确认事实和复核意见完成收尾。"
                     + PROSE_REPORT_INSTRUCTION));
-            boolean pushPartial = isBlank(label);
+            boolean pushPartial = !isHypothesisBranch(label);
             final long[] lastPushMs = {0};
             AiToolCallResult prose = aiClient.chatProseStream(messages, snapshot -> {
                 if (!pushPartial) {
@@ -753,6 +914,10 @@ public class AgentAnalysisService {
             // 兜底报告照样给，不让异常打断收尾
         }
         return reporter.buildMaxRoundReport(rounds);
+    }
+
+    private boolean isHypothesisBranch(String label) {
+        return safe(label).startsWith("[假设");
     }
 
     private ProjectVersion resolveVersion(AnalysisRequest request) {
@@ -807,6 +972,19 @@ public class AgentAnalysisService {
     private boolean unlocksVerify(String action) {
         return "get_code_detail".equals(action) || "trace_call_chain".equals(action)
                 || "search_code".equals(action) || "describe_tables".equals(action);
+    }
+
+    /** 子 Agent 已读过源码或表结构时，主 Agent 直接进入验证阶段，不为解锁查库重复取证。 */
+    private boolean unlocksVerification(List<Map<String, Object>> rounds) {
+        if (rounds == null) {
+            return false;
+        }
+        for (Map<String, Object> round : rounds) {
+            if (Boolean.TRUE.equals(round.get("toolOk")) && unlocksVerify(safe(round.get("action")))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 拆分截图路径：存储按换行拼接，顺带兼容逗号分隔，去空。 */
