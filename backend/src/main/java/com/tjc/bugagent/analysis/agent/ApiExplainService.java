@@ -303,7 +303,26 @@ public class ApiExplainService {
         } catch (Exception exception) {
             // 兜底报告照样给，不让异常打断收尾
         }
-        return reporter.buildMaxRoundReport(rounds);
+        return buildExplainFallbackReport(rounds);
+    }
+
+    /** 接口讲解专用兜底，不混入 Bug 修复建议和置信度等定位报告字段。 */
+    private String buildExplainFallbackReport(List<Map<String, Object>> rounds) {
+        StringBuilder report = new StringBuilder();
+        report.append("【通俗说明】接口讲解达到最大轮次，以下内容基于已经读取到的调用链和源码整理。\n\n");
+        report.append("【完整流程】\n");
+        if (rounds.isEmpty()) {
+            report.append("当前没有取得可用的流程证据。\n");
+        } else {
+            for (Map<String, Object> round : rounds) {
+                report.append("- 第").append(safe(round.get("iteration"))).append("轮 · ")
+                        .append(reporter.actionName(safe(round.get("action")))).append("：")
+                        .append(trim(safe(round.get("toolSummary")), 100)).append("\n");
+            }
+        }
+        report.append("\n【关键代码】请结合证据页中已读取的源码位置继续确认。\n");
+        report.append("【数据流向】未讲透的环节需结合当前版本源码和授权范围内的数据库证据补充。\n");
+        return report.toString();
     }
 
     /** 本轮全部工具动作名拼成日志串，一眼看清这轮查了啥。 */
