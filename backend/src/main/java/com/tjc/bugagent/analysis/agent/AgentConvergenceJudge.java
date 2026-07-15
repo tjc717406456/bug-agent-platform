@@ -12,11 +12,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.isBlank;
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.safe;
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.trim;
-import static com.tjc.bugagent.analysis.agent.AgentTextUtils.trimHeadTail;
 
 /**
  * Agent 收敛与可信度判定：用结构化信号决定何时强制收口、初步结论要不要复核、最终置信度评级。
@@ -27,6 +28,7 @@ public class AgentConvergenceJudge {
 
     // 连续多少轮无新增关键事实即强制收口。编排层日志也引用，故包可见
     static final int MAX_NO_NEW_FACT_ROUNDS = 2;
+    private static final Pattern GAP_IDENTIFIER_PATTERN = Pattern.compile("[A-Za-z_][A-Za-z0-9_.#-]{2,}");
 
     private final AiClient aiClient;
     private final AppProperties appProperties;
@@ -67,7 +69,8 @@ public class AgentConvergenceJudge {
                 continue;
             }
             String action = safe(round.get("action"));
-            if ("get_code_detail".equals(action) || "trace_call_chain".equals(action) || "search_code".equals(action)) {
+            if ("get_code_detail".equals(action) || "read_source".equals(action)
+                    || "trace_call_chain".equals(action) || "search_code".equals(action)) {
                 code = true;
             }
             if ("query_database".equals(action) || "describe_tables".equals(action)) {
@@ -92,6 +95,155 @@ public class AgentConvergenceJudge {
             }
         }
         return true;
+    }
+
+    /**
+     * 判断本轮工具是否直接推进当前关键证据缺口，避免无关新文本反复重置空转计数。
+     */
+    public boolean advancesEvidenceGap(String gap, AgentToolCall call, AgentToolResult toolResult) {
+        if (isBlank(gap)) {
+            return false;
+        }
+        if (call == null || toolResult == null || !toolResult.isOk() || isBlank(toolResult.getEvidence())) {
+            return false;
+        }
+        String normalizedGap = gap.toLowerCase();
+        String action = safe(call.getAction());
+        String evidence = (safe(toolResult.getSummary()) + " " + safe(toolResult.getEvidence())).toLowerCase();
+        if (containsAny(normalizedGap, "源码", "代码", "方法", "分支", "返回", "响应", "字段", "赋值")
+                && containsAny(action, "get_code_detail", "read_source", "grep_source", "search_code",
+                "trace_call_chain", "find_callers")) {
+            return matchesGapIdentifier(normalizedGap, evidence);
+        }
+        if (containsAny(normalizedGap, "日志", "时间", "回执", "ack", "超时", "req", "trace")
+                && "search_log".equals(action)) {
+            return matchesGapIdentifier(normalizedGap, evidence);
+        }
+        if (containsAny(normalizedGap, "数据库", "业务数据", "记录", "配置值", "查询结果")
+                && "query_database".equals(action)) {
+            return matchesGapIdentifier(normalizedGap, evidence);
+        }
+        if (containsAny(normalizedGap, "sql", "mapper")
+                && ("search_sql".equals(action) || "grep_source".equals(action)
+                || "read_source".equals(action) || "get_code_detail".equals(action))) {
+            return matchesGapIdentifier(normalizedGap, evidence);
+        }
+        if (containsAny(normalizedGap, "表结构", "列类型", "字段类型", "表字段")
+                && ("describe_tables".equals(action) || "search_sql".equals(action))) {
+            return matchesGapIdentifier(normalizedGap, evidence);
+        }
+        if (containsAny(normalizedGap, "调用链", "入口", "controller", "调用方")
+                && ("trace_call_chain".equals(action) || "find_callers".equals(action)
+                || "get_code_detail".equals(action) || "read_source".equals(action))) {
+            return matchesGapIdentifier(normalizedGap, evidence);
+        }
+        for (String term : normalizedGap.split("[^\\p{L}\\p{N}_]+")) {
+            if (term.length() >= 4 && evidence.contains(term)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 判断工具结果是否已经闭合当前证据缺口。搜索类工具只负责定位，源码缺口必须由直接读取结果证明。
+     */
+    public boolean resolvesEvidenceGap(String gap, AgentToolCall call, AgentToolResult toolResult) {
+        if (isBlank(gap) || call == null || toolResult == null || !toolResult.isOk()
+                || isBlank(toolResult.getEvidence())) {
+            return false;
+        }
+        String normalizedGap = gap.toLowerCase();
+        String action = safe(call.getAction());
+        String evidence = (safe(toolResult.getSummary()) + " " + safe(toolResult.getEvidence())).toLowerCase();
+        if (containsAny(normalizedGap, "源码", "代码", "方法", "分支", "返回", "响应", "字段", "赋值")) {
+            if (!"get_code_detail".equals(action) && !"read_source".equals(action)) {
+                return false;
+            }
+            return matchesGapIdentifier(normalizedGap, evidence) && matchesRequiredField(normalizedGap, evidence)
+                    && matchesBranchRelationship(normalizedGap, evidence);
+        }
+        if (containsAny(normalizedGap, "日志", "时间", "回执", "ack", "超时", "req", "trace")) {
+            return "search_log".equals(action) && matchesGapIdentifier(normalizedGap, evidence);
+        }
+        if (containsAny(normalizedGap, "数据库", "业务数据", "记录", "配置值", "查询结果")) {
+            return "query_database".equals(action) && matchesGapIdentifier(normalizedGap, evidence);
+        }
+        if (containsAny(normalizedGap, "表结构", "列类型", "字段类型", "表字段")) {
+            return "describe_tables".equals(action) && matchesGapIdentifier(normalizedGap, evidence);
+        }
+        if (containsAny(normalizedGap, "sql", "mapper")) {
+            return ("search_sql".equals(action) || "get_code_detail".equals(action)
+                    || "read_source".equals(action)) && matchesGapIdentifier(normalizedGap, evidence);
+        }
+        if (containsAny(normalizedGap, "调用链", "入口", "controller", "调用方")) {
+            return ("trace_call_chain".equals(action) || "find_callers".equals(action)
+                    || "get_code_detail".equals(action) || "read_source".equals(action))
+                    && matchesGapIdentifier(normalizedGap, evidence);
+        }
+        return matchesGapIdentifier(normalizedGap, evidence);
+    }
+
+    /** 搜索工具首次命中目标标识时只算定位成功，不等同于证据已经闭合。 */
+    public boolean locatesEvidenceGap(String gap, AgentToolCall call, AgentToolResult toolResult) {
+        if (isBlank(gap) || call == null || toolResult == null || !toolResult.isOk()) {
+            return false;
+        }
+        String action = safe(call.getAction());
+        if (!"search_code".equals(action) && !"grep_source".equals(action)
+                && !"search_sql".equals(action)) {
+            return false;
+        }
+        String evidence = (safe(toolResult.getSummary()) + " " + safe(toolResult.getEvidence())).toLowerCase();
+        return matchesGapIdentifier(gap.toLowerCase(), evidence);
+    }
+
+    private boolean matchesRequiredField(String gap, String evidence) {
+        if (!containsAny(gap, "字段", "设置", "携带", "放入", "赋值")) {
+            return true;
+        }
+        Matcher matcher = GAP_IDENTIFIER_PATTERN.matcher(gap);
+        String candidate = null;
+        while (matcher.find()) {
+            String value = matcher.group().toLowerCase();
+            if (!containsAny(value, "controller", "service", "impl", "responsemodel", "result", "false", "true")) {
+                candidate = value;
+            }
+        }
+        return candidate == null || evidence.contains(candidate);
+    }
+
+    private boolean matchesBranchRelationship(String gap, String evidence) {
+        if (!containsAny(gap, "分支", "result=false", "失败", "成功")) {
+            return true;
+        }
+        boolean hasBranch = containsAny(evidence, "if (!result", "if(!result", "result=false",
+                "result == false", "result==false", "失败");
+        boolean hasReturn = containsAny(evidence, "return", "返回");
+        return hasBranch && hasReturn;
+    }
+
+    /** 有类名、方法名、字段名或请求标识时，工具结果必须实际包含其中一项。 */
+    private boolean matchesGapIdentifier(String gap, String evidence) {
+        Matcher matcher = GAP_IDENTIFIER_PATTERN.matcher(gap);
+        boolean found = false;
+        while (matcher.find()) {
+            found = true;
+            if (evidence.contains(matcher.group().toLowerCase())) {
+                return true;
+            }
+        }
+        return !found;
+    }
+
+    /** 判断文本是否包含任一证据类别关键词。 */
+    private boolean containsAny(String value, String... candidates) {
+        for (String candidate : candidates) {
+            if (value.contains(candidate)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // 判重只看确定性的工具侧字段（工具、参数、摘要、证据）。thought 是模型自由文本，
@@ -148,7 +300,8 @@ public class AgentConvergenceJudge {
         // 路由命中已确认，给基础分
         score += 1;
         // 读到了源码证据：工具读取，或初始证据已预取源码快照
-        if (successfulTools.contains("get_code_detail") || successfulTools.contains("trace_call_chain")
+        if (successfulTools.contains("get_code_detail") || successfulTools.contains("read_source")
+                || successfulTools.contains("trace_call_chain")
                 || hasSnapshotTarget(graph)) {
             score += 1;
         }
@@ -174,8 +327,8 @@ public class AgentConvergenceJudge {
      * CONFIRM 直接收口，REFRAME 只修正报告边界，REVISE 才继续补查；复核开销计入 tokenSink。
      */
     public String runSelfCritique(String report, List<Map<String, Object>> rounds, String initialEvidence, AtomicInteger tokenSink) {
-        // 自检证据保头留尾：头是入口/堆栈/路由定位，尾是末轮根因查证，超限时挖掉中间探索轮
-        String evidence = trimHeadTail(roundReporter.buildEvidenceLog(initialEvidence, rounds), appProperties.getAgent().getInitialEvidenceLimit());
+        String evidence = roundReporter.buildCritiqueEvidence(initialEvidence, rounds, report,
+                appProperties.getAgent().getInitialEvidenceLimit());
         StringBuilder prompt = new StringBuilder();
         prompt.append("你是 Bug 分析结论复核员。判断初步结论是否足以回答用户问题，不追求证明所有下游细节。\n");
         prompt.append("复核规则：\n");
@@ -185,6 +338,7 @@ public class AgentConvergenceJudge {
         prompt.append("4. 不得为了百分之百确定性继续补查；合理排除会改变处理方向的主要替代原因即可。\n");
         prompt.append("5. 表述过满但核心结论成立，只要求收窄措辞，不要求继续调查。\n");
         prompt.append("6. 只有缺失证据会实质改变根因判断、处理方向或用户答案时，才要求继续补查，且证据必须能从现有工具和数据源获得。\n");
+        prompt.append("7. 若业务源码已明确显示失败分支提前返回，且目标字段只在成功分支显式追加，即可确认业务代码未在失败响应中设置该字段；除非已有证据显示框架会自动补字段，不得继续要求公共响应模型内部实现或实际 HTTP 响应日志。\n");
         prompt.append("输出规则：\n");
         prompt.append("- 核心结论成立且证据足够，第一行只回 CONFIRM。\n");
         prompt.append("- 核心结论成立但措辞需要收窄，第一行只回 REFRAME，第二行用一句话说明如何修改。\n");

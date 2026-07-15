@@ -38,6 +38,7 @@ public class AgentToolExecutor {
     private static final int MAX_SNIPPET_LINES = 80;
     // grep 原始源码的护栏：单次最多回多少处命中、单行截多长、跳过多大的文件
     private static final int GREP_MAX_MATCHES = 40;
+    private static final int AUTO_FALLBACK_MATCHES = 8;
     private static final int GREP_MAX_LINE_LENGTH = 200;
     private static final long GREP_MAX_FILE_BYTES = 1_000_000;
     // search_log 传 "L<行号>"(如 L39741)时按行号取上下文；只认 L 前缀，裸数字仍当内容搜(避免订单号等被误判)
@@ -103,6 +104,9 @@ public class AgentToolExecutor {
         if ("get_code_detail".equals(action)) {
             return getCodeDetail(call, context);
         }
+        if ("read_source".equals(action)) {
+            return readSource(call, context);
+        }
         if ("trace_call_chain".equals(action)) {
             return traceCallChain(call, context);
         }
@@ -147,6 +151,62 @@ public class AgentToolExecutor {
                 : toolRegistry.definitions(allowVerification, scope);
     }
 
+    /**
+     * 按本次真实上下文动态隐藏不可用工具。没有日志时不暴露 search_log，数据库工具仍由执行范围控制。
+     */
+    public List<Map<String, Object>> toolSchemas(boolean allowVerification, AgentToolContext context) {
+        if (toolRegistry == null) {
+            return Collections.emptyList();
+        }
+        List<Map<String, Object>> definitions = toolRegistry.definitions(allowVerification, context.getScope());
+        boolean hasLog = !isBlank(context.getLogPath()) || !isBlank(context.getLogText());
+        boolean hasSource = hasSourceRoot(context);
+        return definitions.stream().filter(item -> {
+                    String name = toolDefinitionName(item);
+                    if (!hasLog && "search_log".equals(name)) {
+                        return false;
+                    }
+                    return hasSource || (!"grep_source".equals(name) && !"read_source".equals(name));
+                })
+                .collect(Collectors.collectingAndThen(Collectors.toList(), Collections::unmodifiableList));
+    }
+
+    /** 判断当前版本是否具备可读取的源码目录。 */
+    private boolean hasSourceRoot(AgentToolContext context) {
+        Boolean cached = context.sourceAvailable();
+        if (cached != null) {
+            return cached;
+        }
+        if (projectService == null) {
+            context.sourceAvailable(false);
+            return false;
+        }
+        try {
+            ProjectVersion version = projectService.getVersion(context.getVersionId());
+            if (version == null || isBlank(version.getSourcePath())) {
+                context.sourceAvailable(false);
+                return false;
+            }
+            boolean available = Files.exists(Paths.get(version.getSourcePath()).toAbsolutePath().normalize());
+            context.sourceAvailable(available);
+            return available;
+        } catch (Exception exception) {
+            context.sourceAvailable(false);
+            return false;
+        }
+    }
+
+    /** 读取 OpenAI 工具定义中的函数名。 */
+    @SuppressWarnings("unchecked")
+    private String toolDefinitionName(Map<String, Object> definition) {
+        Object function = definition == null ? null : definition.get("function");
+        if (!(function instanceof Map)) {
+            return null;
+        }
+        Object name = ((Map<String, Object>) function).get("name");
+        return name == null ? null : String.valueOf(name);
+    }
+
     /** 注册所有内置取证工具，Schema 与执行入口保持同一真相源。 */
     private void registerTools() {
         if (toolRegistry == null) {
@@ -156,6 +216,8 @@ public class AgentToolExecutor {
                 AgentToolPhase.DISCOVERY, true, true, true, this::searchCode, "keyword");
         register("get_code_detail", "读关键源码片段，按 nodeId 或 className/methodName 查",
                 AgentToolPhase.DISCOVERY, true, true, true, this::getCodeDetail);
+        register("read_source", "按当前版本源码文件和行号直接读取；优先使用 grep_source 返回的 sourceRef",
+                AgentToolPhase.DISCOVERY, true, true, true, this::readSource, "filePath");
         register("trace_call_chain", "按接口路径重追调用链、SQL 和表",
                 AgentToolPhase.DISCOVERY, true, true, true, this::traceCallChain);
         register("search_sql", "按关键词搜 SQL/Mapper 节点",
@@ -182,7 +244,9 @@ public class AgentToolExecutor {
         Map<String, Object> properties = new LinkedHashMap<String, Object>();
         List<String> parameterNames = new ArrayList<String>(Arrays.asList(required));
         if ("get_code_detail".equals(name)) {
-            parameterNames.addAll(Arrays.asList("nodeId", "className", "methodName"));
+            parameterNames.addAll(Arrays.asList("nodeId", "className", "methodName", "filePath", "line", "contextLines"));
+        } else if ("read_source".equals(name)) {
+            parameterNames.addAll(Arrays.asList("line", "contextLines"));
         } else if ("trace_call_chain".equals(name)) {
             parameterNames.add("apiPath");
         } else if ("finish".equals(name)) {
@@ -190,12 +254,16 @@ public class AgentToolExecutor {
         }
         for (String parameter : parameterNames) {
             Map<String, Object> property = new LinkedHashMap<String, Object>();
-            property.put("type", "nodeId".equals(parameter) ? "integer" : "string");
+            property.put("type", isIntegerParameter(parameter) ? "integer" : "string");
             property.put("description", parameter);
             properties.put(parameter, property);
         }
         toolRegistry.register(new RegisteredAgentTool(name, description, properties, Arrays.asList(required),
                 phase, concurrencySafe, cacheable, contributesEvidence, executor));
+    }
+
+    private boolean isIntegerParameter(String parameter) {
+        return "nodeId".equals(parameter) || "line".equals(parameter) || "contextLines".equals(parameter);
     }
 
     private AgentToolResult searchCode(AgentToolCall call, AgentToolContext context) {
@@ -205,12 +273,20 @@ public class AgentToolExecutor {
         }
         List<CodeNode> nodes = codeGraphQueryService.searchNodesByName(context.getProjectId(), context.getVersionId(), keyword);
         if (nodes.isEmpty()) {
-            return AgentToolResult.empty("search_code", "未找到代码节点: " + keyword + "（可换关键词，或用 grep_source 全文搜字面量/枚举/常量）");
+            List<SourceMatch> matches = findSourceMatches(keyword, context, AUTO_FALLBACK_MATCHES);
+            if (!matches.isEmpty()) {
+                return AgentToolResult.ok("search_code", "代码节点未命中，已降级为源码全文检索",
+                        formatSourceMatches(matches));
+            }
+            return AgentToolResult.empty("search_code", "未找到代码节点或源码字面量: " + keyword);
         }
         return AgentToolResult.ok("search_code", "找到 " + nodes.size() + " 个代码节点", formatNodes(nodes));
     }
 
     private AgentToolResult getCodeDetail(AgentToolCall call, AgentToolContext context) {
+        if (!isBlank(call.stringArg("filePath"))) {
+            return readSource(call, context);
+        }
         CodeNode node = null;
         Long nodeId = call.longArg("nodeId");
         if (nodeId != null) {
@@ -232,9 +308,35 @@ public class AgentToolExecutor {
             }
         }
         if (node == null) {
-            return AgentToolResult.empty("get_code_detail", "未找到源码节点（确认 nodeId 或类名/方法名，或先用 search_code 定位）");
+            String keyword = !isBlank(call.stringArg("methodName"))
+                    ? call.stringArg("methodName") : call.stringArg("className");
+            SourceMatch match = pickFallbackMatch(findSourceMatches(keyword, context, AUTO_FALLBACK_MATCHES),
+                    call.stringArg("className"));
+            if (match != null) {
+                String snippet = sourceReader.readSourceRange(match.filePath, context.getVersionId(), match.line,
+                        integerArg(call, "contextLines", 60));
+                return AgentToolResult.ok("get_code_detail", "源码节点未命中，已按文件和行号降级读取",
+                        match.sourceRef() + "\n" + snippet);
+            }
+            return AgentToolResult.empty("get_code_detail", "未找到源码节点或可读取的文件行号: " + safe(keyword));
         }
         return AgentToolResult.ok("get_code_detail", "读取源码: " + node.getName(), formatNodeWithSnippet(node, context));
+    }
+
+    /** 按 sourceRef 中的文件和行号读取源码。 */
+    private AgentToolResult readSource(AgentToolCall call, AgentToolContext context) {
+        String filePath = call.stringArg("filePath");
+        if (isBlank(filePath)) {
+            return AgentToolResult.fail("read_source", "缺少 filePath");
+        }
+        int line = integerArg(call, "line", 1);
+        int contextLines = integerArg(call, "contextLines", 40);
+        String snippet = sourceReader.readSourceRange(filePath, context.getVersionId(), line, contextLines);
+        if (snippet.startsWith("读取源码失败:")) {
+            return AgentToolResult.fail("read_source", snippet);
+        }
+        return AgentToolResult.ok("read_source", "按文件行号读取源码: " + filePath + ":" + line,
+                new SourceMatch(filePath, line, "").sourceRef() + "\n" + snippet);
     }
 
     private AgentToolResult traceCallChain(AgentToolCall call, AgentToolContext context) {
@@ -243,6 +345,21 @@ public class AgentToolExecutor {
             apiPath = context.getApiPath();
         }
         CodeGraphQueryResult graph = codeGraphQueryService.queryByApiPath(context.getProjectId(), context.getVersionId(), apiPath);
+        if (graph.getRouteNodes().isEmpty()) {
+            List<SourceMatch> matches = findSourceMatches(apiPath, context, AUTO_FALLBACK_MATCHES);
+            if (matches.isEmpty()) {
+                int slash = apiPath.lastIndexOf('/');
+                String endpoint = slash >= 0 ? apiPath.substring(slash + 1) : apiPath;
+                matches = findSourceMatches(endpoint, context, AUTO_FALLBACK_MATCHES);
+            }
+            if (!matches.isEmpty()) {
+                SourceMatch match = matches.get(0);
+                String snippet = sourceReader.readSourceRange(match.filePath, context.getVersionId(), match.line, 40);
+                return AgentToolResult.ok("trace_call_chain", "接口路由节点未命中，已降级定位入口源码",
+                        formatSourceMatches(matches) + "\n入口源码:\n" + match.sourceRef() + "\n" + snippet);
+            }
+            return AgentToolResult.empty("trace_call_chain", "代码索引和源码全文均未命中接口: " + apiPath);
+        }
         String evidence = "接口路径: " + apiPath + "\n" +
                 "路由节点:\n" + formatNodes(graph.getRouteNodes()) + "\n" +
                 "相关节点:\n" + formatNodes(graph.getRelatedNodes()) + "\n" +
@@ -258,7 +375,12 @@ public class AgentToolExecutor {
         }
         List<CodeNode> nodes = codeGraphQueryService.searchSqlNodes(context.getProjectId(), context.getVersionId(), keyword);
         if (nodes.isEmpty()) {
-            return AgentToolResult.empty("search_sql", "未找到 SQL 节点: " + keyword + "（可换关键词，或用 grep_source 在 mapper xml 里搜）");
+            List<SourceMatch> matches = findSourceMatches(keyword, context, AUTO_FALLBACK_MATCHES);
+            if (!matches.isEmpty()) {
+                return AgentToolResult.ok("search_sql", "SQL 节点未命中，已降级为源码全文检索",
+                        formatSourceMatches(matches));
+            }
+            return AgentToolResult.empty("search_sql", "未找到 SQL 节点或源码字面量: " + keyword);
         }
         return AgentToolResult.ok("search_sql", "找到 " + nodes.size() + " 个 SQL/Mapper 节点", formatNodes(nodes));
     }
@@ -302,8 +424,10 @@ public class AgentToolExecutor {
                 if (!lines.get(index).toLowerCase().contains(needle)) {
                     continue;
                 }
-                evidence.append(relative).append(':').append(index + 1).append(": ")
-                        .append(trimLine(lines.get(index).trim())).append('\n');
+                SourceMatch match = new SourceMatch(relative, index + 1, trimLine(lines.get(index).trim()));
+                evidence.append(match.sourceRef()).append('\n')
+                        .append(relative).append(':').append(index + 1).append(": ")
+                        .append(match.text).append('\n');
                 if (++matched >= GREP_MAX_MATCHES) {
                     evidence.append("...（命中超过 ").append(GREP_MAX_MATCHES).append(" 处已截断，请用更精确的关键词）\n");
                     return AgentToolResult.ok("grep_source", "grep 命中 " + matched + " 处（已截断）", evidence.toString());
@@ -314,6 +438,85 @@ public class AgentToolExecutor {
             return AgentToolResult.empty("grep_source", "源码里未匹配到: " + keyword);
         }
         return AgentToolResult.ok("grep_source", "grep 命中 " + matched + " 处", evidence.toString());
+    }
+
+    /** 在当前版本源码目录中查找稳定文件行号引用。 */
+    private List<SourceMatch> findSourceMatches(String keyword, AgentToolContext context, int limit) {
+        if (isBlank(keyword)) {
+            return Collections.emptyList();
+        }
+        ProjectVersion version = projectService.getVersion(context.getVersionId());
+        if (version == null || isBlank(version.getSourcePath())) {
+            return Collections.emptyList();
+        }
+        Path root = Paths.get(version.getSourcePath()).toAbsolutePath().normalize();
+        return Files.exists(root) ? findSourceMatches(keyword, root, limit) : Collections.<SourceMatch>emptyList();
+    }
+
+    /** 在指定源码根目录中查找稳定文件行号引用。 */
+    private List<SourceMatch> findSourceMatches(String keyword, Path root, int limit) {
+        List<SourceMatch> matches = new ArrayList<SourceMatch>();
+        if (isBlank(keyword) || root == null || !Files.exists(root)) {
+            return matches;
+        }
+        String needle = keyword.toLowerCase();
+        try (Stream<Path> walk = Files.walk(root)) {
+            List<Path> files = walk.filter(Files::isRegularFile).filter(this::isSearchableSource)
+                    .collect(Collectors.toList());
+            for (Path file : files) {
+                List<String> lines;
+                try {
+                    lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+                } catch (Exception ignored) {
+                    continue;
+                }
+                String relative = root.relativize(file).toString().replace('\\', '/');
+                for (int index = 0; index < lines.size(); index++) {
+                    if (lines.get(index).toLowerCase().contains(needle)) {
+                        matches.add(new SourceMatch(relative, index + 1, trimLine(lines.get(index).trim())));
+                        if (matches.size() >= limit) {
+                            return matches;
+                        }
+                    }
+                }
+            }
+        } catch (IOException ignored) {
+            return Collections.emptyList();
+        }
+        return matches;
+    }
+
+    /** 优先选择文件名与目标类一致的全文命中。 */
+    private SourceMatch pickFallbackMatch(List<SourceMatch> matches, String className) {
+        if (matches == null || matches.isEmpty()) {
+            return null;
+        }
+        if (!isBlank(className)) {
+            String simpleName = className.substring(className.lastIndexOf('.') + 1).toLowerCase();
+            for (SourceMatch match : matches) {
+                if (match.filePath.toLowerCase().contains(simpleName)) {
+                    return match;
+                }
+            }
+        }
+        return matches.get(0);
+    }
+
+    /** 将全文命中格式化为 sourceRef 和可读行引用。 */
+    private String formatSourceMatches(List<SourceMatch> matches) {
+        StringBuilder evidence = new StringBuilder();
+        for (SourceMatch match : matches) {
+            evidence.append(match.sourceRef()).append('\n')
+                    .append(match.filePath).append(':').append(match.line).append(": ")
+                    .append(match.text).append('\n');
+        }
+        return evidence.toString();
+    }
+
+    /** 安全读取非负整型工具参数。 */
+    private int integerArg(AgentToolCall call, String name, int defaultValue) {
+        Long value = call.longArg(name);
+        return value == null ? defaultValue : (int) Math.max(0L, Math.min((long) Integer.MAX_VALUE, value));
     }
 
     /**
@@ -596,6 +799,25 @@ public class AgentToolExecutor {
         return items == null || items.isEmpty() ? "无" : String.join("\n", items);
     }
 
+    private static final class SourceMatch {
+        private final String filePath;
+        private final int line;
+        private final String text;
+
+        /** 创建一条源码全文命中。 */
+        private SourceMatch(String filePath, int line, String text) {
+            this.filePath = filePath;
+            this.line = line;
+            this.text = text;
+        }
+
+        /** 返回可直接交给 read_source 的稳定引用。 */
+        private String sourceRef() {
+            return "sourceRef={\"filePath\":\"" + filePath.replace("\\", "/").replace("\"", "\\\"")
+                    + "\",\"line\":" + line + "}";
+        }
+    }
+
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
     }
@@ -639,6 +861,8 @@ public class AgentToolExecutor {
         // 上传日志文件路径；search_log 按需流式 grep，避免把大文件全文攥在内存里
         private final String logPath;
         private final ProjectExecutionScope scope;
+        private volatile boolean cancelled;
+        private volatile Boolean sourceAvailable;
 
         public AgentToolContext(Long projectId, Long versionId, String apiPath, ProjectDatasource datasource) {
             this(projectId, versionId, apiPath, datasource, null, null);
@@ -691,6 +915,26 @@ public class AgentToolExecutor {
 
         public ProjectExecutionScope getScope() {
             return scope;
+        }
+
+        /** 标记当前工具上下文已取消，阻止所属 Agent 继续发起下一轮请求。 */
+        public void cancel() {
+            this.cancelled = true;
+        }
+
+        /** 返回当前任务是否已被编排层取消。 */
+        public boolean isCancelled() {
+            return cancelled;
+        }
+
+        /** 返回已缓存的源码目录可用状态。 */
+        Boolean sourceAvailable() {
+            return sourceAvailable;
+        }
+
+        /** 缓存源码目录可用状态，避免每轮重复查询版本。 */
+        void sourceAvailable(boolean sourceAvailable) {
+            this.sourceAvailable = sourceAvailable;
         }
     }
 }

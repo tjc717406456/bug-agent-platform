@@ -3,6 +3,8 @@ package com.tjc.bugagent.analysis.agent;
 import com.tjc.bugagent.ai.AiClient;
 import com.tjc.bugagent.ai.AiToolCallResult;
 import com.tjc.bugagent.project.ProjectDatasource;
+import com.tjc.bugagent.project.ProjectService;
+import com.tjc.bugagent.project.ProjectVersion;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -13,10 +15,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.nio.file.Paths;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -45,6 +49,25 @@ class AgentKernelTest {
         assertEquals(1, registry.definitions(true).size());
         assertEquals("value", registry.execute(call, context).getEvidence());
         assertTrue(registry.isConcurrencySafe("demo"));
+    }
+
+    @Test
+    void toolSchemasHideSearchLogWhenNoLogWasProvided() {
+        AgentToolRegistry registry = new AgentToolRegistry();
+        ProjectService projectService = mock(ProjectService.class);
+        ProjectVersion version = new ProjectVersion();
+        version.setId(2L);
+        version.setSourcePath(Paths.get(".").toAbsolutePath().normalize().toString());
+        when(projectService.getVersion(2L)).thenReturn(version);
+        AgentToolExecutor executor = new AgentToolExecutor(null, null, projectService, null, registry);
+        AgentToolExecutor.AgentToolContext context = new AgentToolExecutor.AgentToolContext(
+                1L, 2L, "/x", null);
+
+        List<Map<String, Object>> definitions = executor.toolSchemas(false, context);
+        String names = definitions.toString();
+
+        assertFalse(names.contains("search_log"), names);
+        assertTrue(names.contains("read_source"), names);
     }
 
     @Test
@@ -84,7 +107,8 @@ class AgentKernelTest {
         registry.register(new RegisteredAgentTool("search_log", "搜索日志", stringProperties("keyword"),
                 Collections.singletonList("keyword"), AgentToolPhase.DISCOVERY, true, true, true,
                 (call, context) -> AgentToolResult.ok("search_log", "ok", "log")));
-        ProjectExecutionScope parent = ProjectExecutionScope.create("task", 7L, 1L, 2L, null);
+        ProjectExecutionScope parent = ProjectExecutionScope.create("task", 7L, 1L, 2L,
+                (ProjectDatasource) null);
         ProjectExecutionScope logScope = parent.child("task:log", "search_log");
 
         List<Map<String, Object>> definitions = registry.definitions(false, logScope);
@@ -144,6 +168,37 @@ class AgentKernelTest {
         assertEquals(1, checkpoints.size());
         assertEquals("COMPLETED", checkpoints.get(0).getPhase());
         assertEquals("FINISH_TOOL", checkpoints.get(0).getStopReason());
+    }
+
+    @Test
+    void runnerStopsBeforeModelRequestWhenToolContextWasCancelled() {
+        AiClient aiClient = mock(AiClient.class);
+        AgentToolExecutor toolExecutor = mock(AgentToolExecutor.class);
+        AgentToolCallParser parser = mock(AgentToolCallParser.class);
+        ToolFanoutExecutor fanout = mock(ToolFanoutExecutor.class);
+        AgentConversation conversation = mock(AgentConversation.class);
+        AgentRunner runner = new AgentRunner(aiClient, toolExecutor, parser, fanout, conversation);
+        AgentToolExecutor.AgentToolContext toolContext = new AgentToolExecutor.AgentToolContext(1L, 2L, "/x", null);
+        toolContext.cancel();
+        AgentRunSpec spec = new AgentRunSpec();
+        spec.setMessages(new ArrayList<Map<String, Object>>());
+        spec.setToolContext(toolContext);
+        spec.setMaxIterations(1);
+        spec.setPolicy(new AgentRunPolicy() {
+            public AgentRunDirective onFinish(AgentRunContext context, AiToolCallResult ai, AgentToolCall call) {
+                return AgentRunDirective.stop("finish", AgentStopReason.FINISH_TOOL);
+            }
+
+            public AgentRunDirective afterTools(AgentRunContext context, AiToolCallResult ai,
+                                                List<AgentToolCall> calls, List<AgentToolResult> results) {
+                return AgentRunDirective.continueRun();
+            }
+
+            public String finalizeRun(AgentRunContext context) { return "fallback"; }
+        });
+
+        assertThrows(AnalysisCancelledException.class, () -> runner.run(spec));
+        verify(aiClient, times(0)).chatWithMessagesRequired(any(), any());
     }
 
     @Test
@@ -235,6 +290,8 @@ class AgentKernelTest {
     void subAgentInvestigationMergesStructuredHandoff() {
         Map<String, Object> round = new LinkedHashMap<String, Object>();
         round.put("action", "search_log");
+        round.put("toolOk", true);
+        round.put("toolEvidence", "L1");
         Map<String, AgentToolResult> cache = new LinkedHashMap<String, AgentToolResult>();
         cache.put("search_log|{keyword=order}", AgentToolResult.ok("search_log", "命中", "L1"));
         AgentRunContext context = new AgentRunContext(new ArrayList<Map<String, Object>>(),
@@ -258,11 +315,21 @@ class AgentKernelTest {
         AgentConversation conversation = mock(AgentConversation.class);
         com.tjc.bugagent.config.AppProperties properties = new com.tjc.bugagent.config.AppProperties();
         AgentToolExecutor.AgentToolContext parent = new AgentToolExecutor.AgentToolContext(1L, 2L, "/x", null);
-        AgentRunContext resultContext = new AgentRunContext(new ArrayList<Map<String, Object>>(), parent, false);
-        resultContext.setFinalContent("源码证据");
-        resultContext.setStopReason(AgentStopReason.FINISH_TOOL);
         when(conversation.message(any(), any())).thenReturn(new LinkedHashMap<String, Object>());
-        when(runner.run(any(AgentRunSpec.class))).thenReturn(new AgentRunResult(resultContext));
+        when(runner.run(any(AgentRunSpec.class))).thenAnswer(invocation -> {
+            AgentRunSpec spec = invocation.getArgument(0);
+            AgentRunContext context = new AgentRunContext(new ArrayList<Map<String, Object>>(),
+                    spec.getToolContext(), false);
+            context.setIteration(1);
+            AgentToolCall call = new AgentToolCall();
+            call.setAction("read_source");
+            call.setArguments(Collections.<String, Object>singletonMap("filePath", "RecipeServiceImpl.java"));
+            spec.getPolicy().afterTools(context, new AiToolCallResult(), Collections.singletonList(call),
+                    Collections.singletonList(AgentToolResult.ok("read_source", "命中失败分支", "1563: if (!result)")));
+            context.setFinalContent("源码证据");
+            context.setStopReason(AgentStopReason.FINISH_TOOL);
+            return new AgentRunResult(context);
+        });
         SubAgentOrchestrator orchestrator = new SubAgentOrchestrator(runner, conversation, properties);
         try {
             SubAgentInvestigation investigation = orchestrator.investigate(
@@ -274,6 +341,38 @@ class AgentKernelTest {
         } finally {
             orchestrator.shutdown();
         }
+    }
+
+    @Test
+    void subAgentInvestigationDropsTextOnlyHandoff() {
+        AgentRunContext context = new AgentRunContext(new ArrayList<Map<String, Object>>(),
+                new AgentToolExecutor.AgentToolContext(1L, 2L, "/x", null), false);
+        context.setFinalContent("只有模型说明，没有工具证据");
+        context.setStopReason(AgentStopReason.FINISH_TOOL);
+
+        SubAgentInvestigation investigation = new SubAgentInvestigation(Collections.singletonList(
+                new SubAgentResult("源码 Agent", new AgentRunResult(context),
+                        Collections.<Map<String, Object>>emptyList(), Collections.<String, AgentToolResult>emptyMap())));
+
+        assertTrue(investigation.getResults().isEmpty());
+    }
+
+    @Test
+    void subAgentInvestigationDropsSuccessfulToolWithoutConcreteEvidence() {
+        Map<String, Object> round = new LinkedHashMap<String, Object>();
+        round.put("action", "find_callers");
+        round.put("toolOk", true);
+        round.put("toolEvidence", "无");
+        AgentRunContext context = new AgentRunContext(new ArrayList<Map<String, Object>>(),
+                new AgentToolExecutor.AgentToolContext(1L, 2L, "/x", null), false);
+        context.setFinalContent("没有直接证据");
+        context.setStopReason(AgentStopReason.FINISH_TOOL);
+
+        SubAgentInvestigation investigation = new SubAgentInvestigation(Collections.singletonList(
+                new SubAgentResult("源码 Agent", new AgentRunResult(context), Collections.singletonList(round),
+                        Collections.<String, AgentToolResult>emptyMap())));
+
+        assertTrue(investigation.getResults().isEmpty());
     }
 
     @Test

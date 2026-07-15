@@ -268,8 +268,8 @@ public class AppProperties {
      */
     public static class Agent {
         private int maxIterations = 32;
-        // 接口讲解的独立轮次上限：讲解没有 bug 分析那套收敛判定，靠预算硬约束防无限下钻
-        private int explainMaxIterations = 24;
+        // 接口讲解通常 2-4 轮即可闭合，8 轮只作为复杂接口的最终兜底
+        private int explainMaxIterations = 8;
         private int initialEvidenceLimit = 12000;
         private int sqlTextLimit = 2000;
         private int toolResultLimit = 4000;

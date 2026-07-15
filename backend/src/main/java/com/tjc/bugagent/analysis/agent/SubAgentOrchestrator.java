@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -65,23 +66,27 @@ public class SubAgentOrchestrator {
                                               AgentToolExecutor.AgentToolContext parentContext,
                                               AnalysisProgressListener progress,
                                               boolean codeNeeded, boolean logNeeded) {
-        List<CompletableFuture<SubAgentResult>> futures = new ArrayList<CompletableFuture<SubAgentResult>>();
+        List<PendingInvestigation> tasks = new ArrayList<PendingInvestigation>();
         if (codeNeeded) {
-            submit(futures, () -> runCodeAgent(focusedEvidence, parentContext, progress), progress, "源码 Agent");
+            AgentToolExecutor.AgentToolContext codeContext = childContext(parentContext, "code", "search_code",
+                    "get_code_detail", "trace_call_chain", "search_sql", "grep_source", "read_source",
+                    "find_callers", "finish");
+            submit(tasks, () -> runCodeAgent(focusedEvidence, codeContext, progress), codeContext, progress, "源码 Agent");
         }
         if (logNeeded && hasLog(parentContext)) {
-            submit(futures, () -> runLogAgent(focusedEvidence, parentContext, progress), progress, "日志 Agent");
+            AgentToolExecutor.AgentToolContext logContext = childContext(parentContext, "log", "search_log", "finish");
+            submit(tasks, () -> runLogAgent(focusedEvidence, logContext, progress), logContext, progress, "日志 Agent");
         } else if (logNeeded) {
             progress.onStep("[日志 Agent] 未提供日志，本次跳过");
         }
-        List<SubAgentResult> results = awaitResults(futures, progress);
+        List<SubAgentResult> results = awaitResults(tasks, progress);
         return new SubAgentInvestigation(results);
     }
 
-    private List<SubAgentResult> awaitResults(List<CompletableFuture<SubAgentResult>> futures,
+    private List<SubAgentResult> awaitResults(List<PendingInvestigation> tasks,
                                                AnalysisProgressListener progress) {
         List<SubAgentResult> results = new ArrayList<SubAgentResult>();
-        List<CompletableFuture<SubAgentResult>> pending = new ArrayList<CompletableFuture<SubAgentResult>>(futures);
+        List<PendingInvestigation> pending = new ArrayList<PendingInvestigation>(tasks);
         int waitSeconds = Math.max(10, appProperties.getAgent().getMultiAgentWaitSeconds());
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(waitSeconds);
         while (!pending.isEmpty()) {
@@ -89,12 +94,12 @@ public class SubAgentOrchestrator {
                 cancelAll(pending);
                 throw new AnalysisCancelledException();
             }
-            for (Iterator<CompletableFuture<SubAgentResult>> iterator = pending.iterator(); iterator.hasNext();) {
-                CompletableFuture<SubAgentResult> future = iterator.next();
-                if (!future.isDone()) {
+            for (Iterator<PendingInvestigation> iterator = pending.iterator(); iterator.hasNext();) {
+                PendingInvestigation task = iterator.next();
+                if (!task.result.isDone()) {
                     continue;
                 }
-                collectResult(future, results);
+                collectResult(task.result, results);
                 iterator.remove();
             }
             if (pending.isEmpty()) {
@@ -106,7 +111,9 @@ public class SubAgentOrchestrator {
                 break;
             }
             try {
-                CompletableFuture.anyOf(pending.toArray(new CompletableFuture<?>[0])).get(1, TimeUnit.SECONDS);
+                CompletableFuture<?>[] completions = pending.stream().map(item -> item.result)
+                        .toArray(CompletableFuture<?>[]::new);
+                CompletableFuture.anyOf(completions).get(1, TimeUnit.SECONDS);
             } catch (TimeoutException ignored) {
                 // 每秒醒来检查取消标记，避免用户停止后仍卡在十五分钟等待。
             } catch (Exception ignored) {
@@ -119,43 +126,57 @@ public class SubAgentOrchestrator {
     private void collectResult(CompletableFuture<SubAgentResult> future, List<SubAgentResult> results) {
         try {
             SubAgentResult result = future.get();
-            if (result != null && !AgentTextUtils.isBlank(result.getEvidence())) {
+            if (result != null && result.hasConfirmedEvidence()) {
                 results.add(result);
+            } else if (result != null) {
+                log.info("子 Agent {} 未产出可引用工具证据，本次交接忽略", result.getRole());
             }
         } catch (Exception exception) {
             log.warn("子 Agent 调查失败，主 Agent 将基于已有证据继续: {}", exception.getMessage());
         }
     }
 
-    private void cancelAll(List<CompletableFuture<SubAgentResult>> futures) {
-        for (CompletableFuture<SubAgentResult> future : futures) {
-            future.cancel(true);
+    private void cancelAll(List<PendingInvestigation> tasks) {
+        for (PendingInvestigation task : tasks) {
+            task.context.cancel();
+            task.worker.cancel(true);
+            task.result.cancel(false);
         }
     }
 
-    private void submit(List<CompletableFuture<SubAgentResult>> futures,
+    private void submit(List<PendingInvestigation> tasks,
                         java.util.function.Supplier<SubAgentResult> task,
+                        AgentToolExecutor.AgentToolContext context,
                         AnalysisProgressListener progress, String role) {
         try {
-            futures.add(CompletableFuture.supplyAsync(task, executor));
+            CompletableFuture<SubAgentResult> result = new CompletableFuture<SubAgentResult>();
+            Future<?> worker = executor.submit(() -> {
+                try {
+                    result.complete(task.get());
+                } catch (AnalysisCancelledException exception) {
+                    result.cancel(false);
+                } catch (Throwable throwable) {
+                    result.completeExceptionally(throwable);
+                }
+            });
+            tasks.add(new PendingInvestigation(result, worker, context));
         } catch (RejectedExecutionException exception) {
             progress.onStep("[" + role + "] 调查队列已满，本次跳过并由主 Agent 继续");
         }
     }
 
-    private SubAgentResult runCodeAgent(String evidence, AgentToolExecutor.AgentToolContext parent,
+    private SubAgentResult runCodeAgent(String evidence, AgentToolExecutor.AgentToolContext context,
                                         AnalysisProgressListener progress) {
         return runAgent("源码 Agent", "你只负责调查源码。优先闭合接口入口、失败条件、返回对象构造、成功与失败字段，"
                         + "只补关键方法尾部，不得泛搜相邻代码，不得分析日志或查询数据库。",
-                evidence, childContext(parent, "code", "search_code", "get_code_detail", "trace_call_chain",
-                        "search_sql", "grep_source", "find_callers", "finish"), progress);
+                evidence, context, progress);
     }
 
-    private SubAgentResult runLogAgent(String evidence, AgentToolExecutor.AgentToolContext parent,
+    private SubAgentResult runLogAgent(String evidence, AgentToolExecutor.AgentToolContext context,
                                        AnalysisProgressListener progress) {
         return runAgent("日志 Agent", "你只负责日志。围绕用户提供的核心标识建立时间线，定位首个失败、错误码、超时或返回值，"
                         + "明确缺失的底层日志，不得换大量近义关键词撒网，不得阅读源码或查询数据库。",
-                evidence, childContext(parent, "log", "search_log", "finish"), progress);
+                evidence, context, progress);
     }
 
     private SubAgentResult runAgent(String role, String responsibility, String evidence,
@@ -221,9 +242,24 @@ public class SubAgentOrchestrator {
 
             @Override
             public boolean isCancelled() {
-                return parent.isCancelled();
+                return parent.isCancelled() || Thread.currentThread().isInterrupted();
             }
         };
+    }
+
+    /** 保存子 Agent 的结果、实际工作线程和可合作取消的上下文。 */
+    private static final class PendingInvestigation {
+        private final CompletableFuture<SubAgentResult> result;
+        private final Future<?> worker;
+        private final AgentToolExecutor.AgentToolContext context;
+
+        /** 创建一项可取消的子 Agent 调查。 */
+        private PendingInvestigation(CompletableFuture<SubAgentResult> result, Future<?> worker,
+                                     AgentToolExecutor.AgentToolContext context) {
+            this.result = result;
+            this.worker = worker;
+            this.context = context;
+        }
     }
 
     private boolean hasLog(AgentToolExecutor.AgentToolContext context) {

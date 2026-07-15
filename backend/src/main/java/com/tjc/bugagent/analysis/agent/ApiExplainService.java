@@ -9,6 +9,7 @@ import com.tjc.bugagent.ai.AiClient;
 import com.tjc.bugagent.ai.AiToolCallResult;
 import com.tjc.bugagent.codegraph.CodeGraphQueryResult;
 import com.tjc.bugagent.codegraph.CodeGraphQueryService;
+import com.tjc.bugagent.codegraph.CodeNode;
 import com.tjc.bugagent.config.AppProperties;
 import com.tjc.bugagent.project.DatasourceSelection;
 import com.tjc.bugagent.project.ProjectService;
@@ -18,9 +19,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.isBlank;
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.safe;
@@ -28,12 +33,16 @@ import static com.tjc.bugagent.analysis.agent.AgentTextUtils.trim;
 
 /**
  * 接口讲解 Agent：只给项目+版本+接口路径，讲清这个接口干什么、完整流程（入口→服务→Mapper→SQL→表）。
- * 复用 Bug 定位那套多轮工具循环和协作类，但砍掉日志/堆栈、收敛判定、自检、连库验证、历史注入、落库这些 bug 专属环节。
+ * 复用 Bug 定位的多轮工具循环，保留接口流程专用收敛，砍掉日志、堆栈、自检和历史案例等 Bug 专属环节。
  */
 @Service
 public class ApiExplainService {
     private static final Logger log = LoggerFactory.getLogger(ApiExplainService.class);
     private static final int MAX_CONTINUOUS_FAILURES = 2;
+    private static final int MAX_NO_PROGRESS_ROUNDS = 2;
+    private static final int MIN_CORE_FINISH_ITERATION = 2;
+    private static final Pattern SOURCE_REF_FILE = Pattern.compile("sourceRef=\\{\"filePath\":\"([^\"]+)\"");
+    private static final Pattern NODE_FILE = Pattern.compile("(?:^|, )file=([^,\r\n]+)");
     // 模型只描述计划不发工具调用时，最多纠偏几次再放弃
     private static final int MAX_TOOL_NUDGES = 2;
 
@@ -95,7 +104,7 @@ public class ApiExplainService {
         String explainTaskId = isBlank(parentScope.getTaskId()) ? "api-explain" : parentScope.getTaskId() + ":explain";
         ProjectExecutionScope explainScope = parentScope.child(
                 explainTaskId, "search_code", "get_code_detail", "trace_call_chain",
-                "search_sql", "grep_source", "find_callers", "describe_tables",
+                "search_sql", "grep_source", "read_source", "find_callers", "describe_tables",
                 "query_database", "finish");
         AgentToolExecutor.AgentToolContext toolContext = new AgentToolExecutor.AgentToolContext(
                 explainScope,
@@ -122,7 +131,7 @@ public class ApiExplainService {
         spec.setModelRole(AgentRunSpec.ModelRole.UTILITY);
         spec.setProgress(progress);
         spec.setModelFailureMessage("⚠️ AI 服务暂不可用（网关连接异常/重置），本次讲解中断，请稍后重试。");
-        spec.setPolicy(new ApiExplainRunPolicy(rounds, progress, maxIterations));
+        spec.setPolicy(new ApiExplainRunPolicy(rounds, progress, maxIterations, graph));
         AgentRunResult runResult = agentRunner.run(spec);
         String finalReport = runResult.getFinalContent();
 
@@ -149,13 +158,17 @@ public class ApiExplainService {
         private final AnalysisProgressListener progress;
         private final int maxIterations;
         private int continuousFailures;
+        private int noProgressRounds;
         private int toolNudges;
         private boolean budgetWarned;
+        private final ExplainProgress explainProgress;
 
-        private ApiExplainRunPolicy(List<Map<String, Object>> rounds, AnalysisProgressListener progress, int maxIterations) {
+        private ApiExplainRunPolicy(List<Map<String, Object>> rounds, AnalysisProgressListener progress,
+                                    int maxIterations, CodeGraphQueryResult graph) {
             this.rounds = rounds;
             this.progress = progress;
             this.maxIterations = maxIterations;
+            this.explainProgress = new ExplainProgress(graph);
         }
 
         public void beforeIteration(AgentRunContext context) {
@@ -202,9 +215,11 @@ public class ApiExplainService {
                                             List<AgentToolCall> calls, List<AgentToolResult> results) {
             boolean anyOk = false;
             boolean anyHardFailure = false;
+            boolean flowAdvanced = false;
             for (int index = 0; index < calls.size(); index++) {
                 AgentToolCall call = calls.get(index);
                 AgentToolResult result = results.get(index);
+                flowAdvanced = explainProgress.record(call, result) || flowAdvanced;
                 rounds.add(reporter.recordRound(context.getIteration(), response, call, result));
                 progress.onStep("第" + context.getIteration() + "轮 · " + reporter.actionName(call.getAction())
                         + " · " + trim(safe(result.getSummary()), 40));
@@ -213,21 +228,35 @@ public class ApiExplainService {
             }
             if (anyOk) {
                 continuousFailures = 0;
+                noProgressRounds = flowAdvanced ? 0 : noProgressRounds + 1;
             } else if (anyHardFailure) {
                 continuousFailures++;
+                noProgressRounds++;
+            } else {
+                noProgressRounds++;
             }
-            log.info("第{}轮 · 动作=[{}] · 结果={} · 失败={}/{}", context.getIteration(), actionNames(calls),
-                    anyOk ? "OK" : (anyHardFailure ? "FAIL" : "空"), continuousFailures, MAX_CONTINUOUS_FAILURES);
+            log.info("第{}轮 · 动作=[{}] · 结果={} · 流程推进={} · 空转={}/{} · 失败={}/{}",
+                    context.getIteration(), actionNames(calls),
+                    anyOk ? "OK" : (anyHardFailure ? "FAIL" : "空"), flowAdvanced,
+                    noProgressRounds, MAX_NO_PROGRESS_ROUNDS, continuousFailures, MAX_CONTINUOUS_FAILURES);
             if (continuousFailures >= MAX_CONTINUOUS_FAILURES) {
                 return AgentRunDirective.stop(reporter.buildFailureReport(rounds), AgentStopReason.CONTINUOUS_TOOL_FAILURES);
+            }
+            String finishReason = resolveExplainFinishReason(context.getIteration());
+            if (!isBlank(finishReason)) {
+                AtomicInteger tokens = new AtomicInteger();
+                String report = synthesizeExplain(context.getMessages(), rounds, context.getIteration() + 1,
+                        tokens, progress, finishReason);
+                context.addTokens(tokens.get());
+                return AgentRunDirective.stop(report, AgentStopReason.FINISH_TOOL);
             }
             return AgentRunDirective.continueRun();
         }
 
         public String finalizeRun(AgentRunContext context) {
             AtomicInteger tokens = new AtomicInteger();
-            String report = forceSynthesizeExplain(context.getMessages(), context.getToolContext(), rounds,
-                    context.getIteration() + 1, tokens, progress);
+            String report = synthesizeExplain(context.getMessages(), rounds, context.getIteration() + 1,
+                    tokens, progress, "已达最大轮次（" + context.getIteration() + "）");
             context.addTokens(tokens.get());
             return report;
         }
@@ -236,8 +265,10 @@ public class ApiExplainService {
             Map<String, Object> state = new java.util.LinkedHashMap<String, Object>();
             state.put("rounds", new ArrayList<Map<String, Object>>(rounds));
             state.put("continuousFailures", continuousFailures);
+            state.put("noProgressRounds", noProgressRounds);
             state.put("toolNudges", toolNudges);
             state.put("budgetWarned", budgetWarned);
+            state.put("explainEvidenceKeys", explainProgress.snapshotEvidenceKeys());
             return state;
         }
 
@@ -245,8 +276,20 @@ public class ApiExplainService {
             rounds.clear();
             rounds.addAll(AgentRunStateUtils.rounds(state));
             continuousFailures = AgentRunStateUtils.intValue(state, "continuousFailures");
+            noProgressRounds = AgentRunStateUtils.intValue(state, "noProgressRounds");
             toolNudges = AgentRunStateUtils.intValue(state, "toolNudges");
             budgetWarned = AgentRunStateUtils.boolValue(state, "budgetWarned");
+            explainProgress.restoreEvidenceKeys(state == null ? null : state.get("explainEvidenceKeys"));
+        }
+
+        private String resolveExplainFinishReason(int iteration) {
+            if (noProgressRounds >= MAX_NO_PROGRESS_ROUNDS) {
+                return "连续两轮没有新增接口流程证据";
+            }
+            if (iteration >= MIN_CORE_FINISH_ITERATION && explainProgress.coreFlowCovered()) {
+                return "入口、调用链、关键源码和数据层证据已齐";
+            }
+            return null;
         }
 
         private String streamExplain(AgentRunContext context, AiToolCallResult response, AgentToolCall finish) {
@@ -276,13 +319,14 @@ public class ApiExplainService {
      * 到顶仍没收口时的收尾：不再要求模型把全文塞进 finish 参数（模型常只给一句概要糊弄），
      * 直接纯文字流式生成完整讲解，前端同样能渐进看到；失败退回本地汇总。
      */
-    private String forceSynthesizeExplain(List<Map<String, Object>> messages, AgentToolExecutor.AgentToolContext toolContext,
-                                          List<Map<String, Object>> rounds, int iteration, AtomicInteger tokenSink,
-                                          AnalysisProgressListener progress) {
+    private String synthesizeExplain(List<Map<String, Object>> messages, List<Map<String, Object>> rounds,
+                                     int iteration, AtomicInteger tokenSink, AnalysisProgressListener progress,
+                                     String reason) {
         try {
-            log.info("已达最大轮次({})，查证结束，开始流式生成最终讲解", iteration - 1);
-            progress.onStep("已达最大轮次，开始生成说明");
-            messages.add(conversation.message("user", "已达到最大轮次。现在不要调用任何工具，直接用纯文字写出最终接口讲解，"
+            log.info("接口讲解查证结束 · 原因={} · 轮次={}，开始流式生成最终讲解", reason, iteration - 1);
+            progress.onStep(reason + "，开始生成说明");
+            messages.add(conversation.message("user", "查证阶段结束，原因：" + reason
+                    + "。现在不要调用任何工具，直接用纯文字写出最终接口讲解，"
                     + "包含：通俗说明、完整流程（入口→服务→Mapper→SQL→表）、关键代码片段（带文件:行号）、涉及的表与数据流向；"
                     + "有讲不透的环节就如实说明。"));
             final long[] lastPushMs = {0};
@@ -297,7 +341,7 @@ public class ApiExplainService {
             if (!prose.isFailed() && !isBlank(prose.getContent())) {
                 progress.onPartialReport(prose.getContent());
                 rounds.add(reporter.recordRound(iteration, prose, toolCallParser.finishCall(prose.getContent()),
-                        AgentToolResult.ok("finish", "已达最大轮次，讲解以纯文字流式生成", prose.getContent())));
+                        AgentToolResult.ok("finish", reason + "，讲解以纯文字流式生成", prose.getContent())));
                 return prose.getContent();
             }
         } catch (Exception exception) {
@@ -306,10 +350,155 @@ public class ApiExplainService {
         return buildExplainFallbackReport(rounds);
     }
 
+    /**
+     * 记录接口讲解是否取得了新的流程环节，按文件和数据层去重，避免相邻源码窗口无限续命。
+     */
+    static final class ExplainProgress {
+        private final Set<String> evidenceKeys = new LinkedHashSet<String>();
+        private final Set<String> readFiles = new LinkedHashSet<String>();
+        private final boolean expectsDataLayer;
+        private boolean entryCovered;
+        private boolean dataLayerCovered;
+
+        ExplainProgress(CodeGraphQueryResult graph) {
+            CodeGraphQueryResult safeGraph = graph == null ? new CodeGraphQueryResult() : graph;
+            this.entryCovered = safeGraph.getRouteNodes() != null && !safeGraph.getRouteNodes().isEmpty();
+            this.expectsDataLayer = (safeGraph.getSqlTexts() != null && !safeGraph.getSqlTexts().isEmpty())
+                    || (safeGraph.getTables() != null && !safeGraph.getTables().isEmpty());
+            this.dataLayerCovered = expectsDataLayer;
+            seedSnapshotFiles(safeGraph.getRouteNodes(), Integer.MAX_VALUE);
+            seedSnapshotFiles(safeGraph.getRelatedNodes(), 4);
+            if (entryCovered) {
+                evidenceKeys.add("entry");
+            }
+            if (expectsDataLayer) {
+                evidenceKeys.add("data-layer");
+            }
+        }
+
+        /** 返回本次工具结果是否新增了接口流程证据。 */
+        boolean record(AgentToolCall call, AgentToolResult result) {
+            if (call == null || result == null || !result.isOk()) {
+                return false;
+            }
+            String action = safe(call.getAction());
+            if ("trace_call_chain".equals(action)) {
+                entryCovered = true;
+                return evidenceKeys.add("call-chain");
+            }
+            if ("describe_tables".equals(action) || "query_database".equals(action)
+                    || "search_sql".equals(action)) {
+                dataLayerCovered = true;
+                return evidenceKeys.add("data-layer");
+            }
+            if ("read_source".equals(action) || "get_code_detail".equals(action)) {
+                Set<String> files = sourceFiles(call, result);
+                if (files.isEmpty()) {
+                    files.add(sourceIdentity(call));
+                }
+                boolean advanced = false;
+                for (String file : files) {
+                    if (readFiles.add(file)) {
+                        advanced = true;
+                    }
+                    advanced = evidenceKeys.add("read:" + file) || advanced;
+                }
+                return advanced;
+            }
+            if ("grep_source".equals(action) || "search_code".equals(action)) {
+                boolean advanced = false;
+                for (String file : sourceFiles(call, result)) {
+                    advanced = evidenceKeys.add("locate:" + file) || advanced;
+                }
+                return advanced;
+            }
+            if ("find_callers".equals(action)) {
+                return evidenceKeys.add("caller:" + safe(call.getArguments()));
+            }
+            return false;
+        }
+
+        /** 入口、至少两个源码文件和需要的数据层证据齐备后即可收口。 */
+        boolean coreFlowCovered() {
+            return entryCovered && readFiles.size() >= 2 && (!expectsDataLayer || dataLayerCovered);
+        }
+
+        /** 保存检查点所需的去重键。 */
+        List<String> snapshotEvidenceKeys() {
+            List<String> snapshot = new ArrayList<String>(evidenceKeys);
+            for (String file : readFiles) {
+                snapshot.add("snapshot-read:" + file);
+            }
+            return snapshot;
+        }
+
+        /** 恢复检查点中的去重键。 */
+        void restoreEvidenceKeys(Object value) {
+            if (!(value instanceof Iterable)) {
+                return;
+            }
+            for (Object item : (Iterable<?>) value) {
+                String key = safe(item);
+                if (key.startsWith("snapshot-read:")) {
+                    readFiles.add(key.substring("snapshot-read:".length()));
+                } else if (!isBlank(key)) {
+                    evidenceKeys.add(key);
+                }
+            }
+        }
+
+        private void seedSnapshotFiles(List<CodeNode> nodes, int limit) {
+            if (nodes == null) {
+                return;
+            }
+            int added = 0;
+            for (CodeNode node : nodes) {
+                if (added >= limit) {
+                    break;
+                }
+                if (!isBlank(node.getFilePath()) && node.getLineNo() != null) {
+                    String file = normalizeFile(node.getFilePath());
+                    readFiles.add(file);
+                    evidenceKeys.add("read:" + file);
+                    added++;
+                }
+            }
+        }
+
+        private Set<String> sourceFiles(AgentToolCall call, AgentToolResult result) {
+            Set<String> files = new LinkedHashSet<String>();
+            String filePath = call.stringArg("filePath");
+            if (!isBlank(filePath)) {
+                files.add(normalizeFile(filePath));
+            }
+            String evidence = safe(result.getEvidence());
+            collectMatches(files, SOURCE_REF_FILE.matcher(evidence));
+            collectMatches(files, NODE_FILE.matcher(evidence));
+            return files;
+        }
+
+        private void collectMatches(Set<String> files, Matcher matcher) {
+            while (matcher.find()) {
+                files.add(normalizeFile(matcher.group(1)));
+            }
+        }
+
+        private String sourceIdentity(AgentToolCall call) {
+            String className = safe(call.stringArg("className"));
+            String methodName = safe(call.stringArg("methodName"));
+            Long nodeId = call.longArg("nodeId");
+            return !isBlank(className + methodName) ? className + "#" + methodName : "node:" + nodeId;
+        }
+
+        private String normalizeFile(String file) {
+            return safe(file).replace('\\', '/').trim().toLowerCase();
+        }
+    }
+
     /** 接口讲解专用兜底，不混入 Bug 修复建议和置信度等定位报告字段。 */
     private String buildExplainFallbackReport(List<Map<String, Object>> rounds) {
         StringBuilder report = new StringBuilder();
-        report.append("【通俗说明】接口讲解达到最大轮次，以下内容基于已经读取到的调用链和源码整理。\n\n");
+        report.append("【通俗说明】接口讲解查证阶段已经结束，以下内容基于已经读取到的调用链和源码整理。\n\n");
         report.append("【完整流程】\n");
         if (rounds.isEmpty()) {
             report.append("当前没有取得可用的流程证据。\n");

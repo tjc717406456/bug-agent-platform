@@ -30,6 +30,7 @@ public class AgentPromptBuilder {
         prompt.append("当入口、调用链、SQL/数据源、返回模型、差异点这五类证据已经足够解释问题时，必须停止查证并调用 finish。\n");
         prompt.append("如果连续两轮没有新增关键事实，必须停止查证并收口。\n");
         prompt.append("同一文件、同一类、同一 SQL 已读过且没有新问题时，不要重复读取。\n");
+        prompt.append("代码节点查不到时不要换类名反复碰索引：使用 grep_source 定位，拿到 sourceRef 后立即调用 read_source 按文件和行号读取。\n");
         prompt.append("数据库能力以本次证据中的权限边界为准：SCHEMA_ONLY 只能核对字段和类型，BUSINESS_DATA 才能执行当前环境只读 SQL。最终报告要让测试、实施能看懂，并保留开发可追溯证据。\n\n");
         prompt.append("【工具使用方式】\n");
         prompt.append("通过调用提供的工具（tool_calls）行动，不要自己手写 JSON，不要输出 Markdown。\n");
@@ -109,16 +110,17 @@ public class AgentPromptBuilder {
         prompt.append("你是只读接口讲解 Agent，给定接口路径，讲清这个接口是干什么的、完整流程，不修改代码，不挑 Bug。\n");
         prompt.append("初始证据已预取入口与关键调用节点的源码快照，先基于它判断，链路没讲透再调用工具补查。\n");
         prompt.append("初始证据已含本接口的完整调用链，不要再对同一接口调用 trace_call_chain（只有追查其他接口时才用它）；");
-        prompt.append("用 get_code_detail / search_code 读关键方法；数据库能力以本次证据中的权限边界为准："
+        prompt.append("用 get_code_detail / search_code 读关键方法；节点查不到时用 grep_source，拿到 sourceRef 后直接调用 read_source；数据库能力以本次证据中的权限边界为准："
                 + "SCHEMA_ONLY 只能核对字段和类型，BUSINESS_DATA 才能执行当前环境只读 SQL。\n");
         prompt.append("同一文件、同一方法已读过就不要重复读；流程讲清楚就调用 finish 收口，不要无限下钻无关细节。\n");
+        prompt.append("接口讲解通常用 2-4 轮闭合；入口、核心服务、数据层和返回值已清楚后必须 finish，硬件客户端、框架组件等下游只读与接口行为直接相关的关键方法。\n");
         prompt.append("如果初始证据里带了【用户描述】，那是提问人的关注点，讲解要优先围绕它展开，先回答清楚他关心的部分。\n\n");
         prompt.append("【工具使用方式】\n");
         prompt.append("通过 tool_calls 行动，不要自己手写 JSON，不要输出 Markdown。本轮多份互不依赖的证据可一次返回多个 tool_calls 并行获取。\n");
         prompt.append("讲清楚后调用 finish 收口：report 留空或写一句概要即可，完整讲解会在收口后让你单独用纯文字输出。\n\n");
         prompt.append("【最终讲解必须包含】\n");
         prompt.append("1.【通俗说明】一句话讲清这个接口干什么，让运维、测试、实施都能看懂。\n");
-        prompt.append("2.【完整流程】入口 Controller → Service → Mapper → SQL → 表，逐层说清每步干了什么。\n");
+        prompt.append("2.【完整流程】入口 Controller → Service → Mapper → SQL → 表，实际没有 Mapper/SQL 的接口要如实说明，不得为凑结构继续下钻。\n");
         prompt.append("3.【关键代码】各环节核心逻辑片段（带文件:行号）。\n");
         prompt.append("4.【数据流向】入参怎么传递处理、读写了哪些表、返回了什么。\n");
         return prompt.toString();

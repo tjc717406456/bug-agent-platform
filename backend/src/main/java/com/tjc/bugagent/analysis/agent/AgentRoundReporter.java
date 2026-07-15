@@ -4,8 +4,12 @@ import com.tjc.bugagent.ai.AiToolCallResult;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.isBlank;
 import static com.tjc.bugagent.analysis.agent.AgentTextUtils.safe;
@@ -17,6 +21,7 @@ import static com.tjc.bugagent.analysis.agent.AgentTextUtils.trim;
  */
 @Component
 public class AgentRoundReporter {
+    private static final Pattern REPORT_IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_.#-]{3,}");
 
     public Map<String, Object> recordRound(int iteration, AiToolCallResult aiResult, AgentToolCall call, AgentToolResult toolResult) {
         Map<String, Object> round = new LinkedHashMap<String, Object>();
@@ -59,6 +64,96 @@ public class AgentRoundReporter {
             builder.append("证据:\n").append(safe(round.get("toolEvidence"))).append("\n");
         }
         return builder.toString();
+    }
+
+    /**
+     * 为独立自检挑选证据：保留精简初始信息，优先放入与结论标识匹配的直接源码，再补最近日志和数据证据。
+     */
+    public String buildCritiqueEvidence(String initialEvidence, List<Map<String, Object>> rounds,
+                                        String report, int maxLength) {
+        int limit = Math.max(2000, maxLength);
+        StringBuilder builder = new StringBuilder();
+        builder.append("=== 初始证据摘要 ===\n")
+                .append(AgentTextUtils.trimHeadTail(initialEvidence, Math.min(3000, limit / 3))).append("\n");
+        Set<String> identifiers = reportIdentifiers(report);
+        Set<String> appended = new LinkedHashSet<String>();
+        appendMatchingRounds(builder, rounds, identifiers, appended, limit, true);
+        appendMatchingRounds(builder, rounds, identifiers, appended, limit, false);
+        appendRecentRounds(builder, rounds, appended, limit);
+        return builder.toString();
+    }
+
+    private void appendMatchingRounds(StringBuilder builder, List<Map<String, Object>> rounds,
+                                      Set<String> identifiers, Set<String> appended, int limit,
+                                      boolean directSourceOnly) {
+        if (rounds == null) {
+            return;
+        }
+        for (Map<String, Object> round : rounds) {
+            String action = safe(round.get("action"));
+            boolean directSource = "get_code_detail".equals(action) || "read_source".equals(action);
+            if (directSourceOnly != directSource || !Boolean.TRUE.equals(round.get("toolOk"))) {
+                continue;
+            }
+            String evidence = safe(round.get("toolEvidence"));
+            if (!matchesAnyIdentifier(evidence, identifiers)) {
+                continue;
+            }
+            appendCritiqueRound(builder, round, appended, limit);
+        }
+    }
+
+    private void appendRecentRounds(StringBuilder builder, List<Map<String, Object>> rounds,
+                                    Set<String> appended, int limit) {
+        if (rounds == null) {
+            return;
+        }
+        for (int index = rounds.size() - 1; index >= 0 && appended.size() < 6; index--) {
+            Map<String, Object> round = rounds.get(index);
+            if (Boolean.TRUE.equals(round.get("toolOk"))) {
+                appendCritiqueRound(builder, round, appended, limit);
+            }
+        }
+    }
+
+    private void appendCritiqueRound(StringBuilder builder, Map<String, Object> round,
+                                     Set<String> appended, int limit) {
+        String key = safe(round.get("action")) + "|" + safe(round.get("arguments"));
+        if (!appended.add(key) || builder.length() >= limit) {
+            return;
+        }
+        int remaining = limit - builder.length();
+        String block = "=== 关键证据 · 第" + safe(round.get("iteration")) + "轮 ===\n"
+                + "工具: " + safe(round.get("action")) + "\n参数: " + safe(round.get("arguments"))
+                + "\n摘要: " + safe(round.get("toolSummary")) + "\n证据:\n"
+                + AgentTextUtils.trimHeadTail(safe(round.get("toolEvidence")), Math.min(3500, remaining)) + "\n";
+        builder.append(AgentTextUtils.trimHeadTail(block, remaining));
+    }
+
+    private Set<String> reportIdentifiers(String report) {
+        Set<String> identifiers = new LinkedHashSet<String>();
+        Matcher matcher = REPORT_IDENTIFIER.matcher(safe(report));
+        while (matcher.find()) {
+            String identifier = matcher.group().toLowerCase();
+            if (!"resultcode".equals(identifier) && !"resultmsg".equals(identifier)
+                    && !"responsemodel".equals(identifier)) {
+                identifiers.add(identifier);
+            }
+        }
+        return identifiers;
+    }
+
+    private boolean matchesAnyIdentifier(String evidence, Set<String> identifiers) {
+        if (identifiers.isEmpty()) {
+            return true;
+        }
+        String normalized = safe(evidence).toLowerCase();
+        for (String identifier : identifiers) {
+            if (normalized.contains(identifier)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public String buildForcedFinishReport(String reason, List<Map<String, Object>> rounds) {
@@ -204,6 +299,9 @@ public class AgentRoundReporter {
         }
         if ("get_code_detail".equals(action)) {
             return "读取源码";
+        }
+        if ("read_source".equals(action)) {
+            return "按行读取源码";
         }
         if ("trace_call_chain".equals(action)) {
             return "追踪调用链";

@@ -14,8 +14,17 @@ public class SubAgentInvestigation {
     private final List<SubAgentResult> results;
 
     public SubAgentInvestigation(List<SubAgentResult> results) {
-        this.results = results == null ? Collections.<SubAgentResult>emptyList()
-                : Collections.unmodifiableList(new ArrayList<SubAgentResult>(results));
+        if (results == null || results.isEmpty()) {
+            this.results = Collections.emptyList();
+            return;
+        }
+        List<SubAgentResult> effective = new ArrayList<SubAgentResult>();
+        for (SubAgentResult result : results) {
+            if (result != null && result.hasConfirmedEvidence()) {
+                effective.add(result);
+            }
+        }
+        this.results = Collections.unmodifiableList(effective);
     }
 
     public List<SubAgentResult> getResults() { return results; }

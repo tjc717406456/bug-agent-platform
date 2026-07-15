@@ -13,6 +13,11 @@ import java.util.List;
  */
 @Mapper
 public interface CodeGraphMapper {
+    /** 统计指定版本的代码节点总数。 */
+    int countNodes(@Param("projectId") Long projectId, @Param("versionId") Long versionId);
+
+    /** 统计指定版本带文件与行号定位的节点数。 */
+    int countLocatedNodes(@Param("projectId") Long projectId, @Param("versionId") Long versionId);
 
     /** 删某版本全部边 */
     void deleteEdgesByVersion(@Param("projectId") Long projectId, @Param("versionId") Long versionId);

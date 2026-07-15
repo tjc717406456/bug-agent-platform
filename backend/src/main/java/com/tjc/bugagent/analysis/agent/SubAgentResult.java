@@ -49,4 +49,31 @@ public class SubAgentResult {
     public AgentStopReason getStopReason() { return stopReason; }
     public List<Map<String, Object>> getRounds() { return rounds; }
     public Map<String, AgentToolResult> getCachedToolResults() { return cachedToolResults; }
+
+    /**
+     * 只有成功工具产生了可引用证据时才算有效交接，取消、模型失败和纯说明文本不进入主 Agent。
+     */
+    public boolean hasConfirmedEvidence() {
+        if (stopReason == AgentStopReason.CANCELLED || stopReason == AgentStopReason.INTERRUPTED
+                || stopReason == AgentStopReason.MODEL_ERROR || stopReason == AgentStopReason.INTERNAL_ERROR) {
+            return false;
+        }
+        for (Map<String, Object> round : rounds) {
+            String toolEvidence = AgentTextUtils.safe(round.get("toolEvidence"));
+            if (Boolean.TRUE.equals(round.get("toolOk"))
+                    && !"finish".equals(AgentTextUtils.safe(round.get("action")))
+                    && hasConcreteEvidence(toolEvidence)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasConcreteEvidence(String evidence) {
+        if (AgentTextUtils.isBlank(evidence)) {
+            return false;
+        }
+        String normalized = evidence.trim();
+        return !"无".equals(normalized) && !normalized.contains("无直接命中证据");
+    }
 }

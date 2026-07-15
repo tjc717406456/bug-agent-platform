@@ -42,6 +42,27 @@ public class CodeGraphQueryService {
     }
 
     /**
+     * 汇总代码索引健康度，供 Agent 在节点索引不完整时及时切换到源码全文检索。
+     */
+    public CodeIndexHealth indexHealth(Long projectId, Long versionId, CodeGraphQueryResult graph) {
+        int nodeCount = codeGraphRepository.countNodes(projectId, versionId);
+        int locatedNodeCount = codeGraphRepository.countLocatedNodes(projectId, versionId);
+        boolean routeMatched = graph != null && graph.getRouteNodes() != null && !graph.getRouteNodes().isEmpty();
+        boolean targetLocated = routeMatched && hasLocatedNode(graph.getRouteNodes());
+        return new CodeIndexHealth(nodeCount, locatedNodeCount, routeMatched, targetLocated);
+    }
+
+    /** 判断目标节点是否能直接定位到源码文件和行号。 */
+    private boolean hasLocatedNode(List<CodeNode> nodes) {
+        for (CodeNode node : nodes) {
+            if (node.getFilePath() != null && !node.getFilePath().trim().isEmpty() && node.getLineNo() != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * 沿可遍历边类型做 BFS，限制深度和总节点数，避免图谱过大时拖垮查询。
      */
     private void expand(Long nodeId, int depth, Set<Long> visitedNodeIds, List<CodeNode> relatedNodes) {

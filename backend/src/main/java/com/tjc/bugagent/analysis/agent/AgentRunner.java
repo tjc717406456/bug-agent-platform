@@ -58,7 +58,7 @@ public class AgentRunner {
             int previousModelTokens = 0;
             for (int iteration = firstIteration; iteration <= spec.getMaxIterations(); iteration++) {
                 context.setIteration(iteration);
-                if (spec.getProgress().isCancelled()) {
+                if (isCancelled(spec, context)) {
                     context.setStopReason(AgentStopReason.CANCELLED);
                     throw new AnalysisCancelledException();
                 }
@@ -71,6 +71,10 @@ public class AgentRunner {
                 spec.getPolicy().beforeIteration(context);
                 conversation.decayOldToolMessages(context.getMessages(), spec.getKeepRecentRounds());
                 AiToolCallResult response = requestModel(spec, context);
+                if (isCancelled(spec, context)) {
+                    context.setStopReason(AgentStopReason.CANCELLED);
+                    throw new AnalysisCancelledException();
+                }
                 previousModelTokens = Math.max(0, response.getTotalTokens());
                 context.addTokens(response.getTotalTokens());
                 hooks.afterModelResponse(context, response);
@@ -130,6 +134,9 @@ public class AgentRunner {
             }
             hooks.afterRun(context);
             return new AgentRunResult(context);
+        } catch (java.util.concurrent.CancellationException cancelled) {
+            context.setStopReason(AgentStopReason.CANCELLED);
+            throw new AnalysisCancelledException();
         } catch (AnalysisCancelledException cancelled) {
             throw cancelled;
         } catch (RuntimeException exception) {
@@ -165,11 +172,17 @@ public class AgentRunner {
 
     private AiToolCallResult requestModel(AgentRunSpec spec, AgentRunContext context) {
         List<java.util.Map<String, Object>> schemas = toolExecutor.toolSchemas(
-                context.isVerificationEnabled(), context.getToolContext().getScope());
+                context.isVerificationEnabled(), context.getToolContext());
         if (spec.getModelRole() == AgentRunSpec.ModelRole.UTILITY) {
             return aiClient.chatWithMessagesUtility(context.getMessages(), schemas);
         }
         return aiClient.chatWithMessagesRequired(context.getMessages(), schemas);
+    }
+
+    /** 汇总用户取消、子任务取消和线程中断三类停止信号。 */
+    private boolean isCancelled(AgentRunSpec spec, AgentRunContext context) {
+        return spec.getProgress().isCancelled() || context.getToolContext().isCancelled()
+                || Thread.currentThread().isInterrupted();
     }
 
     private void checkpoint(AgentRunSpec spec, CompositeAgentRunHook hooks, AgentRunContext context, String phase) {

@@ -4,6 +4,17 @@
 
     <!-- code_node 列名下划线靠 map-underscore-to-camel-case 自动映射到 CodeNode 驼峰字段，无需 resultMap -->
 
+    <select id="countNodes" resultType="java.lang.Integer">
+        select count(*) from code_node
+        where project_id = #{projectId} and version_id = #{versionId}
+    </select>
+
+    <select id="countLocatedNodes" resultType="java.lang.Integer">
+        select count(*) from code_node
+        where project_id = #{projectId} and version_id = #{versionId}
+          and file_path is not null and file_path != '' and line_no is not null
+    </select>
+
     <delete id="deleteEdgesByVersion">
         delete from code_edge where project_id = #{projectId} and version_id = #{versionId}
     </delete>

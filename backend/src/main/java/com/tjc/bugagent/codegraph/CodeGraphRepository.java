@@ -24,6 +24,16 @@ public class CodeGraphRepository {
         this.codeGraphMapper = codeGraphMapper;
     }
 
+    /** 返回指定版本的代码节点总数。 */
+    public int countNodes(Long projectId, Long versionId) {
+        return codeGraphMapper.countNodes(projectId, versionId);
+    }
+
+    /** 返回指定版本带源码定位的节点数。 */
+    public int countLocatedNodes(Long projectId, Long versionId) {
+        return codeGraphMapper.countLocatedNodes(projectId, versionId);
+    }
+
     /** 清空某个版本的全部节点和边，重新索引前调用。 */
     public void clearVersion(Long projectId, Long versionId) {
         codeGraphMapper.deleteEdgesByVersion(projectId, versionId);

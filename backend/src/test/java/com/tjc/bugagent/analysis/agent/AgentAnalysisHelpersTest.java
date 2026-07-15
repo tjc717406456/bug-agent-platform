@@ -3,6 +3,7 @@ package com.tjc.bugagent.analysis.agent;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -86,6 +87,76 @@ class AgentAnalysisHelpersTest {
         assertFalse(judge.isReframeVerdict("CONFIRM"));
         assertFalse(judge.isReviseVerdict("模型输出格式异常"));
         assertFalse(judge.isReframeVerdict(null));
+    }
+
+    @Test
+    void evidenceGapOnlyAdvancesWithMatchingEvidenceTool() {
+        AgentConvergenceJudge judge = new AgentConvergenceJudge(null, null, null);
+        AgentToolCall sourceCall = new AgentToolCall();
+        sourceCall.setAction("read_source");
+        AgentToolCall logCall = new AgentToolCall();
+        logCall.setAction("search_log");
+        AgentToolCall grepCall = new AgentToolCall();
+        grepCall.setAction("grep_source");
+        AgentToolResult sourceEvidence = AgentToolResult.ok("read_source", "读取失败分支",
+                "1550: public Object lightUp(Recipe recipe) { 1563: if (!result) return response; "
+                        + "1567: return response.attr(\"shelvesCode\", shelvesCode);");
+
+        assertTrue(judge.advancesEvidenceGap("缺少 lightUp 失败分支源码", sourceCall, sourceEvidence));
+        assertFalse(judge.advancesEvidenceGap("缺少 lightUp 失败分支源码", logCall,
+                AgentToolResult.ok("search_log", "日志命中", "result=false")));
+        assertFalse(judge.advancesEvidenceGap("缺少目标时段 ACK 日志", logCall,
+                AgentToolResult.empty("search_log", "未命中")));
+        assertTrue(judge.resolvesEvidenceGap("缺少 lightUp 失败分支源码，确认 shelvesCode 仅成功分支设置",
+                sourceCall, sourceEvidence));
+        assertTrue(judge.resolvesEvidenceGap(
+                "缺少 RecipeServiceImpl#lightUp/Controller 返回组装源码，证明 result=false 失败分支不携带 shelvesCode",
+                sourceCall, sourceEvidence));
+        assertFalse(judge.resolvesEvidenceGap("缺少 lightUp 失败分支源码", grepCall,
+                AgentToolResult.ok("grep_source", "命中", "lightUp shelvesCode")));
+        assertTrue(judge.locatesEvidenceGap("缺少 lightUp 失败分支源码", grepCall,
+                AgentToolResult.ok("grep_source", "命中", "lightUp shelvesCode")));
+    }
+
+    @Test
+    void subAgentDelegationRequiresUnresolvedGapWithoutCurrentProgress() {
+        assertFalse(AgentAnalysisService.shouldDelegateEvidenceGap(
+                true, false, true, "缺少失败分支源码", 0, 4, 2));
+        assertFalse(AgentAnalysisService.shouldDelegateEvidenceGap(
+                true, false, false, null, 1, 4, 2));
+        assertFalse(AgentAnalysisService.shouldDelegateEvidenceGap(
+                true, false, false, "缺少失败分支源码", 1, 1, 2));
+        assertTrue(AgentAnalysisService.shouldDelegateEvidenceGap(
+                true, false, false, "缺少失败分支源码", 1, 2, 2));
+    }
+
+    @Test
+    void critiqueEvidenceKeepsMatchingSourceEvenWhenMiddleEvidenceIsLarge() {
+        AgentRoundReporter reporter = new AgentRoundReporter();
+        List<Map<String, Object>> rounds = new ArrayList<Map<String, Object>>();
+        Map<String, Object> sourceRound = new LinkedHashMap<String, Object>();
+        sourceRound.put("iteration", 1);
+        sourceRound.put("action", "get_code_detail");
+        sourceRound.put("arguments", Collections.singletonMap("methodName", "lightUp"));
+        sourceRound.put("toolOk", true);
+        sourceRound.put("toolSummary", "读取源码: lightUp");
+        sourceRound.put("toolEvidence", "if (!result) return ResponseModel.error(); "
+                + "return ResponseModel.ok().attr(\"shelvesCode\", shelvesCode);");
+        rounds.add(sourceRound);
+        Map<String, Object> noiseRound = new LinkedHashMap<String, Object>();
+        noiseRound.put("iteration", 2);
+        noiseRound.put("action", "search_log");
+        noiseRound.put("arguments", Collections.singletonMap("keyword", "noise"));
+        noiseRound.put("toolOk", true);
+        noiseRound.put("toolSummary", "大量日志");
+        noiseRound.put("toolEvidence", repeat('N', 12000));
+        rounds.add(noiseRound);
+
+        String evidence = reporter.buildCritiqueEvidence(repeat('I', 8000), rounds,
+                "lightUp 失败时未返回 shelvesCode", 6000);
+
+        assertTrue(evidence.contains("if (!result)"), evidence);
+        assertTrue(evidence.contains("shelvesCode"), evidence);
     }
 
     private static String repeat(char ch, int count) {

@@ -25,6 +25,7 @@ import static com.tjc.bugagent.analysis.agent.AgentTextUtils.isBlank;
  */
 @Component
 public class SourceReader {
+    private static final int MAX_RANGE_LINES = 400;
 
     private final CodeGraphQueryService codeGraphQueryService;
     private final ProjectService projectService;
@@ -86,6 +87,32 @@ public class SourceReader {
             return snippet.length() == 0 ? "无源码内容" : snippet.toString();
         } catch (Exception exception) {
             return readSnippet(node, projectId, versionId, MAX_METHOD_LINES);
+        }
+    }
+
+    /**
+     * 按当前版本内的文件路径和行号读取源码。全文搜索命中文件后直接走这里，不再依赖代码节点索引。
+     */
+    public String readSourceRange(String filePath, Long versionId, Integer line, Integer contextLines) {
+        if (isBlank(filePath)) {
+            return "读取源码失败: 缺少 filePath";
+        }
+        int center = line == null || line < 1 ? 1 : line;
+        int context = contextLines == null ? 40 : Math.max(0, contextLines);
+        int start = (int) Math.max(1L, (long) center - context);
+        int maxLines = (int) Math.min(MAX_RANGE_LINES, Math.max(1L, (long) context * 2L + 1L));
+        try {
+            Path path = resolveSourcePath(filePath, null, versionId);
+            StringBuilder snippet = new StringBuilder();
+            try (Stream<String> stream = Files.lines(path, StandardCharsets.UTF_8)) {
+                List<String> window = stream.skip(start - 1L).limit(maxLines).collect(Collectors.toList());
+                for (int index = 0; index < window.size(); index++) {
+                    snippet.append(start + index).append(": ").append(window.get(index)).append("\n");
+                }
+            }
+            return snippet.length() == 0 ? "无源码内容" : snippet.toString();
+        } catch (Exception exception) {
+            return "读取源码失败: " + exception.getMessage();
         }
     }
 

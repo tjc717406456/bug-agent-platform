@@ -1,6 +1,7 @@
 package com.tjc.bugagent.analysis.agent;
 
 import com.tjc.bugagent.codegraph.CodeGraphQueryResult;
+import com.tjc.bugagent.codegraph.CodeGraphQueryService;
 import com.tjc.bugagent.codegraph.CodeNode;
 import com.tjc.bugagent.config.AppProperties;
 import com.tjc.bugagent.project.ProjectDatasource;
@@ -44,10 +45,13 @@ public class InitialEvidenceBuilder {
 
     private final SourceReader sourceReader;
     private final AppProperties appProperties;
+    private final CodeGraphQueryService codeGraphQueryService;
 
-    public InitialEvidenceBuilder(SourceReader sourceReader, AppProperties appProperties) {
+    public InitialEvidenceBuilder(SourceReader sourceReader, AppProperties appProperties,
+                                  CodeGraphQueryService codeGraphQueryService) {
         this.sourceReader = sourceReader;
         this.appProperties = appProperties;
+        this.codeGraphQueryService = codeGraphQueryService;
     }
 
     public String buildInitialEvidence(AnalysisRequest request, ProjectVersion version,
@@ -70,6 +74,9 @@ public class InitialEvidenceBuilder {
         appendIfPresent(builder, "请求时间", request.getRequestTime());
         builder.append("问题环境: ").append(request.getEnvironment()).append("\n");
         builder.append("数据库权限: ").append(request.getDatabaseAccessLevel()).append("\n");
+        builder.append("代码索引健康: ")
+                .append(codeGraphQueryService.indexHealth(request.getProjectId(), version.getId(), graph).summary())
+                .append("\n");
         ProjectDatasource schemaDatasource = toolContext.getScope().getSchemaDatasource();
         ProjectDatasource businessDatasource = toolContext.getScope().getBusinessDatasource();
         builder.append("结构数据源: ").append(formatDatasource(schemaDatasource)).append("\n");

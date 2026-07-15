@@ -503,6 +503,9 @@ public class AgentAnalysisService {
         private int sideIterations;
         private final boolean allowSubAgentDelegation;
         private boolean subAgentsDelegated;
+        private String activeEvidenceGap;
+        private boolean evidenceGapLocated;
+        private boolean critiqueGapActive;
 
         private BugAnalysisRunPolicy(CodeGraphQueryResult graph, AgentToolExecutor.AgentToolContext toolContext,
                                      String initialEvidence, List<Map<String, Object>> rounds,
@@ -540,6 +543,10 @@ public class AgentAnalysisService {
         public void afterModelResponse(AgentRunContext context, AiToolCallResult response) {
             if (!isBlank(response.getContent())) {
                 log.info("{}第{}轮 · 思考: {}", label, context.getIteration(), trim(safe(response.getContent()), 200));
+                String statedGap = extractEvidenceGap(response.getContent());
+                if (isBlank(activeEvidenceGap) && !isBlank(statedGap)) {
+                    activeEvidenceGap = statedGap;
+                }
             }
         }
 
@@ -589,6 +596,9 @@ public class AgentAnalysisService {
                 context.addTokens(tokenSink.get());
                 if (judge.isReviseVerdict(verdict)) {
                     String reviseReason = judge.reviseReason(verdict);
+                    activeEvidenceGap = reviseReason;
+                    evidenceGapLocated = false;
+                    critiqueGapActive = true;
                     log.info("{}第{}轮 · 结论自检未通过：{}；继续补证",
                             label, iteration, trim(reviseReason, 160));
                     conversation.appendAssistantMessage(context.getMessages(), response);
@@ -637,10 +647,21 @@ public class AgentAnalysisService {
             boolean anyOk = false;
             boolean anyNewFact = false;
             boolean anyHardFailure = false;
+            boolean evidenceGapResolved = false;
+            String gapBeforeTools = activeEvidenceGap;
             for (int index = 0; index < calls.size(); index++) {
                 AgentToolCall call = calls.get(index);
                 AgentToolResult result = results.get(index);
-                boolean newFact = judge.isNewKeyFact(rounds, call, result);
+                boolean resolved = judge.resolvesEvidenceGap(gapBeforeTools, call, result);
+                boolean locatorMatch = judge.locatesEvidenceGap(gapBeforeTools, call, result);
+                boolean located = !evidenceGapLocated && locatorMatch;
+                boolean newFact = isBlank(activeEvidenceGap)
+                        ? judge.isNewKeyFact(rounds, call, result)
+                        : resolved || located || (!locatorMatch
+                        && judge.advancesEvidenceGap(activeEvidenceGap, call, result)
+                        && judge.isNewKeyFact(rounds, call, result));
+                evidenceGapResolved = evidenceGapResolved || resolved;
+                evidenceGapLocated = evidenceGapLocated || located;
                 rounds.add(reporter.recordRound(context.getIteration(), response, call, result));
                 progress.onStep(label + "第" + context.getIteration() + "轮 · " + reporter.actionName(call.getAction())
                         + " · " + trim(safe(result.getSummary()), 40));
@@ -660,14 +681,27 @@ public class AgentAnalysisService {
             } else {
                 noNewKeyFactRounds++;
             }
-            log.info("{}第{}轮 · 动作=[{}] · 结果={} · 新事实={} · 空转={}/{} · 失败={}/{}", label,
+            log.info("{}第{}轮 · 动作=[{}] · 结果={} · 关键证据推进={} · 空转={}/{} · 失败={}/{}", label,
                     context.getIteration(), actionNames(calls), anyOk ? "OK" : (anyHardFailure ? "FAIL" : "空"),
                     anyNewFact, noNewKeyFactRounds, AgentConvergenceJudge.MAX_NO_NEW_FACT_ROUNDS,
                     continuousFailures, MAX_CONTINUOUS_FAILURES);
             if (continuousFailures >= MAX_CONTINUOUS_FAILURES) {
                 return AgentRunDirective.stop(reporter.buildFailureReport(rounds), AgentStopReason.CONTINUOUS_TOOL_FAILURES);
             }
-            if (shouldDelegate(context)) {
+            if (evidenceGapResolved) {
+                activeEvidenceGap = null;
+                noNewKeyFactRounds = 0;
+                evidenceGapLocated = false;
+                if (critiqueGapActive) {
+                    critiqueGapActive = false;
+                    AtomicInteger tokenSink = new AtomicInteger();
+                    String report = synthesizeResolvedGapReport(context.getMessages(), rounds, context.getIteration(),
+                            gapBeforeTools, tokenSink, progress, label);
+                    context.addTokens(tokenSink.get());
+                    return AgentRunDirective.stop(report, AgentStopReason.FINISH_TOOL);
+                }
+            }
+            if (shouldDelegate(context, anyNewFact)) {
                 boolean codeNeeded = needsCodeAgent(calls);
                 boolean logNeeded = needsLogAgent(calls);
                 if (codeNeeded || logNeeded) {
@@ -712,6 +746,9 @@ public class AgentAnalysisService {
             state.put("sideTokens", sideTokens);
             state.put("sideIterations", sideIterations);
             state.put("subAgentsDelegated", subAgentsDelegated);
+            state.put("activeEvidenceGap", activeEvidenceGap);
+            state.put("evidenceGapLocated", evidenceGapLocated);
+            state.put("critiqueGapActive", critiqueGapActive);
             return state;
         }
 
@@ -729,19 +766,32 @@ public class AgentAnalysisService {
             sideTokens = AgentRunStateUtils.intValue(state, "sideTokens");
             sideIterations = AgentRunStateUtils.intValue(state, "sideIterations");
             subAgentsDelegated = AgentRunStateUtils.boolValue(state, "subAgentsDelegated");
+            Object gap = state == null ? null : state.get("activeEvidenceGap");
+            activeEvidenceGap = gap == null ? null : String.valueOf(gap);
+            evidenceGapLocated = AgentRunStateUtils.boolValue(state, "evidenceGapLocated");
+            critiqueGapActive = AgentRunStateUtils.boolValue(state, "critiqueGapActive");
         }
 
         private int getSideTokens() { return sideTokens; }
         private int getSideIterations() { return sideIterations; }
         private boolean isMultiAgentMain() { return safe(label).startsWith("[主 Agent]"); }
 
-        private boolean shouldDelegate(AgentRunContext context) {
-            if (!allowSubAgentDelegation || subAgentsDelegated) {
-                return false;
+        /** 从模型思考中提取明确声明的待查证据缺口。 */
+        private String extractEvidenceGap(String thought) {
+            String normalized = safe(thought);
+            if (normalized.contains("缺少") || normalized.contains("证据缺口")
+                    || normalized.contains("尚不能确认") || normalized.contains("需要确认")
+                    || normalized.contains("补查")) {
+                return trim(normalized, 240);
             }
+            return null;
+        }
+
+        /** 只有明确证据缺口在本轮仍未推进时才委派，轮次本身不能触发子 Agent。 */
+        private boolean shouldDelegate(AgentRunContext context, boolean evidenceAdvanced) {
             int threshold = Math.max(1, appProperties.getAgent().getMultiAgentDelegateAfterIterations());
-            return (context.getIteration() >= threshold && noNewKeyFactRounds > 0)
-                    || context.getIteration() >= threshold + 2;
+            return shouldDelegateEvidenceGap(allowSubAgentDelegation, subAgentsDelegated, evidenceAdvanced,
+                    activeEvidenceGap, noNewKeyFactRounds, context.getIteration(), threshold);
         }
 
         private boolean needsCodeAgent(List<AgentToolCall> calls) {
@@ -853,6 +903,40 @@ public class AgentAnalysisService {
             progress.onPartialReport(prose.getContent());
         }
         return prose.getContent();
+    }
+
+    /** 自检要求的唯一证据缺口已闭合后，跳过下一轮工具选择，直接流式生成最终报告。 */
+    private String synthesizeResolvedGapReport(List<Map<String, Object>> messages, List<Map<String, Object>> rounds,
+                                               int iteration, String resolvedGap, AtomicInteger tokenSink,
+                                               AnalysisProgressListener progress, String label) {
+        messages.add(conversation.message("user", "独立复核要求补查的唯一证据缺口已经闭合："
+                + trim(resolvedGap, 240) + "。现在不要调用任何工具，不要继续追公共响应模型、框架实现或响应日志，"
+                + "直接基于现有证据生成最终报告。" + PROSE_REPORT_INSTRUCTION));
+        log.info("{}复核缺口已闭合，开始流式生成最终报告", label);
+        progress.onStep(label + "复核缺口已闭合，开始流式生成最终报告");
+        boolean pushPartial = !isHypothesisBranch(label);
+        final long[] lastPushMs = {0};
+        AiToolCallResult prose = aiClient.chatProseStream(messages, snapshot -> {
+            if (!pushPartial) {
+                return;
+            }
+            long now = System.currentTimeMillis();
+            if (now - lastPushMs[0] >= 400) {
+                lastPushMs[0] = now;
+                progress.onPartialReport(snapshot);
+            }
+        });
+        tokenSink.addAndGet(prose.getTotalTokens());
+        if (prose.isFailed() || isBlank(prose.getContent())) {
+            return reporter.buildMaxRoundReport(rounds);
+        }
+        String report = reporter.ensureAnalysisReportFormat(prose.getContent(), rounds);
+        if (pushPartial) {
+            progress.onPartialReport(report);
+        }
+        rounds.add(reporter.recordRound(iteration, prose, toolCallParser.finishCall(report),
+                AgentToolResult.ok("finish", "复核缺口已闭合，报告已流式生成", report)));
+        return report;
     }
 
     /**
@@ -971,7 +1055,17 @@ public class AgentAnalysisService {
     /** 读过代码或看过表结构的动作，达成后才解锁查库（query_database）。 */
     private boolean unlocksVerify(String action) {
         return "get_code_detail".equals(action) || "trace_call_chain".equals(action)
-                || "search_code".equals(action) || "describe_tables".equals(action);
+                || "search_code".equals(action) || "read_source".equals(action)
+                || "describe_tables".equals(action);
+    }
+
+    /** 子 Agent 委派的纯条件判断，供运行策略和单元测试共用。 */
+    static boolean shouldDelegateEvidenceGap(boolean delegationAllowed, boolean alreadyDelegated,
+                                             boolean evidenceAdvanced, String evidenceGap,
+                                             int noProgressRounds, int iteration, int threshold) {
+        return delegationAllowed && !alreadyDelegated && !evidenceAdvanced
+                && evidenceGap != null && !evidenceGap.trim().isEmpty()
+                && noProgressRounds > 0 && iteration >= Math.max(1, threshold);
     }
 
     /** 子 Agent 已读过源码或表结构时，主 Agent 直接进入验证阶段，不为解锁查库重复取证。 */

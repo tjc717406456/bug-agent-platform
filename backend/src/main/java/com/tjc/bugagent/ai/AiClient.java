@@ -125,6 +125,7 @@ public class AiClient {
         RestTemplate restTemplate = buildRestTemplate(config);
         int attempts = MAX_RETRIES + 1;
         for (int attempt = 1; attempt <= attempts; attempt++) {
+            throwIfInterrupted();
             log.info("AI request url={} model={} stream=true(prose) keyPrefix={}", url, config.getModelName(), maskApiKey(config.getApiKey()));
             HttpEntity<Map<String, Object>> entity = new HttpEntity<Map<String, Object>>(body, headers);
             // 每次尝试独立累计，重试时快照从零重来，不会把上次半截内容拼进去
@@ -137,10 +138,14 @@ public class AiClient {
                         onPartial.accept(accumulated.toString());
                     }
                 });
+                throwIfInterrupted();
                 log.info("AI response model={} 耗时={}ms tokens={} (prose-stream)", config.getModelName(),
                         System.currentTimeMillis() - callStartMs, result.getTotalTokens());
                 return result;
             } catch (Exception exception) {
+                if (exception instanceof java.util.concurrent.CancellationException) {
+                    throw (java.util.concurrent.CancellationException) exception;
+                }
                 if (isTransient(exception) && attempt < attempts) {
                     log.warn("AI prose-stream transient failure (attempt {}/{}): {}, retrying", attempt, attempts, exception.getMessage());
                     sleep(RETRY_BACKOFF_MS * attempt);
@@ -228,6 +233,7 @@ public class AiClient {
 
         int attempts = MAX_RETRIES + 1;
         for (int attempt = 1; attempt <= attempts; attempt++) {
+            throwIfInterrupted();
             Map<String, Object> body = new HashMap<String, Object>(baseBody);
             if (useStream) {
                 body.put("stream", true);
@@ -239,11 +245,15 @@ public class AiClient {
             try {
                 long callStartMs = System.currentTimeMillis();
                 AiToolCallResult callResult = useStream ? executeStream(restTemplate, url, entity) : executeBlocking(restTemplate, url, entity);
+                throwIfInterrupted();
                 // 与上面的 request 日志配对：长生成期间的"沉默"到这行落地，耗时/用量一目了然
                 log.info("AI response model={} 耗时={}ms tokens={} toolCalls={}", config.getModelName(),
                         System.currentTimeMillis() - callStartMs, callResult.getTotalTokens(), callResult.getToolCalls().size());
                 return callResult;
             } catch (Exception exception) {
+                if (exception instanceof java.util.concurrent.CancellationException) {
+                    throw (java.util.concurrent.CancellationException) exception;
+                }
                 // required 不被网关支持时通常返 400：降级 auto 立即重试，别硬断（仍保留 nudge 作二级兜底）
                 if (hasTools && "required".equals(effectiveToolChoice) && isBadRequest(exception) && attempt < attempts) {
                     effectiveToolChoice = "auto";
@@ -479,6 +489,14 @@ public class AiClient {
             Thread.sleep(millis);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
+            throw new java.util.concurrent.CancellationException("AI request interrupted");
+        }
+    }
+
+    /** 中断后的子 Agent 不再重试或记录正常响应。 */
+    private void throwIfInterrupted() {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new java.util.concurrent.CancellationException("AI request interrupted");
         }
     }
 
