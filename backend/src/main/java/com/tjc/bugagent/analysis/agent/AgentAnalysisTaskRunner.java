@@ -4,6 +4,7 @@ import com.tjc.bugagent.analysis.AnalysisProgressListener;
 import com.tjc.bugagent.analysis.AnalysisRequest;
 import com.tjc.bugagent.analysis.AnalysisResult;
 import com.tjc.bugagent.project.ProjectDatasource;
+import com.tjc.bugagent.project.DatasourceSelection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -75,6 +76,11 @@ public class AgentAnalysisTaskRunner {
             @Override
             public ProjectExecutionScope executionScope(Long projectId, Long versionId, ProjectDatasource datasource) {
                 return ProjectExecutionScope.create(taskId, status.getOwnerId(), projectId, versionId, datasource);
+            }
+
+            @Override
+            public ProjectExecutionScope executionScope(Long projectId, Long versionId, DatasourceSelection selection) {
+                return ProjectExecutionScope.create(taskId, status.getOwnerId(), projectId, versionId, selection);
             }
 
             @Override

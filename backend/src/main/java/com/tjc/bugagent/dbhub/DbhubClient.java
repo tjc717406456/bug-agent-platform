@@ -21,6 +21,11 @@ public class DbhubClient {
         return queryService.describeTables(dbhubKey, tables);
     }
 
+    /** 只读取字段和索引等元数据，不返回行数或样例。 */
+    public String describeSchema(String dbhubKey, List<String> tables) {
+        return queryService.describeSchema(dbhubKey, tables);
+    }
+
     public String queryReadonly(String dbhubKey, String sql) {
         return queryService.queryReadonly(dbhubKey, sql);
     }

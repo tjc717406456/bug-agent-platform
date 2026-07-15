@@ -89,6 +89,15 @@ public class ProjectController {
         return ApiResponse.ok(projectService.listDatasources(projectId));
     }
 
+    /** 保存项目的跨环境表结构复用规则。 */
+    @PutMapping("/{projectId}/datasource-policy")
+    public ApiResponse<Project> saveDatasourcePolicy(@PathVariable Long projectId,
+                                                      @Valid @RequestBody ProjectDatasourcePolicyRequest request) {
+        guard.assertAdmin();
+        projectService.saveDatasourcePolicy(projectId, request);
+        return ApiResponse.ok(projectService.getProject(projectId));
+    }
+
     /** 项目可见范围：已授权的用户 id 列表。 */
     @GetMapping("/{projectId}/members")
     public ApiResponse<List<Long>> listMembers(@PathVariable Long projectId) {

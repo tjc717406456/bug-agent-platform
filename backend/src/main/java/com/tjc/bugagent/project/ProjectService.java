@@ -14,6 +14,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import java.io.File;
 import java.util.List;
+import java.util.LinkedHashSet;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * Handles project metadata and datasource bindings.
@@ -55,6 +58,8 @@ public class ProjectService {
         project.setCode(request.getCode().trim());
         project.setOwnerId(ownerId);
         project.setDescription(safe(request.getDescription()));
+        project.setEnvironments(normalizeEnvironments(request.getEnvironments()));
+        project.setSchemaReferenceEnv(parseEnvironments(project.getEnvironments()).iterator().next());
         projectMapper.insert(project);
         // 用回填的自增 id 重查：code 已不再全局唯一，按 code 回查会捞到别人的同名项目
         return getProject(project.getId());
@@ -72,7 +77,14 @@ public class ProjectService {
         if (projectMapper.countByCodeExcludingId(request.getCode().trim(), projectId, oldProject.getOwnerId()) > 0) {
             throw new IllegalArgumentException("Project code already exists");
         }
-        projectMapper.update(projectId, request.getName().trim(), request.getCode().trim(), safe(request.getDescription()));
+        String environments = normalizeEnvironments(request.getEnvironments());
+        assertBoundDatasourceEnvironments(projectId, environments);
+        projectMapper.update(projectId, request.getName().trim(), request.getCode().trim(),
+                safe(request.getDescription()), environments);
+        if (!parseEnvironments(environments).contains(normalizeEnvironment(oldProject.getSchemaReferenceEnv()))) {
+            projectMapper.updateDatasourcePolicy(projectId, oldProject.isSchemaConsistent(),
+                    parseEnvironments(environments).iterator().next());
+        }
         return getProject(projectId);
     }
 
@@ -171,24 +183,176 @@ public class ProjectService {
     }
 
     public void saveDatasource(Long projectId, SaveDatasourceRequest request) {
-        if (projectDatasourceMapper.countByProjectEnv(projectId, request.getEnv()) > 0) {
-            projectDatasourceMapper.updateByProjectEnv(request.getDbhubKey(), "", projectId, request.getEnv());
+        String env = normalizeEnvironment(request.getEnv());
+        assertProjectEnvironment(projectId, env);
+        if (projectDatasourceMapper.countByProjectEnv(projectId, env) > 0) {
+            projectDatasourceMapper.updateByProjectEnv(request.getDbhubKey().trim(), "", projectId, env);
             return;
         }
-        projectDatasourceMapper.insert(projectId, request.getEnv(), request.getDbhubKey(), "");
+        projectDatasourceMapper.insert(projectId, env, request.getDbhubKey().trim(), "");
+    }
+
+    /** 保存跨环境结构复用规则。 */
+    public void saveDatasourcePolicy(Long projectId, ProjectDatasourcePolicyRequest request) {
+        String referenceEnv = normalizeEnvironment(request.getSchemaReferenceEnv());
+        assertProjectEnvironment(projectId, referenceEnv);
+        projectMapper.updateDatasourcePolicy(projectId, request.isSchemaConsistent(),
+                referenceEnv);
     }
 
     public List<ProjectDatasource> listDatasources(Long projectId) {
         return projectDatasourceMapper.listByProject(projectId);
     }
 
-    public ProjectDatasource firstEnabledDatasource(Long projectId) {
-        return projectDatasourceMapper.findFirstEnabled(projectId);
+    /**
+     * 按问题环境解析本次数据库权限。AUTO 不会把其他环境的业务数据当成当前环境事实。
+     */
+    public DatasourceSelection resolveDatasourceSelection(Long projectId, String environment, String policy) {
+        String requested = normalizePolicy(policy);
+        Project project = getProject(projectId);
+        if (project == null) {
+            throw new IllegalArgumentException("Project not found");
+        }
+        String env = resolveProjectEnvironment(project, environment);
+        ProjectDatasource business = projectDatasourceMapper.findEnabledByProjectEnv(projectId, env);
+        ProjectDatasource reference = null;
+        if (project.isSchemaConsistent()) {
+            reference = projectDatasourceMapper.findEnabledByProjectEnv(projectId,
+                    normalizeEnvironment(project.getSchemaReferenceEnv()));
+        }
+        ProjectDatasource schema = business != null ? business : reference;
+        if (DatasourceSelection.NONE.equals(requested)) {
+            return new DatasourceSelection(env, DatasourceSelection.NONE, null, null);
+        }
+        if (DatasourceSelection.SCHEMA_ONLY.equals(requested)) {
+            return new DatasourceSelection(env, schema == null ? DatasourceSelection.NONE : DatasourceSelection.SCHEMA_ONLY,
+                    schema, null);
+        }
+        if (DatasourceSelection.BUSINESS_DATA.equals(requested)) {
+            if (business == null) {
+                throw new IllegalStateException("未配置 " + env + " 环境数据源，不能核对业务数据");
+            }
+            return new DatasourceSelection(env, DatasourceSelection.BUSINESS_DATA, business, business);
+        }
+        if (business != null) {
+            return new DatasourceSelection(env, DatasourceSelection.BUSINESS_DATA, business, business);
+        }
+        return new DatasourceSelection(env, schema == null ? DatasourceSelection.NONE : DatasourceSelection.SCHEMA_ONLY,
+                schema, null);
+    }
+
+    /** 按分析记录固化的数据源恢复追问权限，不重新挑最新数据源。 */
+    public DatasourceSelection restoreDatasourceSelection(Long projectId, String environment, String accessLevel,
+                                                           Long schemaDatasourceId, Long businessDatasourceId) {
+        String env = normalizeEnvironment(environment);
+        String level = normalizeAccessLevel(accessLevel);
+        ProjectDatasource schema = schemaDatasourceId == null ? null
+                : projectDatasourceMapper.findEnabledByIdAndProject(schemaDatasourceId, projectId);
+        ProjectDatasource business = businessDatasourceId == null ? null
+                : projectDatasourceMapper.findEnabledByIdAndProject(businessDatasourceId, projectId);
+        if (DatasourceSelection.BUSINESS_DATA.equals(level)) {
+            if (business == null || !env.equalsIgnoreCase(business.getEnv())) {
+                return new DatasourceSelection(env, schema == null ? DatasourceSelection.NONE : DatasourceSelection.SCHEMA_ONLY,
+                        schema, null);
+            }
+            return new DatasourceSelection(env, level, business, business);
+        }
+        if (DatasourceSelection.SCHEMA_ONLY.equals(level) && schema != null) {
+            return new DatasourceSelection(env, level, schema, null);
+        }
+        return new DatasourceSelection(env, DatasourceSelection.NONE, null, null);
+    }
+
+    private String normalizePolicy(String policy) {
+        if (policy == null || policy.trim().isEmpty() || "AUTO".equalsIgnoreCase(policy)) {
+            return "AUTO";
+        }
+        String value = policy.trim().toUpperCase(Locale.ROOT);
+        if (!DatasourceSelection.NONE.equals(value) && !DatasourceSelection.SCHEMA_ONLY.equals(value)
+                && !DatasourceSelection.BUSINESS_DATA.equals(value)) {
+            throw new IllegalArgumentException("不支持的数据库验证策略: " + policy);
+        }
+        return value;
+    }
+
+    private String normalizeAccessLevel(String accessLevel) {
+        if (DatasourceSelection.BUSINESS_DATA.equalsIgnoreCase(accessLevel)) {
+            return DatasourceSelection.BUSINESS_DATA;
+        }
+        if (DatasourceSelection.SCHEMA_ONLY.equalsIgnoreCase(accessLevel)) {
+            return DatasourceSelection.SCHEMA_ONLY;
+        }
+        return DatasourceSelection.NONE;
+    }
+
+    private String normalizeEnvironment(String environment) {
+        return environment == null || environment.trim().isEmpty()
+                ? "prod" : environment.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String resolveProjectEnvironment(Project project, String environment) {
+        Set<String> environments = parseEnvironments(project.getEnvironments());
+        if (environments.isEmpty()) {
+            throw new IllegalStateException("项目未配置环境");
+        }
+        String selected = environment == null || environment.trim().isEmpty()
+                ? environments.iterator().next() : normalizeEnvironment(environment);
+        if (!environments.contains(selected)) {
+            throw new IllegalArgumentException("环境 " + selected + " 不属于当前项目");
+        }
+        return selected;
+    }
+
+    /** 规范项目环境列表，去重后使用逗号保存。 */
+    private String normalizeEnvironments(String environments) {
+        Set<String> values = parseEnvironments(environments);
+        if (values.isEmpty()) {
+            throw new IllegalArgumentException("项目至少配置一个环境");
+        }
+        return String.join(",", values);
+    }
+
+    private Set<String> parseEnvironments(String environments) {
+        Set<String> values = new LinkedHashSet<String>();
+        if (environments == null) {
+            return values;
+        }
+        for (String item : environments.split("[,，\\s]+")) {
+            if (item.trim().isEmpty()) {
+                continue;
+            }
+            String env = normalizeEnvironment(item);
+            if (env.length() > 32) {
+                throw new IllegalArgumentException("环境标识不能超过32个字符: " + env);
+            }
+            values.add(env);
+        }
+        return values;
+    }
+
+    private void assertProjectEnvironment(Long projectId, String environment) {
+        Project project = getProject(projectId);
+        if (project == null) {
+            throw new IllegalArgumentException("Project not found");
+        }
+        if (!parseEnvironments(project.getEnvironments()).contains(normalizeEnvironment(environment))) {
+            throw new IllegalArgumentException("环境 " + environment + " 不属于当前项目");
+        }
+    }
+
+    private void assertBoundDatasourceEnvironments(Long projectId, String environments) {
+        Set<String> allowed = parseEnvironments(environments);
+        for (ProjectDatasource datasource : projectDatasourceMapper.listByProject(projectId)) {
+            if (!allowed.contains(normalizeEnvironment(datasource.getEnv()))) {
+                throw new IllegalArgumentException("环境 " + datasource.getEnv() + " 已绑定数据源，不能从项目环境中删除");
+            }
+        }
     }
 
     private void validateProject(CreateProjectRequest request) {
-        if (request == null || isBlank(request.getName()) || isBlank(request.getCode())) {
-            throw new IllegalArgumentException("Missing project name or code");
+        if (request == null || isBlank(request.getName()) || isBlank(request.getCode())
+                || isBlank(request.getEnvironments())) {
+            throw new IllegalArgumentException("Missing project name, code or environments");
         }
     }
 

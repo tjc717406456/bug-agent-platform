@@ -7,10 +7,12 @@
     <!-- insert 后自增主键回填到入参 id，等价原 select last_insert_id() -->
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         insert into analysis_record(project_id, version_id, api_path, record_type, user_description, request_body, response_body,
-            stack_trace, screenshot_paths, trace_id, request_time, conclusion, confidence, evidence_json,
+            stack_trace, screenshot_paths, trace_id, request_time, environment, database_access_level,
+            schema_datasource_id, business_datasource_id, conclusion, confidence, evidence_json,
             auto_verify, auto_verify_keywords, rounds_count, total_tokens, created_by, created_at)
         values (#{projectId}, #{versionId}, #{apiPath}, #{recordType}, #{userDescription}, #{requestBody}, #{responseBody},
-            #{stackTrace}, #{screenshotPaths}, #{traceId}, #{requestTime}, #{conclusion}, #{confidence}, #{evidenceJson},
+            #{stackTrace}, #{screenshotPaths}, #{traceId}, #{requestTime}, #{environment}, #{databaseAccessLevel},
+            #{schemaDatasourceId}, #{businessDatasourceId}, #{conclusion}, #{confidence}, #{evidenceJson},
             #{autoVerify}, #{autoVerifyKeywords}, #{roundsCount}, #{totalTokens}, #{createdBy}, now())
     </insert>
 
@@ -61,6 +63,7 @@
 
     <select id="selectDetail" resultType="com.tjc.bugagent.analysis.AnalysisRecord">
         select id, project_id, api_path, record_type, user_description, conclusion, confidence, evidence_json,
+            environment, database_access_level, schema_datasource_id, business_datasource_id,
             auto_verify, feedback_verdict, actual_root_cause, expect_keywords, created_at
         from analysis_record where id = #{id}
     </select>

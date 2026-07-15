@@ -21,12 +21,31 @@ public class AnalysisRequest {
     private String requestTime;
     private String logText;
     private String logId;
+    // 问题实际发生环境；未传时使用项目配置的第一个环境
+    private String environment;
+    // 用户选择的策略：AUTO/NONE/SCHEMA_ONLY/BUSINESS_DATA
+    private String databasePolicy = "AUTO";
+    // 后端解析后的实际权限和数据源，仅服务端写入
+    private String databaseAccessLevel;
+    private Long schemaDatasourceId;
+    private Long businessDatasourceId;
     // 本次是否强制走深度模式（多假设并行）；null 时按全局 hypothesis-mode 配置
     private Boolean deepMode;
     // 本次是否启用多 Agent 分工调查；与 deepMode 独立，二者同时开启时优先多 Agent，避免并行套娃
     private Boolean multiAgentMode;
     // 发起人，提交时在 servlet 线程从登录上下文盖章（异步执行体读不到），客户端传值会被覆盖
     private Long ownerId;
+
+    public String getEnvironment() { return environment; }
+    public void setEnvironment(String environment) { this.environment = environment; }
+    public String getDatabasePolicy() { return databasePolicy; }
+    public void setDatabasePolicy(String databasePolicy) { this.databasePolicy = databasePolicy; }
+    public String getDatabaseAccessLevel() { return databaseAccessLevel; }
+    public void setDatabaseAccessLevel(String databaseAccessLevel) { this.databaseAccessLevel = databaseAccessLevel; }
+    public Long getSchemaDatasourceId() { return schemaDatasourceId; }
+    public void setSchemaDatasourceId(Long schemaDatasourceId) { this.schemaDatasourceId = schemaDatasourceId; }
+    public Long getBusinessDatasourceId() { return businessDatasourceId; }
+    public void setBusinessDatasourceId(Long businessDatasourceId) { this.businessDatasourceId = businessDatasourceId; }
 
     public Long getOwnerId() {
         return ownerId;

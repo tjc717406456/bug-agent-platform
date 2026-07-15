@@ -3,7 +3,7 @@ import { message } from 'ant-design-vue'
 import {
   listProjects, listVersions, listDatasources, createProject, updateProject, deleteProject,
   listApiRoutes, importGit, importZip, deleteVersion, saveDatasource,
-  getProjectMembers, saveProjectMembers
+  getProjectMembers, saveProjectMembers, saveProjectDatasourcePolicy
 } from '../../api/client'
 import { currentProject, analysisForm, analysisResult, confirm } from '../core'
 import { reloadDbhubDatasources } from './dbhubStore'
@@ -23,13 +23,24 @@ export const apiRoutes = ref([])
 export const routesLoading = ref(false)
 export const selectedApiPrefix = ref('')
 export const projectDialogVisible = ref(false)
+const SELECTED_PROJECT_KEY = 'bug-agent-selected-project'
 
-export const projectForm = reactive({ id: null, name: '', code: '', description: '' })
+export const projectForm = reactive({ id: null, name: '', code: '', description: '', environments: ['prod', 'test'] })
 // 项目可见范围：勾选的普通用户 id 列表（管理员天然可见全部，不在此列）
 export const projectMemberIds = ref([])
 export const projectQuery = reactive({ name: '', code: '' })
 export const gitForm = reactive({ repoUrl: '', branchName: '', accessToken: '' })
+export const environmentOptions = computed(() => {
+  return parseProjectEnvironments(currentProject.value).map(env => ({ value: env, label: env }))
+})
+export const databasePolicyOptions = [
+  { value: 'AUTO', label: '自动判断（推荐）' },
+  { value: 'NONE', label: '完全不访问数据库' },
+  { value: 'SCHEMA_ONLY', label: '仅核对表结构' },
+  { value: 'BUSINESS_DATA', label: '核对当前环境业务数据' }
+]
 export const datasourceForm = reactive({ env: 'test', dbhubKey: '' })
+export const datasourcePolicyForm = reactive({ schemaConsistent: true, schemaReferenceEnv: 'test' })
 
 export const currentVersion = computed(() => {
   if (!currentProject.value) return null
@@ -40,8 +51,57 @@ export const currentVersion = computed(() => {
 })
 export const currentDatasource = computed(() => {
   if (!currentProject.value) return null
-  return datasources.value.find((item) => item.enabled) || datasources.value[0] || null
+  return datasourceAccessPreview.value.businessDatasource || datasourceAccessPreview.value.schemaDatasource || null
 })
+
+/** 当前分析环境下的实际数据库能力预览，后端会按同一规则再次校验。 */
+export const datasourceAccessPreview = computed(() => {
+  const environment = analysisForm.environment || 'prod'
+  const policy = analysisForm.databasePolicy || 'AUTO'
+  const businessDatasource = findEnabledDatasource(environment)
+  const referenceDatasource = currentProject.value?.schemaConsistent
+    ? findEnabledDatasource(currentProject.value.schemaReferenceEnv || 'test')
+    : null
+  const schemaDatasource = businessDatasource || referenceDatasource
+  if (policy === 'NONE') {
+    return accessPreview('NONE', null, null, '本次完全不访问数据库，只使用源码、日志、堆栈和请求响应。')
+  }
+  if (policy === 'SCHEMA_ONLY') {
+    return schemaDatasource
+      ? accessPreview('SCHEMA_ONLY', schemaDatasource, null, schemaOnlyDescription(schemaDatasource, environment))
+      : accessPreview('NONE', null, null, '没有可用的结构参考数据源，本次不会访问数据库。')
+  }
+  if (policy === 'BUSINESS_DATA') {
+    return businessDatasource
+      ? accessPreview('BUSINESS_DATA', businessDatasource, businessDatasource, '允许核对 ' + environment + ' 环境业务数据。')
+      : accessPreview('UNAVAILABLE', schemaDatasource, null, '未配置 ' + environment + ' 环境数据源，不能核对业务数据，请改用自动判断或仅表结构。')
+  }
+  if (businessDatasource) {
+    return accessPreview('BUSINESS_DATA', businessDatasource, businessDatasource, '已匹配 ' + environment + ' 环境数据源，可核对当前环境业务数据。')
+  }
+  if (schemaDatasource) {
+    return accessPreview('SCHEMA_ONLY', schemaDatasource, null, schemaOnlyDescription(schemaDatasource, environment))
+  }
+  return accessPreview('NONE', null, null, '未配置 ' + environment + ' 环境数据源，也没有结构参考库，本次只使用源码和日志。')
+})
+
+function findEnabledDatasource(environment) {
+  return datasources.value.find(item => item.enabled && String(item.env).toLowerCase() === String(environment).toLowerCase()) || null
+}
+
+function accessPreview(accessLevel, schemaDatasource, businessDatasource, description) {
+  const labels = {
+    NONE: '不访问数据库',
+    SCHEMA_ONLY: '仅核对表结构',
+    BUSINESS_DATA: '当前环境业务数据',
+    UNAVAILABLE: '数据源不匹配'
+  }
+  return { accessLevel, accessLabel: labels[accessLevel] || accessLevel, schemaDatasource, businessDatasource, description }
+}
+
+function schemaOnlyDescription(datasource, environment) {
+  return '问题环境为 ' + environment + '，仅使用 ' + datasource.env + ' 库核对字段和类型；不会读取行数、样例、配置值或业务记录。'
+}
 
 export const projectOptions = computed(() => projects.value.map((project) => ({ value: project.id, label: project.name })))
 export const versionOptions = computed(() => versions.value.map((version) => ({ value: version.id, label: versionOptionLabel(version) })))
@@ -89,17 +149,16 @@ export async function loadAll() {
 
 export async function loadProjects() {
   projects.value = await listProjects(projectQuery)
-  if (!currentProject.value && projects.value.length) {
-    currentProject.value = projects.value[0]
-    selectedProjectId.value = currentProject.value.id
-  }
+  const previousProject = currentProject.value
+  const preferredId = previousProject?.id || loadSelectedProjectId()
+  const matched = projects.value.find(project => Number(project.id) === Number(preferredId))
+  const filtered = Boolean(projectQuery.name?.trim() || projectQuery.code?.trim())
+  // 查询条件可能暂时过滤掉当前项目，此时保持选择；完整列表确认项目不存在时才回退第一项
+  currentProject.value = matched || (filtered ? previousProject : null) || projects.value[0] || null
+  selectedProjectId.value = currentProject.value?.id || null
+  saveSelectedProjectId(selectedProjectId.value)
   if (!datasourceProjectId.value && currentProject.value) {
     datasourceProjectId.value = currentProject.value.id
-  }
-  if (currentProject.value) {
-    const matched = projects.value.find((project) => project.id === currentProject.value.id)
-    currentProject.value = matched || projects.value[0] || null
-    selectedProjectId.value = currentProject.value?.id || null
   }
   if (!currentProject.value) {
     selectedProjectId.value = null
@@ -113,6 +172,8 @@ export async function loadProjectRelated() {
   if (!currentProject.value) return
   versions.value = await listVersions(currentProject.value.id)
   datasources.value = await listDatasources(currentProject.value.id)
+  syncDatasourcePolicyForm()
+  restoreAnalysisEnvironment(currentProject.value.id)
   if (!analysisForm.versionId && versions.value.length) {
     analysisForm.versionId = versions.value[0].id
   }
@@ -120,11 +181,12 @@ export async function loadProjectRelated() {
 }
 
 export async function saveProjectAction() {
-  if (!projectForm.name || !projectForm.code) {
-    message.warning('项目名称和项目编码不能为空')
+  if (!projectForm.name || !projectForm.code || !projectForm.environments?.length) {
+    message.warning('项目名称、项目编码和项目环境不能为空')
     return
   }
-  const saved = projectForm.id ? await updateProject(projectForm.id, projectForm) : await createProject(projectForm)
+  const payload = { ...projectForm, environments: normalizeEnvironmentList(projectForm.environments).join(',') }
+  const saved = projectForm.id ? await updateProject(projectForm.id, payload) : await createProject(payload)
   // 可见范围全量替换：勾选列表即最终授权状态
   await saveProjectMembers(saved.id, projectMemberIds.value)
   message.success(projectForm.id ? '项目已修改' : '项目已创建')
@@ -132,6 +194,7 @@ export async function saveProjectAction() {
   resetProjectForm()
   currentProject.value = saved
   selectedProjectId.value = saved.id
+  saveSelectedProjectId(saved.id)
   datasourceProjectId.value = saved.id
   await loadAll()
 }
@@ -140,7 +203,13 @@ export async function openProjectDialog(row) {
   // 项目由管理员维护，普通用户双击行/点按钮都不给开弹窗
   if (!isAdmin.value) return
   if (row) {
-    Object.assign(projectForm, { id: row.id, name: row.name, code: row.code, description: row.description || '' })
+    Object.assign(projectForm, {
+      id: row.id,
+      name: row.name,
+      code: row.code,
+      description: row.description || '',
+      environments: parseProjectEnvironments(row)
+    })
   } else {
     resetProjectForm()
   }
@@ -153,7 +222,7 @@ export async function openProjectDialog(row) {
 }
 
 export function resetProjectForm() {
-  Object.assign(projectForm, { id: null, name: '', code: '', description: '' })
+  Object.assign(projectForm, { id: null, name: '', code: '', description: '', environments: ['prod', 'test'] })
   projectMemberIds.value = []
 }
 
@@ -185,18 +254,22 @@ export async function resetProjectQuery() {
 export async function selectProject(row) {
   currentProject.value = row
   selectedProjectId.value = row?.id || null
+  saveSelectedProjectId(selectedProjectId.value)
   datasourceProjectId.value = row?.id || null
   await loadProjectRelated()
 }
 
 export async function changeProject(projectId) {
-  currentProject.value = projects.value.find((project) => project.id === projectId) || null
+  currentProject.value = projects.value.find(project => Number(project.id) === Number(projectId)) || null
   datasourceProjectId.value = currentProject.value?.id || null
+  saveSelectedProjectId(currentProject.value?.id)
   analysisResult.value = null
   analysisForm.apiPath = ''
   selectedApiPrefix.value = ''
   analysisForm.versionId = ''
+  analysisForm.databasePolicy = 'AUTO'
   apiRoutes.value = []
+  restoreAnalysisEnvironment(projectId)
   await loadProjectRelated()
 }
 
@@ -206,8 +279,63 @@ export async function changeDatasourceProject(projectId) {
     datasourceProjectId.value = project.id
     currentProject.value = project
     selectedProjectId.value = project.id
+    saveSelectedProjectId(project.id)
+    syncDatasourcePolicyForm()
     await loadProjectRelated()
   }
+}
+
+/** 保存项目本次选择的分析环境，下次进入时直接恢复。 */
+export function changeAnalysisEnvironment(environment) {
+  analysisForm.environment = environment || environmentOptions.value[0]?.value || ''
+  if (currentProject.value?.id && typeof window !== 'undefined') {
+    window.localStorage.setItem('bug-agent-analysis-env-' + currentProject.value.id, analysisForm.environment)
+  }
+}
+
+function restoreAnalysisEnvironment(projectId) {
+  const options = environmentOptions.value.map(item => item.value)
+  const saved = projectId && typeof window !== 'undefined'
+    ? window.localStorage.getItem('bug-agent-analysis-env-' + projectId)
+    : null
+  analysisForm.environment = options.includes(saved) ? saved : (options[0] || '')
+}
+
+function syncDatasourcePolicyForm() {
+  const environments = environmentOptions.value.map(item => item.value)
+  const reference = currentProject.value?.schemaReferenceEnv
+  if (!environments.includes(datasourceForm.env)) {
+    datasourceForm.env = environments[0] || ''
+  }
+  Object.assign(datasourcePolicyForm, {
+    schemaConsistent: currentProject.value?.schemaConsistent !== false,
+    schemaReferenceEnv: environments.includes(reference) ? reference : (environments[0] || '')
+  })
+}
+
+function parseProjectEnvironments(project) {
+  return normalizeEnvironmentList(String(project?.environments || '').split(','))
+}
+
+function normalizeEnvironmentList(environments) {
+  return [...new Set((environments || [])
+    .map(item => String(item).trim().toLowerCase())
+    .filter(Boolean))]
+}
+
+function loadSelectedProjectId() {
+  if (typeof window === 'undefined') return null
+  const value = window.localStorage.getItem(SELECTED_PROJECT_KEY)
+  return value ? Number(value) : null
+}
+
+function saveSelectedProjectId(projectId) {
+  if (typeof window === 'undefined') return
+  if (projectId == null) {
+    window.localStorage.removeItem(SELECTED_PROJECT_KEY)
+    return
+  }
+  window.localStorage.setItem(SELECTED_PROJECT_KEY, String(projectId))
 }
 
 export async function changeAnalysisVersion(versionId) {
@@ -343,6 +471,24 @@ export async function saveDatasourceAction() {
   await loadProjectRelated()
 }
 
+/** 保存跨环境结构复用规则。 */
+export async function saveDatasourcePolicyAction() {
+  if (!datasourceProjectId.value) {
+    message.warning('先选择要配置的项目')
+    return
+  }
+  const saved = await saveProjectDatasourcePolicy(datasourceProjectId.value, datasourcePolicyForm)
+  const index = projects.value.findIndex(item => item.id === saved.id)
+  if (index >= 0) {
+    projects.value[index] = saved
+  }
+  if (currentProject.value?.id === saved.id) {
+    currentProject.value = saved
+  }
+  syncDatasourcePolicyForm()
+  message.success('数据库结构策略已保存')
+}
+
 /** 登出清场：换用户后不能残留上一位的项目列表与选择 */
 export function resetProjectState() {
   projects.value = []
@@ -350,6 +496,7 @@ export function resetProjectState() {
   datasources.value = []
   apiRoutes.value = []
   selectedProjectId.value = null
+  saveSelectedProjectId(null)
   datasourceProjectId.value = null
   selectedApiPrefix.value = ''
   zipFile.value = null
@@ -357,4 +504,7 @@ export function resetProjectState() {
   zipImportProgress.value = ''
   projectDialogVisible.value = false
   projectMemberIds.value = []
+  analysisForm.environment = 'prod'
+  analysisForm.databasePolicy = 'AUTO'
+  Object.assign(datasourcePolicyForm, { schemaConsistent: true, schemaReferenceEnv: 'test' })
 }

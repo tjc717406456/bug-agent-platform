@@ -3,6 +3,15 @@
     <a-form layout="vertical">
       <a-form-item label="项目名称"><a-input v-model:value="projectForm.name" /></a-form-item>
       <a-form-item label="项目编码"><a-input v-model:value="projectForm.code" /></a-form-item>
+      <a-form-item label="项目环境">
+        <a-select
+          v-model:value="projectForm.environments"
+          mode="tags"
+          placeholder="输入环境后回车，例如 prod、test、uat"
+          :token-separators="[',', '，', ' ']"
+        />
+        <div class="member-tip">Bug 分析和数据源绑定只会展示这里配置的环境。</div>
+      </a-form-item>
       <a-form-item label="说明"><a-textarea v-model:value="projectForm.description" :rows="3" /></a-form-item>
       <a-form-item label="可见范围">
         <a-select

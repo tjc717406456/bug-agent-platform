@@ -6,13 +6,13 @@
 
     <select id="countByProjectEnv" resultType="int">
         select count(1) from project_datasource
-        where project_id = #{projectId} and env = #{env}
+        where project_id = #{projectId} and lower(env) = lower(#{env})
     </select>
 
     <update id="updateByProjectEnv">
         update project_datasource
         set dbhub_key = #{dbhubKey}, whitelist_tables = #{whitelistTables}, enabled = 1, updated_at = now()
-        where project_id = #{projectId} and env = #{env}
+        where project_id = #{projectId} and lower(env) = lower(#{env})
     </update>
 
     <insert id="insert">
@@ -27,12 +27,18 @@
         order by id desc
     </select>
 
-    <select id="findFirstEnabled" resultType="com.tjc.bugagent.project.ProjectDatasource">
+    <select id="findEnabledByProjectEnv" resultType="com.tjc.bugagent.project.ProjectDatasource">
         select id, project_id, env, dbhub_key, whitelist_tables, enabled
         from project_datasource
-        where project_id = #{projectId} and enabled = 1
+        where project_id = #{projectId} and lower(env) = lower(#{env}) and enabled = 1
         order by id desc
         limit 1
+    </select>
+
+    <select id="findEnabledByIdAndProject" resultType="com.tjc.bugagent.project.ProjectDatasource">
+        select id, project_id, env, dbhub_key, whitelist_tables, enabled
+        from project_datasource
+        where id = #{id} and project_id = #{projectId} and enabled = 1
     </select>
 
 </mapper>

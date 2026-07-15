@@ -37,7 +37,22 @@ export function sanitizeActivePanel(isAdmin) {
 }
 
 // 分析输入表单：analysis 域主导，project 域联动版本/路由选择，history 回看时复用
-export const analysisForm = reactive({ versionId: '', apiPath: '', userDescription: '', requestBody: '', responseBody: '', stackTrace: '', traceId: '', requestTime: '', logText: '', logId: '', deepMode: false, multiAgentMode: false })
+export const analysisForm = reactive({
+  versionId: '',
+  apiPath: '',
+  environment: 'prod',
+  databasePolicy: 'AUTO',
+  userDescription: '',
+  requestBody: '',
+  responseBody: '',
+  stackTrace: '',
+  traceId: '',
+  requestTime: '',
+  logText: '',
+  logId: '',
+  deepMode: false,
+  multiAgentMode: false
+})
 export const analysisResult = ref(null)
 export const analysisDialogVisible = ref(false)
 export const activeReportTab = ref('report')

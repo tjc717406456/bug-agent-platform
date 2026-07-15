@@ -26,6 +26,7 @@
       </a-table-column>
       <a-table-column title="项目名称" data-index="name" />
       <a-table-column title="编码" data-index="code" />
+      <a-table-column title="环境" data-index="environments" />
       <a-table-column title="说明" data-index="description" />
       <!-- 项目由管理员维护：普通用户只有点击选中，不给编辑/删除入口 -->
       <a-table-column v-if="isAdmin" title="操作" :width="150">

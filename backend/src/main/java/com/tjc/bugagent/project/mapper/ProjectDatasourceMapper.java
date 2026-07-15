@@ -27,6 +27,9 @@ public interface ProjectDatasourceMapper {
     /** 项目下所有数据源，按 id 倒序 */
     List<ProjectDatasource> listByProject(@Param("projectId") Long projectId);
 
-    /** 项目下首个启用的数据源，无则 null */
-    ProjectDatasource findFirstEnabled(@Param("projectId") Long projectId);
+    /** 按项目和环境精确查找启用数据源。 */
+    ProjectDatasource findEnabledByProjectEnv(@Param("projectId") Long projectId, @Param("env") String env);
+
+    /** 按 ID 和项目查找启用数据源，防止跨项目引用。 */
+    ProjectDatasource findEnabledByIdAndProject(@Param("id") Long id, @Param("projectId") Long projectId);
 }

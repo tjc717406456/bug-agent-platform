@@ -51,8 +51,8 @@ public class InitialEvidenceBuilder {
     }
 
     public String buildInitialEvidence(AnalysisRequest request, ProjectVersion version,
-                                       CodeGraphQueryResult graph, ProjectDatasource datasource,
-                                       AgentToolExecutor.AgentToolContext toolContext, LogClues logClues) {
+                                       CodeGraphQueryResult graph, AgentToolExecutor.AgentToolContext toolContext,
+                                       LogClues logClues) {
         StringBuilder builder = new StringBuilder();
         builder.append("项目ID: ").append(request.getProjectId()).append("\n");
         builder.append("版本ID: ").append(version.getId()).append("\n");
@@ -68,7 +68,15 @@ public class InitialEvidenceBuilder {
         appendIfPresent(builder, "截图保存路径", request.getScreenshotPaths());
         appendIfPresent(builder, "Trace ID", request.getTraceId());
         appendIfPresent(builder, "请求时间", request.getRequestTime());
-        builder.append("数据源: ").append(datasource == null ? "未配置" : datasource.getDbhubKey()).append("\n");
+        builder.append("问题环境: ").append(request.getEnvironment()).append("\n");
+        builder.append("数据库权限: ").append(request.getDatabaseAccessLevel()).append("\n");
+        ProjectDatasource schemaDatasource = toolContext.getScope().getSchemaDatasource();
+        ProjectDatasource businessDatasource = toolContext.getScope().getBusinessDatasource();
+        builder.append("结构数据源: ").append(formatDatasource(schemaDatasource)).append("\n");
+        builder.append("业务数据源: ").append(formatDatasource(businessDatasource)).append("\n");
+        if (businessDatasource == null) {
+            builder.append("数据边界: 禁止查询其他环境的业务记录、配置值、数量和样例；业务事实只能依据当前环境日志。\n");
+        }
         // 日志证据放在路由/源码这些大块之前，避免总量截断时被砍掉——日志里常有最直接的答案
         if (logClues != null && !logClues.getRelevantLines().isEmpty()) {
             builder.append("日志关注行(按接口名/关键词从日志匹配出的相关行):\n")
@@ -213,6 +221,10 @@ public class InitialEvidenceBuilder {
         if (!isBlank(value)) {
             builder.append(label).append(": ").append(value).append("\n");
         }
+    }
+
+    private String formatDatasource(ProjectDatasource datasource) {
+        return datasource == null ? "未配置" : datasource.getEnv() + " / " + datasource.getDbhubKey();
     }
 
     /**

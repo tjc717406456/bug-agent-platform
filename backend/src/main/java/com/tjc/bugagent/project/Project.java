@@ -8,6 +8,9 @@ public class Project {
     private String name;
     private String code;
     private String description;
+    private String environments = "prod,test";
+    private boolean schemaConsistent = true;
+    private String schemaReferenceEnv = "test";
     /** 所属用户；项目私有，仅所有者与管理员可见 */
     private Long ownerId;
 
@@ -50,5 +53,28 @@ public class Project {
     public void setDescription(String description) {
         this.description = description;
     }
-}
 
+    public String getEnvironments() {
+        return environments;
+    }
+
+    public void setEnvironments(String environments) {
+        this.environments = environments;
+    }
+
+    public boolean isSchemaConsistent() {
+        return schemaConsistent;
+    }
+
+    public void setSchemaConsistent(boolean schemaConsistent) {
+        this.schemaConsistent = schemaConsistent;
+    }
+
+    public String getSchemaReferenceEnv() {
+        return schemaReferenceEnv;
+    }
+
+    public void setSchemaReferenceEnv(String schemaReferenceEnv) {
+        this.schemaReferenceEnv = schemaReferenceEnv;
+    }
+}

@@ -7,7 +7,10 @@
       </div>
       <div class="analysis-status">
         <a-tag>{{ currentProject?.name || '未选项目' }}</a-tag>
-        <a-tag v-if="currentDatasource" color="orange">{{ currentDatasource.dbhubKey }}</a-tag>
+        <a-tag color="blue">{{ analysisForm.environment }}</a-tag>
+        <a-tag :color="datasourceAccessPreview.accessLevel === 'BUSINESS_DATA' ? 'green' : 'orange'">
+          {{ datasourceAccessPreview.accessLabel }}
+        </a-tag>
       </div>
     </div>
     <a-alert v-if="!currentProject" type="warning" show-icon message="先选择项目并完成源码索引" />
@@ -62,6 +65,30 @@
                 @change="changeApiPath"
               />
             </a-form-item>
+          </a-col>
+        </a-row>
+        <a-row :gutter="16">
+          <a-col :span="8">
+            <a-form-item label="问题环境">
+              <a-select
+                v-model:value="analysisForm.environment"
+                :options="environmentOptions"
+                style="width: 100%"
+                @change="changeAnalysisEnvironment"
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :span="8">
+            <a-form-item label="数据库验证">
+              <a-select v-model:value="analysisForm.databasePolicy" :options="databasePolicyOptions" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="8">
+            <a-alert
+              :type="datasourceAccessPreview.accessLevel === 'UNAVAILABLE' ? 'error' : 'info'"
+              show-icon
+              :message="datasourceAccessPreview.description"
+            />
           </a-col>
         </a-row>
         <a-form-item label="问题描述">
@@ -145,7 +172,10 @@ import { useAppStore } from '../../store/useAppStore'
 
 const {
   currentProject,
-  currentDatasource,
+  datasourceAccessPreview,
+  environmentOptions,
+  databasePolicyOptions,
+  changeAnalysisEnvironment,
   selectedProjectId,
   projectOptions,
   changeProject,

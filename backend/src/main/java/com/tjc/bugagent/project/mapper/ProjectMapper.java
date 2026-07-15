@@ -29,7 +29,13 @@ public interface ProjectMapper {
 
     /** 更新项目基础信息 */
     void update(@Param("id") Long id, @Param("name") String name,
-                @Param("code") String code, @Param("description") String description);
+                @Param("code") String code, @Param("description") String description,
+                @Param("environments") String environments);
+
+    /** 保存项目的跨环境表结构策略。 */
+    void updateDatasourcePolicy(@Param("id") Long id,
+                                @Param("schemaConsistent") boolean schemaConsistent,
+                                @Param("schemaReferenceEnv") String schemaReferenceEnv);
 
     /** 删除项目 */
     void deleteById(@Param("id") Long id);

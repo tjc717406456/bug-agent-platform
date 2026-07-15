@@ -3,6 +3,7 @@ package com.tjc.bugagent.analysis;
 import com.tjc.bugagent.analysis.agent.AgentRunCheckpoint;
 import com.tjc.bugagent.analysis.agent.ProjectExecutionScope;
 import com.tjc.bugagent.project.ProjectDatasource;
+import com.tjc.bugagent.project.DatasourceSelection;
 
 /**
  * Agent 分析过程的进度回调，让前端能实时看到每轮在干什么，而不是干等黑盒。
@@ -31,6 +32,11 @@ public interface AnalysisProgressListener {
     /** 由已鉴权的任务入口创建执行范围，异步任务可补上 taskId 与 ownerId。 */
     default ProjectExecutionScope executionScope(Long projectId, Long versionId, ProjectDatasource datasource) {
         return ProjectExecutionScope.create(null, null, projectId, versionId, datasource);
+    }
+
+    /** 创建带结构和业务数据隔离的执行范围。 */
+    default ProjectExecutionScope executionScope(Long projectId, Long versionId, DatasourceSelection selection) {
+        return ProjectExecutionScope.create(null, null, projectId, versionId, selection);
     }
 
     /** 需要恢复时返回最近完整轮次检查点。 */

@@ -64,6 +64,30 @@ class AgentAnalysisHelpersTest {
         assertNull(AgentTextUtils.trimHeadTail(null, 100));
     }
 
+    @Test
+    void selfCritiqueDistinguishesReframeFromRevise() {
+        AgentConvergenceJudge judge = new AgentConvergenceJudge(null, null, null);
+
+        assertTrue(judge.isReframeVerdict("REFRAME\n将硬件未执行改为服务端未收到有效 ACK"));
+        assertFalse(judge.isReviseVerdict("REFRAME\n将硬件未执行改为服务端未收到有效 ACK"));
+        assertEquals("将硬件未执行改为服务端未收到有效 ACK",
+                judge.reframeReason("REFRAME\n将硬件未执行改为服务端未收到有效 ACK"));
+
+        assertTrue(judge.isReviseVerdict("REVISE\n缺少失败分支源码"));
+        assertFalse(judge.isReframeVerdict("REVISE\n缺少失败分支源码"));
+        assertEquals("缺少失败分支源码", judge.reviseReason("REVISE\n缺少失败分支源码"));
+    }
+
+    @Test
+    void selfCritiqueTreatsConfirmAndUnknownOutputAsNoFurtherInvestigation() {
+        AgentConvergenceJudge judge = new AgentConvergenceJudge(null, null, null);
+
+        assertFalse(judge.isReviseVerdict("CONFIRM"));
+        assertFalse(judge.isReframeVerdict("CONFIRM"));
+        assertFalse(judge.isReviseVerdict("模型输出格式异常"));
+        assertFalse(judge.isReframeVerdict(null));
+    }
+
     private static String repeat(char ch, int count) {
         StringBuilder builder = new StringBuilder();
         for (int i = 0; i < count; i++) {

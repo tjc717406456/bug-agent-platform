@@ -166,7 +166,7 @@ public class AgentToolExecutor {
                 AgentToolPhase.DISCOVERY, true, true, true, this::findCallers, "nodeId");
         register("search_log", "检索本次日志原文；传 L<行号> 可查看附近上下文",
                 AgentToolPhase.DISCOVERY, true, true, true, this::searchLog, "keyword");
-        register("describe_tables", "查表结构、数据量和最近样例",
+        register("describe_tables", "只查表字段、类型、主键和注释，不读取行数或业务样例",
                 AgentToolPhase.DISCOVERY, true, true, true, this::describeTables, "tables");
         register("query_database", "执行只读 SQL 核对数据",
                 AgentToolPhase.VERIFICATION, true, true, true, this::queryDatabase, "sql");
@@ -481,8 +481,9 @@ public class AgentToolExecutor {
     }
 
     private AgentToolResult describeTables(AgentToolCall call, AgentToolContext context) {
-        if (context.getDatasource() == null) {
-            return AgentToolResult.fail("describe_tables", "项目未配置 dbhub 数据源，本次无法查库；请基于代码、SQL 与日志证据定位");
+        ProjectDatasource datasource = context.getScope().getSchemaDatasource();
+        if (datasource == null) {
+            return AgentToolResult.fail("describe_tables", "本次未授权结构数据源；请基于代码、SQL 与日志证据定位");
         }
         List<String> tables = parseTables(call.getArguments().get("tables"));
         if (tables.isEmpty()) {
@@ -491,13 +492,14 @@ public class AgentToolExecutor {
         if (context.getScope() != null && !context.getScope().allowsTables(tables)) {
             return AgentToolResult.fail("describe_tables", "请求包含项目白名单之外的表");
         }
-        String evidence = dbhubClient.describeTables(context.getDatasource().getDbhubKey(), tables);
-        return AgentToolResult.ok("describe_tables", "已查询表结构: " + tables, evidence);
+        String evidence = dbhubClient.describeSchema(datasource.getDbhubKey(), tables);
+        return AgentToolResult.ok("describe_tables", "已查询纯表结构: " + tables, evidence);
     }
 
     private AgentToolResult queryDatabase(AgentToolCall call, AgentToolContext context) {
-        if (context.getDatasource() == null) {
-            return AgentToolResult.fail("query_database", "项目未配置 dbhub 数据源，本次无法查库；请基于代码、SQL 与日志证据定位");
+        ProjectDatasource datasource = context.getScope().getBusinessDatasource();
+        if (datasource == null) {
+            return AgentToolResult.fail("query_database", "本次未授权当前环境业务数据源，禁止跨环境查询业务数据");
         }
         String sql = call.stringArg("sql");
         if (!ReadonlySqlGuard.isReadonly(sql)) {
@@ -508,7 +510,7 @@ public class AgentToolExecutor {
         }
         // SQL 原文落 info 便于追溯执行了啥；结果正文含业务数据，只在 debug 打
         log.info("query_database 执行 SQL: {}", sql);
-        String evidence = dbhubClient.queryReadonly(context.getDatasource().getDbhubKey(), sql);
+        String evidence = dbhubClient.queryReadonly(datasource.getDbhubKey(), sql);
         log.debug("query_database 结果: {}", evidence);
         // 摘要带上截断的 SQL，前端进度时间线和证据页一眼可见查的是啥
         String summarySql = sql.length() > 160 ? sql.substring(0, 160) + "..." : sql;

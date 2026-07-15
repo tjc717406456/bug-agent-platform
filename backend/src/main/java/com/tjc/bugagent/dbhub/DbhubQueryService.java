@@ -79,6 +79,34 @@ public class DbhubQueryService {
     }
 
     /**
+     * 只查询 information_schema 元数据，供跨环境结构核对使用。
+     */
+    public String describeSchema(String datasourceKey, List<String> tables) {
+        if (isBlank(datasourceKey)) {
+            return "No dbhub datasource is configured.";
+        }
+        DbhubDatasourceConfig config = datasourceService.getDatasourceConfig(datasourceKey);
+        if (config == null) {
+            return "Unknown datasource: " + datasourceKey;
+        }
+        if (tables == null || tables.isEmpty()) {
+            return "No tables to describe";
+        }
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
+        try (Connection connection = getConnection(config)) {
+            for (String tableName : tables) {
+                Map<String, Object> tableInfo = new LinkedHashMap<String, Object>();
+                tableInfo.put("columns", queryColumns(connection, config.getDatabase(), cleanIdentifier(tableName)));
+                result.put(tableName, tableInfo);
+            }
+        } catch (Exception exception) {
+            log.warn("dbhub describeSchema failed, datasource={}, tables={}", datasourceKey, tables, exception);
+            return "dbhub call failed: " + sanitize(exception);
+        }
+        return wrapResult(result);
+    }
+
+    /**
      * 执行只读 SQL。
      */
     public String queryReadonly(String datasourceKey, String sql) {

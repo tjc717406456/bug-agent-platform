@@ -10,7 +10,7 @@ import com.tjc.bugagent.ai.AiToolCallResult;
 import com.tjc.bugagent.codegraph.CodeGraphQueryResult;
 import com.tjc.bugagent.codegraph.CodeGraphQueryService;
 import com.tjc.bugagent.config.AppProperties;
-import com.tjc.bugagent.project.ProjectDatasource;
+import com.tjc.bugagent.project.DatasourceSelection;
 import com.tjc.bugagent.project.ProjectService;
 import com.tjc.bugagent.project.ProjectVersion;
 import org.slf4j.Logger;
@@ -86,13 +86,16 @@ public class ApiExplainService {
         long startMs = System.currentTimeMillis();
         ProjectVersion version = resolveVersion(request);
         CodeGraphQueryResult graph = codeGraphQueryService.queryByApiPath(request.getProjectId(), version.getId(), request.getApiPath());
-        ProjectDatasource datasource = projectService.firstEnabledDatasource(request.getProjectId());
+        DatasourceSelection datasourceSelection = projectService.resolveDatasourceSelection(
+                request.getProjectId(), request.getEnvironment(), DatasourceSelection.NONE);
+        request.setEnvironment(datasourceSelection.getEnvironment());
+        request.setDatabaseAccessLevel(datasourceSelection.getAccessLevel());
         AgentToolExecutor.AgentToolContext toolContext = new AgentToolExecutor.AgentToolContext(
-                progress.executionScope(request.getProjectId(), version.getId(), datasource),
+                progress.executionScope(request.getProjectId(), version.getId(), datasourceSelection),
                 request.getApiPath(), null, null);
 
         // 讲解不需要日志/堆栈，给个空线索，初始证据按"有才拼"自动跳过这些段落
-        String initialEvidence = initialEvidenceBuilder.buildInitialEvidence(request, version, graph, datasource, toolContext, new LogClues());
+        String initialEvidence = initialEvidenceBuilder.buildInitialEvidence(request, version, graph, toolContext, new LogClues());
         log.info("接口讲解开始 projectId={} versionId={} apiPath={} 命中路由{}条",
                 request.getProjectId(), version.getId(), request.getApiPath(), graph.getRouteNodes().size());
 

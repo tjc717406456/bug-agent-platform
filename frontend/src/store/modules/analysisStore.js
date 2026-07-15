@@ -2,6 +2,7 @@ import { ref, computed, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { submitAgentAnalysisTaskScreenshots, pollAgentAnalysisTask, stopAgentAnalysisTask, resumeAgentAnalysisTask, submitApiExplainTask, submitFollowUpTask, uploadLog } from '../../api/client'
 import { currentProject, analysisForm, analysisResult, analysisDialogVisible, activeReportTab, feedbackEditable, sleep } from '../core'
+import { datasourceAccessPreview } from './projectStore'
 
 export const screenshotFiles = ref([])
 export const agentProgress = ref([])
@@ -170,6 +171,10 @@ export async function agentAnalyzeAction() {
     message.warning('日志正在上传，请稍候再分析')
     return
   }
+  if (datasourceAccessPreview.value.accessLevel === 'UNAVAILABLE') {
+    message.warning(datasourceAccessPreview.value.description)
+    return
+  }
   agentProgress.value = []
   agentPartialReport.value = ''
   reportStreaming.value = false
@@ -220,7 +225,8 @@ export async function apiAnalyzeAction() {
       projectId: currentProject.value.id,
       versionId: analysisForm.versionId ? Number(analysisForm.versionId) : null,
       apiPath: analysisForm.apiPath,
-      userDescription: analysisForm.userDescription
+      userDescription: analysisForm.userDescription,
+      environment: analysisForm.environment
     }
     const task = await submitApiExplainTask(payload)
     saveActiveTask(task.taskId)

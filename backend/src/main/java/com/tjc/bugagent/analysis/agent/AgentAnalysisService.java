@@ -13,7 +13,7 @@ import com.tjc.bugagent.ai.AiToolCallResult;
 import com.tjc.bugagent.codegraph.CodeGraphQueryResult;
 import com.tjc.bugagent.codegraph.CodeGraphQueryService;
 import com.tjc.bugagent.config.AppProperties;
-import com.tjc.bugagent.project.ProjectDatasource;
+import com.tjc.bugagent.project.DatasourceSelection;
 import com.tjc.bugagent.project.ProjectService;
 import com.tjc.bugagent.project.ProjectVersion;
 import org.slf4j.Logger;
@@ -116,18 +116,20 @@ public class AgentAnalysisService {
         long startMs = System.currentTimeMillis();
         ProjectVersion version = resolveVersion(request);
         CodeGraphQueryResult graph = codeGraphQueryService.queryByApiPath(request.getProjectId(), version.getId(), request.getApiPath());
-        ProjectDatasource datasource = projectService.firstEnabledDatasource(request.getProjectId());
+        DatasourceSelection datasourceSelection = projectService.resolveDatasourceSelection(
+                request.getProjectId(), request.getEnvironment(), request.getDatabasePolicy());
+        applyDatasourceSelection(request, datasourceSelection);
         // 日志原文解析一次，交给线索抽取（一次性用完即弃，不长期持有）
         String logText = resolveLogText(request);
         // 上传的大日志只把路径交给 toolContext，search_log 按需流式 grep，避免全文常驻内存
         String logPath = resolveLogPath(request);
         AgentToolExecutor.AgentToolContext toolContext = new AgentToolExecutor.AgentToolContext(
-                progress.executionScope(request.getProjectId(), version.getId(), datasource),
+                progress.executionScope(request.getProjectId(), version.getId(), datasourceSelection),
                 request.getApiPath(), request.getLogText(), logPath);
 
         // 有日志就先抠出堆栈、SQL、traceId、时间，缺啥补啥，让后续流程自动用上
         LogClues logClues = enrichFromLog(request, logText);
-        String initialEvidence = initialEvidenceBuilder.buildInitialEvidence(request, version, graph, datasource, toolContext, logClues);
+        String initialEvidence = initialEvidenceBuilder.buildInitialEvidence(request, version, graph, toolContext, logClues);
         String initialUserPrompt = promptBuilder.buildInitialUserPrompt(initialEvidence);
         List<String> screenshots = parseScreenshotPaths(request.getScreenshotPaths());
         if (aiClient.currentModelSupportsVision() && !screenshots.isEmpty()) {
@@ -159,7 +161,8 @@ public class AgentAnalysisService {
         String confidence = winner.confidence != null ? winner.confidence
                 : judge.resolveConfidence(graph, winner.rounds, finalReport);
         // 确定性结论连库自动核对，验证通过的无需人工即可进飞轮
-        AnalysisAutoVerifier.Result autoVerify = analysisAutoVerifier.verify(safe(finalReport) + "\n" + evidence, datasource);
+        AnalysisAutoVerifier.Result autoVerify = analysisAutoVerifier.verify(safe(finalReport) + "\n" + evidence,
+                datasourceSelection.getSchemaDatasource());
         // 展示与落库用真实循环圈数；rounds 列表是按工具调用逐条记的证据，条数≠轮数
         int roundsCount = winner.iterations;
         long elapsedMs = System.currentTimeMillis() - startMs;
@@ -179,6 +182,14 @@ public class AgentAnalysisService {
                 request.getApiPath(), roundsCount, winner.tokens, elapsedMs, confidence, autoVerify.getStatus());
         progress.onStep("✓ 分析完成 · " + roundsCount + " 轮查证 · " + confidence + " 置信 · " + winner.tokens + " tokens · " + (elapsedMs / 1000) + "s");
         return result;
+    }
+
+    /** 把服务端最终解析出的数据库边界写回请求，供证据展示和历史记录继承。 */
+    private void applyDatasourceSelection(AnalysisRequest request, DatasourceSelection selection) {
+        request.setEnvironment(selection.getEnvironment());
+        request.setDatabaseAccessLevel(selection.getAccessLevel());
+        request.setSchemaDatasourceId(selection.getSchemaDatasource() == null ? null : selection.getSchemaDatasource().getId());
+        request.setBusinessDatasourceId(selection.getBusinessDatasource() == null ? null : selection.getBusinessDatasource().getId());
     }
 
     /**
@@ -351,6 +362,7 @@ public class AgentAnalysisService {
      * 汇总失败就退回结构化置信度最高的分支（轮次多不等于证据硬），证据日志合并所有分支供追溯。
      */
     private ChainResult synthesize(List<ChainResult> branches, CodeGraphQueryResult graph, AnalysisProgressListener progress) {
+        log.info("多假设分支查证完成，开始流式汇总最终报告，分支数={}", branches.size());
         progress.onStep("汇总各假设结论，挑出证据最硬的根因");
         StringBuilder reports = new StringBuilder();
         List<Map<String, Object>> mergedRounds = new ArrayList<Map<String, Object>>();
@@ -568,6 +580,7 @@ public class AgentAnalysisService {
                 return AgentRunDirective.continueRun();
             }
             if (finish.isDegraded()) {
+                log.info("{}模型未按协议收口，依据已查证据开始生成最终报告", label);
                 AtomicInteger tokenSink = new AtomicInteger();
                 String report = proseSynthesizeReport(context.getMessages(), tokenSink);
                 context.addTokens(tokenSink.get());
@@ -585,13 +598,18 @@ public class AgentAnalysisService {
             String report = finish.stringArg("report");
             boolean twoPhase = safe(report).trim().length() < 300
                     && isBlank(forceFinishReason) && finish.getToolCallId() != null;
+            String reframeReason = null;
             if (canCritique) {
+                // 无论复核通过还是打回补证，一条调查链只做一次独立自检，防止反复抬高证明标准
+                selfChecked = true;
                 AtomicInteger tokenSink = new AtomicInteger();
                 String critiqueTarget = isBlank(report) ? safe(response.getContent()) : report;
                 String verdict = judge.runSelfCritique(critiqueTarget, rounds, initialEvidence, tokenSink);
                 context.addTokens(tokenSink.get());
                 if (judge.isReviseVerdict(verdict)) {
                     String reviseReason = judge.reviseReason(verdict);
+                    log.info("{}第{}轮 · 结论自检未通过：{}；继续补证",
+                            label, iteration, trim(reviseReason, 160));
                     conversation.appendAssistantMessage(context.getMessages(), response);
                     conversation.appendFinishHold(context.getMessages(), response, finish);
                     context.getMessages().add(conversation.message("user", "对你的初步结论做了独立复核，未通过："
@@ -601,23 +619,33 @@ public class AgentAnalysisService {
                             + trim(reviseReason, 160) + "；继续补证");
                     return AgentRunDirective.continueRun();
                 }
-                selfChecked = true;
-                progress.onStep(label + "结论概要自检通过，开始生成最终报告");
+                if (judge.isReframeVerdict(verdict)) {
+                    reframeReason = judge.reframeReason(verdict);
+                    rounds.add(reporter.recordCritique(iteration, critiqueTarget, verdict,
+                            "结论自检通过，最终报告需收窄措辞"));
+                    log.info("{}结论概要自检通过，按复核意见收窄措辞：{}", label, trim(reframeReason, 160));
+                    progress.onStep(label + "结论概要自检通过，正在收窄措辞并生成最终报告");
+                } else {
+                    log.info("{}结论概要自检通过", label);
+                    progress.onStep(label + "结论概要自检通过，开始生成最终报告");
+                }
             }
-            if (twoPhase) {
+            boolean needsProseReport = twoPhase || !isBlank(reframeReason);
+            if (needsProseReport) {
                 AtomicInteger tokenSink = new AtomicInteger();
-                report = streamFinalReport(context.getMessages(), response, finish, progress, tokenSink, label);
+                report = streamFinalReport(context.getMessages(), response, finish, progress, tokenSink, label, reframeReason);
                 context.addTokens(tokenSink.get());
                 if (isBlank(report)) {
                     return AgentRunDirective.stop(null, AgentStopReason.TOOL_ERROR);
                 }
             }
             report = reporter.ensureAnalysisReportFormat(report, rounds);
-            if (twoPhase) {
+            if (needsProseReport) {
                 rounds.add(reporter.recordRound(iteration, response, finish,
                         AgentToolResult.ok("finish", "收口信号，报告已流式生成", report)));
                 return AgentRunDirective.stop(report, AgentStopReason.FINISH_TOOL);
             }
+            log.info("{}证据足够，接收模型完整报告", label);
             progress.onStep(label + "证据足够，正在生成最终报告");
             AgentToolResult finishResult = agentToolExecutor.execute(finish, toolContext);
             rounds.add(reporter.recordRound(iteration, response, finish, finishResult));
@@ -821,15 +849,20 @@ public class AgentAnalysisService {
             + "证据不足时在对应章节写明最可能判断和剩余风险，不得编造证据。";
 
     /**
-     * 两段式收口第二段：闭合 finish 信号后，用纯文字流式生成完整报告。
+     * 两段式收口第二段：闭合 finish 信号后，用纯文字流式生成完整报告；REFRAME 同样走这里收窄措辞。
      * 纯 content 流式不踩网关丢 tool_calls 的坑，分块回传也不怕读超时；累计快照经 progress 节流推给前端渐进展示。
      * 并行假设分支不往前端推（多链快照互相覆盖只会看花眼），只在单链时推。失败返回 null 由调用方兜底。
      */
     private String streamFinalReport(List<Map<String, Object>> messages, AiToolCallResult aiResult, AgentToolCall finish,
-                                     AnalysisProgressListener progress, AtomicInteger tokens, String label) {
+                                     AnalysisProgressListener progress, AtomicInteger tokens, String label, String reframeReason) {
         conversation.appendAssistantMessage(messages, aiResult);
         conversation.appendFinishAck(messages, aiResult, finish);
-        messages.add(conversation.message("user", PROSE_REPORT_INSTRUCTION));
+        String reportInstruction = isBlank(reframeReason) ? PROSE_REPORT_INSTRUCTION
+                : "独立复核认为核心结论成立，但最终报告需要收窄措辞：" + reframeReason
+                + "。只修正结论边界并明确剩余风险，不要继续补查，也不要把未确认细节写成事实。\n"
+                + PROSE_REPORT_INSTRUCTION;
+        messages.add(conversation.message("user", reportInstruction));
+        log.info("{}证据足够，开始流式生成最终报告", label);
         progress.onStep(label + "证据足够，开始生成最终报告");
         boolean pushPartial = !isHypothesisBranch(label);
         final long[] lastPushMs = {0};

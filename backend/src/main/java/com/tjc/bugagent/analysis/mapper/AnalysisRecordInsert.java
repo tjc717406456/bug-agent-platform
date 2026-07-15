@@ -26,6 +26,19 @@ public class AnalysisRecordInsert {
     private String recordType;
     // 发起人用户ID，项目内历史共享后用于展示"谁跑的"
     private Long createdBy;
+    private String environment;
+    private String databaseAccessLevel;
+    private Long schemaDatasourceId;
+    private Long businessDatasourceId;
+
+    public String getEnvironment() { return environment; }
+    public void setEnvironment(String environment) { this.environment = environment; }
+    public String getDatabaseAccessLevel() { return databaseAccessLevel; }
+    public void setDatabaseAccessLevel(String databaseAccessLevel) { this.databaseAccessLevel = databaseAccessLevel; }
+    public Long getSchemaDatasourceId() { return schemaDatasourceId; }
+    public void setSchemaDatasourceId(Long schemaDatasourceId) { this.schemaDatasourceId = schemaDatasourceId; }
+    public Long getBusinessDatasourceId() { return businessDatasourceId; }
+    public void setBusinessDatasourceId(Long businessDatasourceId) { this.businessDatasourceId = businessDatasourceId; }
 
     public String getRecordType() {
         return recordType;

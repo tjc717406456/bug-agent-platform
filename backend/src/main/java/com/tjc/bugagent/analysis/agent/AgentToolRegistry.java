@@ -60,7 +60,7 @@ public class AgentToolRegistry {
      * 按执行作用域过滤模型可见工具，避免子 Agent 看见无权调用的能力后反复试错。
      */
     public List<Map<String, Object>> definitions(boolean allowVerification, ProjectExecutionScope scope) {
-        if (scope == null || scope.getAllowedTools().isEmpty()) {
+        if (scope == null) {
             return definitions(allowVerification);
         }
         List<Map<String, Object>> result = new ArrayList<Map<String, Object>>();

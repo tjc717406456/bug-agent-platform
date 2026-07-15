@@ -5,7 +5,7 @@
     <!-- 列名下划线靠 map-underscore-to-camel-case 自动映射到驼峰字段，无需 resultMap -->
 
     <select id="list" resultType="com.tjc.bugagent.project.Project">
-        select id, name, code, description, owner_id
+        select id, name, code, description, environments, owner_id, schema_consistent, schema_reference_env
         from project
         <where>
             <if test="name != null and name != ''">
@@ -24,7 +24,7 @@
     </select>
 
     <select id="findById" resultType="com.tjc.bugagent.project.Project">
-        select id, name, code, description, owner_id from project where id = #{id}
+        select id, name, code, description, environments, owner_id, schema_consistent, schema_reference_env from project where id = #{id}
     </select>
 
     <select id="findOwnerId" resultType="java.lang.Long">
@@ -37,13 +37,19 @@
     </select>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
-        insert into project(name, code, owner_id, description, created_at, updated_at)
-        values (#{name}, #{code}, #{ownerId}, #{description}, now(), now())
+        insert into project(name, code, owner_id, description, environments, schema_reference_env, created_at, updated_at)
+        values (#{name}, #{code}, #{ownerId}, #{description}, #{environments}, #{schemaReferenceEnv}, now(), now())
     </insert>
 
     <update id="update">
         update project
-        set name = #{name}, code = #{code}, description = #{description}, updated_at = now()
+        set name = #{name}, code = #{code}, description = #{description}, environments = #{environments}, updated_at = now()
+        where id = #{id}
+    </update>
+
+    <update id="updateDatasourcePolicy">
+        update project
+        set schema_consistent = #{schemaConsistent}, schema_reference_env = #{schemaReferenceEnv}, updated_at = now()
         where id = #{id}
     </update>
 

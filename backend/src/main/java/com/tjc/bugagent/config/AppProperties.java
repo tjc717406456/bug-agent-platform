@@ -211,7 +211,7 @@ public class AppProperties {
         private int maxRows = 500;
         // 单条只读 SQL 的执行超时（秒），防止慢查询占住连接拖垮服务
         private int queryTimeoutSeconds = 15;
-        // describe_tables 返回的最近样例条数，让模型第一轮就看到数据长相
+        // 业务数据详情查询保留的样例条数；跨环境 describe_tables 不读取这些样例
         private int sampleRows = 3;
 
         public int getSampleRows() {

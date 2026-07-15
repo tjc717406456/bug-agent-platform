@@ -43,10 +43,57 @@ public class DatabaseMigrationService {
         // 鉴权相关：先补 owner_id 列与唯一键，再 seed 管理员并回填存量项目归属，顺序不可颠倒
         ensureAuthTables();
         ensureProjectOwnerColumn();
+        ensureProjectEnvironmentsColumn();
+        ensureProjectDatasourcePolicyColumns();
         ensureAuthBootstrap();
         ensureProjectMemberTable();
         ensureAnalysisCreatedByColumn();
+        ensureAnalysisDatasourceColumns();
         ensureTableComments();
+    }
+
+    /** 旧项目补环境列表；已有绑定环境在迁移后合并回项目配置。 */
+    private void ensureProjectEnvironmentsColumn() {
+        if (!tableExists("project")) {
+            return;
+        }
+        boolean existed = columnExists("project", "environments");
+        addColumnIfMissing("project", "environments",
+                "varchar(512) not null default 'prod,test' comment '项目环境列表，逗号分隔' after description");
+        if (!existed && tableExists("project_datasource")) {
+            jdbcTemplate.update("update project p join (" +
+                    "select project_id, group_concat(distinct lower(env) order by id separator ',') envs " +
+                    "from project_datasource group by project_id) d on d.project_id = p.id " +
+                    "set p.environments = concat(" +
+                    "if(find_in_set('prod', d.envs) = 0, 'prod,', '')," +
+                    "if(find_in_set('test', d.envs) = 0, 'test,', ''), d.envs)");
+        }
+    }
+
+    /** 旧项目补跨环境结构复用配置。 */
+    private void ensureProjectDatasourcePolicyColumns() {
+        if (!tableExists("project")) {
+            return;
+        }
+        addColumnIfMissing("project", "schema_consistent",
+                "tinyint not null default 1 comment '各环境表结构是否一致' after description");
+        addColumnIfMissing("project", "schema_reference_env",
+                "varchar(32) not null default 'test' comment '结构参考环境' after schema_consistent");
+    }
+
+    /** 分析记录固化环境和数据源边界，追问时不能重新挑库。 */
+    private void ensureAnalysisDatasourceColumns() {
+        if (!tableExists("analysis_record")) {
+            return;
+        }
+        addColumnIfMissing("analysis_record", "environment",
+                "varchar(32) comment '问题发生环境' after request_time");
+        addColumnIfMissing("analysis_record", "database_access_level",
+                "varchar(32) comment '实际数据库权限' after environment");
+        addColumnIfMissing("analysis_record", "schema_datasource_id",
+                "bigint comment '结构核对数据源ID' after database_access_level");
+        addColumnIfMissing("analysis_record", "business_datasource_id",
+                "bigint comment '业务数据核对数据源ID' after schema_datasource_id");
     }
 
     /** 旧库补建项目可见范围授权表（新库由 schema.sql 建）。 */
@@ -242,12 +289,16 @@ public class DatabaseMigrationService {
     }
 
     private void addColumnIfMissing(String tableName, String columnName, String columnDefinition) {
+        if (!columnExists(tableName, columnName)) {
+            jdbcTemplate.execute("alter table " + tableName + " add column " + columnName + " " + columnDefinition);
+        }
+    }
+
+    private boolean columnExists(String tableName, String columnName) {
         Integer count = jdbcTemplate.queryForObject(
                 "select count(1) from information_schema.columns where table_schema = database() and table_name = ? and column_name = ?",
                 Integer.class, tableName, columnName);
-        if (count == null || count == 0) {
-            jdbcTemplate.execute("alter table " + tableName + " add column " + columnName + " " + columnDefinition);
-        }
+        return count != null && count > 0;
     }
 
     /**

@@ -38,6 +38,7 @@ public class AnalysisRecordRepository {
         record.setScreenshotPaths(request.getScreenshotPaths());
         record.setTraceId(request.getTraceId());
         record.setRequestTime(request.getRequestTime());
+        copyDatasourceBoundary(request, record);
         record.setConclusion(conclusion);
         record.setConfidence(confidence);
         record.setEvidenceJson(evidence);
@@ -61,6 +62,7 @@ public class AnalysisRecordRepository {
         record.setVersionId(version.getId());
         record.setApiPath(request.getApiPath());
         record.setUserDescription(request.getUserDescription());
+        copyDatasourceBoundary(request, record);
         record.setConclusion(conclusion);
         record.setConfidence("");
         record.setEvidenceJson(evidence);
@@ -69,6 +71,14 @@ public class AnalysisRecordRepository {
         record.setCreatedBy(request.getOwnerId());
         analysisRecordMapper.insert(record);
         return record.getId();
+    }
+
+    /** 固化本次环境和数据源边界，后续追问严格继承。 */
+    private void copyDatasourceBoundary(AnalysisRequest request, AnalysisRecordInsert record) {
+        record.setEnvironment(request.getEnvironment());
+        record.setDatabaseAccessLevel(request.getDatabaseAccessLevel());
+        record.setSchemaDatasourceId(request.getSchemaDatasourceId());
+        record.setBusinessDatasourceId(request.getBusinessDatasourceId());
     }
 
     private String toJsonKeywords(List<String> keywords) {

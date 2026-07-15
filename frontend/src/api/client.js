@@ -143,6 +143,14 @@ export function listDatasources(projectId) {
   return request(`/projects/${projectId}/datasources`)
 }
 
+export async function saveProjectDatasourcePolicy(projectId, payload) {
+  const path = `/projects/${projectId}/datasource-policy`
+  console.info('HTTP请求', { url: API_PREFIX + path, method: 'PUT', payload })
+  const result = await request(path, { method: 'PUT', body: JSON.stringify(payload) })
+  console.info('HTTP响应', { url: API_PREFIX + path, success: true })
+  return result
+}
+
 export function listDbhubDatasources() {
   return request('/dbhub/datasources')
 }

@@ -32,11 +32,16 @@ public class AgentRoundReporter {
     }
 
     public Map<String, Object> recordCritique(int iteration, String report, String verdict) {
+        return recordCritique(iteration, report, verdict, "结论自检未通过，要求补证");
+    }
+
+    /** 记录自检结果，既支持打回补证，也支持仅收窄最终报告措辞。 */
+    public Map<String, Object> recordCritique(int iteration, String report, String verdict, String summary) {
         Map<String, Object> round = new LinkedHashMap<String, Object>();
         round.put("iteration", iteration);
         round.put("action", "self_critique");
         round.put("toolOk", true);
-        round.put("toolSummary", "结论自检未通过，要求补证");
+        round.put("toolSummary", summary);
         round.put("toolEvidence", "初步结论:\n" + safe(report) + "\n复核意见:\n" + safe(verdict));
         return round;
     }

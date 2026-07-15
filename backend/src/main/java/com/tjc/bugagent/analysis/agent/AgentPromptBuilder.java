@@ -30,7 +30,7 @@ public class AgentPromptBuilder {
         prompt.append("当入口、调用链、SQL/数据源、返回模型、差异点这五类证据已经足够解释问题时，必须停止查证并调用 finish。\n");
         prompt.append("如果连续两轮没有新增关键事实，必须停止查证并收口。\n");
         prompt.append("同一文件、同一类、同一 SQL 已读过且没有新问题时，不要重复读取。\n");
-        prompt.append("数据库只能执行只读 SQL。最终报告要让测试、实施能看懂，并保留开发可追溯证据。\n\n");
+        prompt.append("数据库能力以本次证据中的权限边界为准：SCHEMA_ONLY 只能核对字段和类型，BUSINESS_DATA 才能执行当前环境只读 SQL。最终报告要让测试、实施能看懂，并保留开发可追溯证据。\n\n");
         prompt.append("【工具使用方式】\n");
         prompt.append("通过调用提供的工具（tool_calls）行动，不要自己手写 JSON，不要输出 Markdown。\n");
         prompt.append("调用工具前，可在回复正文用一两句话简述这步要查什么、为什么。\n");
@@ -106,7 +106,7 @@ public class AgentPromptBuilder {
         prompt.append("你是只读接口讲解 Agent，给定接口路径，讲清这个接口是干什么的、完整流程，不修改代码，不挑 Bug。\n");
         prompt.append("初始证据已预取入口与关键调用节点的源码快照，先基于它判断，链路没讲透再调用工具补查。\n");
         prompt.append("初始证据已含本接口的完整调用链，不要再对同一接口调用 trace_call_chain（只有追查其他接口时才用它）；");
-        prompt.append("用 get_code_detail / search_code 读关键方法，describe_tables / query_database 看涉及的表结构和样例数据。\n");
+        prompt.append("用 get_code_detail / search_code 读关键方法；接口讲解不查询业务数据库。\n");
         prompt.append("同一文件、同一方法已读过就不要重复读；流程讲清楚就调用 finish 收口，不要无限下钻无关细节。\n");
         prompt.append("如果初始证据里带了【用户描述】，那是提问人的关注点，讲解要优先围绕它展开，先回答清楚他关心的部分。\n\n");
         prompt.append("【工具使用方式】\n");

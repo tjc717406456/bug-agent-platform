@@ -170,20 +170,26 @@ public class AgentConvergenceJudge {
     }
 
     /**
-     * 独立一次 LLM 调用，让模型基于证据反驳自己的初步结论。
-     * 用单独的会话（不污染主对话），结论站得住返回含 CONFIRM 的文本，有问题返回 REVISE。
-     * 复核这笔 LLM 开销计入 tokenSink。
+     * 独立一次 LLM 调用复核初步结论，不污染主对话。
+     * CONFIRM 直接收口，REFRAME 只修正报告边界，REVISE 才继续补查；复核开销计入 tokenSink。
      */
     public String runSelfCritique(String report, List<Map<String, Object>> rounds, String initialEvidence, AtomicInteger tokenSink) {
         // 自检证据保头留尾：头是入口/堆栈/路由定位，尾是末轮根因查证，超限时挖掉中间探索轮
         String evidence = trimHeadTail(roundReporter.buildEvidenceLog(initialEvidence, rounds), appProperties.getAgent().getInitialEvidenceLimit());
         StringBuilder prompt = new StringBuilder();
-        prompt.append("你是严格的代码评审，专挑 Bug 定位结论的毛病。只基于下面的证据反驳这个初步结论：\n");
-        prompt.append("1. 根因判断是否被证据直接支持，有没有臆测？\n");
-        prompt.append("2. 证据链有没有断点（比如说字段不匹配，却没真的查过表结构或 SQL）？\n");
-        prompt.append("3. 有没有比它更可能、却被忽略的原因？\n");
-        prompt.append("结论站得住、证据自洽，第一行只回 CONFIRM。\n");
-        prompt.append("有实质问题，第一行只回 REVISE，再用一句话说明还需要补查什么。不要复述结论，不要客套。\n\n");
+        prompt.append("你是 Bug 分析结论复核员。判断初步结论是否足以回答用户问题，不追求证明所有下游细节。\n");
+        prompt.append("复核规则：\n");
+        prompt.append("1. 只检查核心结论是否有日志、源码、SQL 或数据证据支持。\n");
+        prompt.append("2. 区分已确认的应用侧原因与尚不能确认的下游具体原因；未确认部分已写成限制或剩余风险即可。\n");
+        prompt.append("3. 不得要求当前证据源无法提供的材料，例如用户未提供的生产数据库、硬件端日志、网关日志或现场网络状态。\n");
+        prompt.append("4. 不得为了百分之百确定性继续补查；合理排除会改变处理方向的主要替代原因即可。\n");
+        prompt.append("5. 表述过满但核心结论成立，只要求收窄措辞，不要求继续调查。\n");
+        prompt.append("6. 只有缺失证据会实质改变根因判断、处理方向或用户答案时，才要求继续补查，且证据必须能从现有工具和数据源获得。\n");
+        prompt.append("输出规则：\n");
+        prompt.append("- 核心结论成立且证据足够，第一行只回 CONFIRM。\n");
+        prompt.append("- 核心结论成立但措辞需要收窄，第一行只回 REFRAME，第二行用一句话说明如何修改。\n");
+        prompt.append("- 缺少会改变根因判断的关键证据，第一行只回 REVISE，第二行只说明一个最关键且可获取的证据缺口。\n");
+        prompt.append("不要复述报告，不要提出与用户问题无关的深层验证要求。\n\n");
         prompt.append("【初步结论】\n").append(safe(report)).append("\n\n");
         prompt.append("【已收集证据】\n").append(evidence);
         AiToolCallResult result = aiClient.chatWithTools(prompt.toString(), null);
@@ -208,8 +214,32 @@ public class AgentConvergenceJudge {
         return false;
     }
 
+    /** 判断复核是否只要求收窄报告措辞，不再继续调用工具补证。 */
+    public boolean isReframeVerdict(String verdict) {
+        return firstVerdictLineStartsWith(verdict, "REFRAME");
+    }
+
+    private boolean firstVerdictLineStartsWith(String verdict, String prefix) {
+        if (isBlank(verdict)) {
+            return false;
+        }
+        for (String line : verdict.split("\\r?\\n")) {
+            String trimmed = line.trim();
+            if (!trimmed.isEmpty()) {
+                return trimmed.toUpperCase().startsWith(prefix);
+            }
+        }
+        return false;
+    }
+
     public String reviseReason(String verdict) {
         String reason = safe(verdict).replaceFirst("(?i)^\\s*REVISE[:：]?", "").trim();
         return trim(reason.isEmpty() ? "证据链存在断点" : reason, 200);
+    }
+
+    /** 提取 REFRAME 后的措辞修正要求，供最终报告生成阶段使用。 */
+    public String reframeReason(String verdict) {
+        String reason = safe(verdict).replaceFirst("(?i)^\\s*REFRAME[:：]?", "").trim();
+        return trim(reason.isEmpty() ? "收窄未被证据直接支持的表述，并明确剩余风险" : reason, 200);
     }
 }

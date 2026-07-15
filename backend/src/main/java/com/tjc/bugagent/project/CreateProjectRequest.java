@@ -11,6 +11,8 @@ public class CreateProjectRequest {
     @NotBlank
     private String code;
     private String description;
+    @NotBlank
+    private String environments = "prod,test";
 
     public String getName() {
         return name;
@@ -35,5 +37,12 @@ public class CreateProjectRequest {
     public void setDescription(String description) {
         this.description = description;
     }
-}
 
+    public String getEnvironments() {
+        return environments;
+    }
+
+    public void setEnvironments(String environments) {
+        this.environments = environments;
+    }
+}

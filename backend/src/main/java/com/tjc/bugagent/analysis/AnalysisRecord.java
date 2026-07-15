@@ -19,6 +19,19 @@ public class AnalysisRecord {
     private String expectKeywords;
     private String createdByName;
     private String createdAt;
+    private String environment;
+    private String databaseAccessLevel;
+    private Long schemaDatasourceId;
+    private Long businessDatasourceId;
+
+    public String getEnvironment() { return environment; }
+    public void setEnvironment(String environment) { this.environment = environment; }
+    public String getDatabaseAccessLevel() { return databaseAccessLevel; }
+    public void setDatabaseAccessLevel(String databaseAccessLevel) { this.databaseAccessLevel = databaseAccessLevel; }
+    public Long getSchemaDatasourceId() { return schemaDatasourceId; }
+    public void setSchemaDatasourceId(Long schemaDatasourceId) { this.schemaDatasourceId = schemaDatasourceId; }
+    public Long getBusinessDatasourceId() { return businessDatasourceId; }
+    public void setBusinessDatasourceId(Long businessDatasourceId) { this.businessDatasourceId = businessDatasourceId; }
 
     public Long getId() {
         return id;

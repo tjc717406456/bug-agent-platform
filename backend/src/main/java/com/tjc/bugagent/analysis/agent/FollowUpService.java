@@ -9,7 +9,7 @@ import com.tjc.bugagent.analysis.AnalysisResult;
 import com.tjc.bugagent.ai.AiClient;
 import com.tjc.bugagent.ai.AiToolCallResult;
 import com.tjc.bugagent.config.AppProperties;
-import com.tjc.bugagent.project.ProjectDatasource;
+import com.tjc.bugagent.project.DatasourceSelection;
 import com.tjc.bugagent.project.ProjectService;
 import com.tjc.bugagent.project.ProjectVersion;
 import org.slf4j.Logger;
@@ -88,9 +88,11 @@ public class FollowUpService {
         if (version == null) {
             throw new IllegalStateException("项目没有可用的已索引版本");
         }
-        ProjectDatasource datasource = projectService.firstEnabledDatasource(record.getProjectId());
+        DatasourceSelection datasourceSelection = projectService.restoreDatasourceSelection(record.getProjectId(),
+                record.getEnvironment(), record.getDatabaseAccessLevel(), record.getSchemaDatasourceId(),
+                record.getBusinessDatasourceId());
         AgentToolExecutor.AgentToolContext toolContext = new AgentToolExecutor.AgentToolContext(
-                progress.executionScope(record.getProjectId(), version.getId(), datasource),
+                progress.executionScope(record.getProjectId(), version.getId(), datasourceSelection),
                 record.getApiPath(), null, null);
 
         List<Map<String, Object>> messages = buildMessages(record, question);
@@ -168,7 +170,7 @@ public class FollowUpService {
                 (explain
                         ? "你是刚完成该接口流程讲解的 agent，现在回答使用者对这份讲解的追问。\n"
                         : "你是刚完成该接口 Bug 分析的定位 agent，现在回答使用者对这份报告的追问。\n")
-                        + "规则：优先基于下面的" + (explain ? "讲解" : "分析报告") + "与已查证据回答；现有证据答不了就调用工具补查（数据库只读）；"
+                        + "规则：优先基于下面的" + (explain ? "讲解" : "分析报告") + "与已查证据回答；现有证据答不了就调用授权范围内的工具补查；"
                         + "不确定就明说，不要编造。注意：代码/数据库查询基于项目当前版本，可能与" + (explain ? "讲解" : "分析") + "当时略有差异。\n"
                         + "能回答时调用 finish 收口（report 留空即可），完整回答会让你随后单独用纯文字输出；"
                         + "回答要直接针对问题，带上关键证据（代码位置/SQL/数据），不用重复整份" + (explain ? "讲解" : "报告") + "。"));
