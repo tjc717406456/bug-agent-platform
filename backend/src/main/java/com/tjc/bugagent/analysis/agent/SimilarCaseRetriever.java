@@ -259,7 +259,7 @@ public class SimilarCaseRetriever {
 
     // 结论里的小节标题壳（带 markdown # 或【】装饰），抓根因时要剥掉，别把"通俗结论"标题当根因
     private static final Pattern HEADING_PREFIX = Pattern.compile(
-            "^[#\\s]*【?\\s*(?:通俗结论|问题结论|证据链路|根因类型|关键证据|关键代码|建议处理人|置信度|结论)\\s*】?[:：]?\\s*");
+            "^[#\\s]*【?\\s*(?:通俗结论|问题结论|证据链路|根因类型|关键证据|关键代码|建议处理人|置信度|给开发 AI 的修复提示|结论)\\s*】?[:：]?\\s*");
 
     /** 真实根因优先取人工确认的；没有就退回结论里第一行有正文的内容，剥掉小节标题壳，避免抓到"【通俗结论】"这种空标题。 */
     private String resolveRootCause(String actualRootCause, String conclusion) {

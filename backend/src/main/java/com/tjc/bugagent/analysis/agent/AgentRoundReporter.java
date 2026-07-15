@@ -93,13 +93,16 @@ public class AgentRoundReporter {
         return ensureAnalysisReportFormat("Agent 已达最大分析轮次仍未形成自洽结论，需要结合已收集证据人工研判。", rounds);
     }
 
-    /**
-     * 校验 Bug 定位报告是否包含统一的七段结构。
-     */
+    /** 校验 Bug 定位报告是否包含统一的八段结构。 */
     public boolean isCompleteAnalysisReport(String report) {
         if (isBlank(report)) {
             return false;
         }
+        return hasCoreAnalysisSections(report)
+                && report.contains("【给开发 AI 的修复提示】");
+    }
+
+    private boolean hasCoreAnalysisSections(String report) {
         return report.contains("【通俗结论】")
                 && report.contains("【问题结论】")
                 && report.contains("【证据链路】")
@@ -115,6 +118,11 @@ public class AgentRoundReporter {
     public String ensureAnalysisReportFormat(String candidate, List<Map<String, Object>> rounds) {
         if (isCompleteAnalysisReport(candidate)) {
             return candidate;
+        }
+        if (!isBlank(candidate) && hasCoreAnalysisSections(candidate)) {
+            StringBuilder completed = new StringBuilder(safe(candidate).trim());
+            appendDeveloperAiRepairHint(completed, developerRepairIssue(candidate), rounds);
+            return completed.toString();
         }
         String conclusion = isBlank(candidate)
                 ? "Agent 已达最大分析轮次仍未形成自洽结论，需要结合已收集证据人工研判。"
@@ -137,7 +145,28 @@ public class AgentRoundReporter {
         report.append("\n【根因类型】待人工确认（最终模型输出未按结构化协议标注）\n");
         report.append("【建议处理人】后端开发\n");
         report.append("【置信度】LOW\n");
+        appendDeveloperAiRepairHint(report, firstMeaningfulLine(conclusion), rounds);
         return report.toString();
+    }
+
+    private void appendDeveloperAiRepairHint(StringBuilder report, String issue, List<Map<String, Object>> rounds) {
+        report.append("\n【给开发 AI 的修复提示】\n");
+        report.append("问题：请根据本报告修复：").append(trim(issue, 180)).append("\n");
+        report.append("已确认：当前报告已记录可追溯的源码、日志、SQL 或数据证据；实施时只采信其中明确确认的事实，")
+                .append("未确认内容继续保留为风险，不要擅自补成确定结论。\n");
+        report.append("修改目标：先读取当前分支相关 Controller、Service、Mapper、响应模型及调用方，")
+                .append("围绕已定位根因做最小修改，复用现有字段、错误码和公共能力，不改变无关流程；")
+                .append("若修复方式涉及接口契约或产品行为，先确认兼容方案。\n");
+        report.append("验证：复现原异常，检查修复后的主流程、失败分支和关键边界场景，确认返回语义与现有调用方兼容。");
+        if (!rounds.isEmpty()) {
+            report.append("优先复核证据页中最近几轮的源码和运行日志。");
+        }
+        report.append("这只是修复提示，不是已验证补丁，请读取当前代码后再实施。\n");
+    }
+
+    private String developerRepairIssue(String report) {
+        String firstLine = firstMeaningfulLine(report);
+        return trim(firstLine.replaceFirst("^【通俗结论】\\s*", ""), 180);
     }
 
     private void appendEvidenceSummaries(StringBuilder report, List<Map<String, Object>> rounds) {

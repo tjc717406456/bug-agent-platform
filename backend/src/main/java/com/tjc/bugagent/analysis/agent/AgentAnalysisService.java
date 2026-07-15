@@ -501,7 +501,6 @@ public class AgentAnalysisService {
         private String forceFinishReason;
         private int sideTokens;
         private int sideIterations;
-        private int mainToolCalls;
         private final boolean allowSubAgentDelegation;
         private boolean subAgentsDelegated;
 
@@ -519,25 +518,6 @@ public class AgentAnalysisService {
             this.sideTokens = sideTokens;
             this.sideIterations = sideIterations;
             this.allowSubAgentDelegation = allowSubAgentDelegation;
-        }
-
-        @Override
-        public List<AgentToolCall> filterToolCalls(AgentRunContext context, List<AgentToolCall> calls) {
-            if (!isMultiAgentMain() || !subAgentsDelegated) {
-                return calls;
-            }
-            int remaining = Math.max(0, appProperties.getAgent().getMultiAgentMainToolBudget() - mainToolCalls);
-            int allowed = Math.min(2, remaining);
-            List<AgentToolCall> filtered = new ArrayList<AgentToolCall>();
-            for (AgentToolCall call : calls) {
-                if ("finish".equals(call.getAction())) {
-                    filtered.add(call);
-                } else if (allowed > 0) {
-                    filtered.add(call);
-                    allowed--;
-                }
-            }
-            return filtered;
         }
 
         public void beforeIteration(AgentRunContext context) {
@@ -588,6 +568,7 @@ public class AgentAnalysisService {
                     String reason = isBlank(forceFinishReason) ? "模型未按协议收口，依据已查证据汇总" : forceFinishReason;
                     report = reporter.buildForcedFinishReport(reason, rounds);
                 }
+                report = reporter.ensureAnalysisReportFormat(report, rounds);
                 rounds.add(reporter.recordRound(iteration, response, finish,
                         AgentToolResult.ok("finish", "已据证据生成最终报告", report)));
                 return AgentRunDirective.stop(report, AgentStopReason.FINISH_TOOL);
@@ -596,8 +577,8 @@ public class AgentAnalysisService {
             boolean canCritique = appProperties.getAgent().isSelfCritique()
                     && !selfChecked && isBlank(forceFinishReason) && finish.getToolCallId() != null;
             String report = finish.stringArg("report");
-            boolean twoPhase = safe(report).trim().length() < 300
-                    && isBlank(forceFinishReason) && finish.getToolCallId() != null;
+            // 正常 finish 一律进入流式终稿，不能按 report 长度分流；部分模型会把完整初稿直接塞进参数
+            boolean needsProseReport = isBlank(forceFinishReason) && finish.getToolCallId() != null;
             String reframeReason = null;
             if (canCritique) {
                 // 无论复核通过还是打回补证，一条调查链只做一次独立自检，防止反复抬高证明标准
@@ -630,7 +611,6 @@ public class AgentAnalysisService {
                     progress.onStep(label + "结论概要自检通过，开始生成最终报告");
                 }
             }
-            boolean needsProseReport = twoPhase || !isBlank(reframeReason);
             if (needsProseReport) {
                 AtomicInteger tokenSink = new AtomicInteger();
                 report = streamFinalReport(context.getMessages(), response, finish, progress, tokenSink, label, reframeReason);
@@ -687,13 +667,11 @@ public class AgentAnalysisService {
             if (continuousFailures >= MAX_CONTINUOUS_FAILURES) {
                 return AgentRunDirective.stop(reporter.buildFailureReport(rounds), AgentStopReason.CONTINUOUS_TOOL_FAILURES);
             }
-            boolean delegatedThisRound = false;
             if (shouldDelegate(context)) {
                 boolean codeNeeded = needsCodeAgent(calls);
                 boolean logNeeded = needsLogAgent(calls);
                 if (codeNeeded || logNeeded) {
                     subAgentsDelegated = true;
-                    delegatedThisRound = true;
                     progress.onStep(label + "当前调查出现明确缺口，按需委派"
                             + (codeNeeded ? "源码 Agent" : "")
                             + (codeNeeded && logNeeded ? "和" : "")
@@ -708,17 +686,6 @@ public class AgentAnalysisService {
                         context.getMessages().add(conversation.message("user", investigation.evidencePrompt()));
                         progress.onStep(label + "子 Agent 已交接定向证据，主 Agent 继续裁决");
                     }
-                }
-            }
-            if (isMultiAgentMain() && subAgentsDelegated && !delegatedThisRound) {
-                mainToolCalls += calls.size();
-                if (mainToolCalls >= appProperties.getAgent().getMultiAgentMainToolBudget()) {
-                    progress.onStep(label + "已完成补缺口工具预算，停止继续探索并生成报告");
-                    AtomicInteger tokenSink = new AtomicInteger();
-                    String report = forceSynthesizeReport(context.getMessages(), toolContext, rounds,
-                            context.getIteration() + 1, tokenSink, progress, label, AgentStopReason.TOOL_BUDGET);
-                    context.addTokens(tokenSink.get());
-                    return AgentRunDirective.stop(report, AgentStopReason.TOOL_BUDGET);
                 }
             }
             return AgentRunDirective.continueRun();
@@ -744,7 +711,6 @@ public class AgentAnalysisService {
             state.put("forceFinishReason", forceFinishReason);
             state.put("sideTokens", sideTokens);
             state.put("sideIterations", sideIterations);
-            state.put("mainToolCalls", mainToolCalls);
             state.put("subAgentsDelegated", subAgentsDelegated);
             return state;
         }
@@ -762,7 +728,6 @@ public class AgentAnalysisService {
             forceFinishReason = reason == null ? null : String.valueOf(reason);
             sideTokens = AgentRunStateUtils.intValue(state, "sideTokens");
             sideIterations = AgentRunStateUtils.intValue(state, "sideIterations");
-            mainToolCalls = AgentRunStateUtils.intValue(state, "mainToolCalls");
             subAgentsDelegated = AgentRunStateUtils.boolValue(state, "subAgentsDelegated");
         }
 
@@ -843,10 +808,13 @@ public class AgentAnalysisService {
 
     // 收口后纯文字报告的统一指令：两段式流式与 degraded 救场共用一套要求
     private static final String PROSE_REPORT_INSTRUCTION = "现在不要调用任何工具，直接用纯文字写出最终定位报告，"
-            + "必须严格按以下七段标题输出，不得省略标题，不得缩写成单段摘要：\n"
+            + "必须严格按以下八段标题输出，不得省略标题，不得缩写成单段摘要：\n"
             + "【通俗结论】\n【问题结论】\n【证据链路】\n【关键代码/SQL/数据证据】\n"
-            + "【根因类型】\n【建议处理人】\n【置信度】\n"
-            + "证据不足时在对应章节写明最可能判断和剩余风险，不得编造证据。";
+            + "【根因类型】\n【建议处理人】\n【置信度】\n【给开发 AI 的修复提示】\n"
+            + "证据不足时在对应章节写明最可能判断和剩余风险，不得编造证据。"
+            + "最后一段控制在 300-600 字，只写问题、已确认、修改目标、验证四块；"
+            + "它只是修复提示，不是已验证补丁。只引用已确认事实，不编造代码、行号或产品决定，"
+            + "不重复整份报告，不携带无关生产数据和敏感信息，并提醒开发 AI 先读取当前代码再实施。";
 
     /**
      * 两段式收口第二段：闭合 finish 信号后，用纯文字流式生成完整报告；REFRAME 同样走这里收窄措辞。
@@ -915,8 +883,7 @@ public class AgentAnalysisService {
                                          List<Map<String, Object>> rounds, int iteration, AtomicInteger tokenSink,
                                          AnalysisProgressListener progress, String label, AgentStopReason stopReason) {
         try {
-            String finishReason = stopReason == AgentStopReason.TOKEN_BUDGET ? "已达到本次 Token 预算"
-                    : stopReason == AgentStopReason.TOOL_BUDGET ? "已完成本次补缺口工具预算" : "已达到最大分析轮次";
+            String finishReason = stopReason == AgentStopReason.TOKEN_BUDGET ? "已达到本次 Token 预算" : "已达到最大分析轮次";
             log.info("{}{}，查证结束，开始流式生成最终报告", label, finishReason);
             progress.onStep(label + finishReason + "，开始生成最终报告");
             messages.add(conversation.message("user", finishReason + "。请基于全部已确认事实和复核意见完成收尾。"

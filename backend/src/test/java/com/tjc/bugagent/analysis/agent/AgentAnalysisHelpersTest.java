@@ -150,6 +150,8 @@ class AgentAnalysisHelpersTest {
         assertTrue(report.contains("【根因类型】"), report);
         assertTrue(report.contains("【建议处理人】"), report);
         assertTrue(report.contains("【置信度】"), report);
+        assertTrue(report.contains("【给开发 AI 的修复提示】"), report);
+        assertTrue(report.contains("这只是修复提示，不是已验证补丁"), report);
     }
 
     @Test
@@ -161,9 +163,38 @@ class AgentAnalysisHelpersTest {
                 + "【关键代码/SQL/数据证据】sendWithAck=false\n"
                 + "【根因类型】设备通信异常\n"
                 + "【建议处理人】设备开发\n"
-                + "【置信度】HIGH";
+                + "【置信度】HIGH\n"
+                + "【给开发 AI 的修复提示】请读取当前代码后修复并验证。";
 
         assertEquals(report, reporter.ensureAnalysisReportFormat(report,
                 new ArrayList<Map<String, Object>>()));
+    }
+
+    @Test
+    void finalReportAppendsDeveloperAiHintWithoutWrappingCoreSectionsAgain() {
+        AgentRoundReporter reporter = new AgentRoundReporter();
+        String report = "【通俗结论】设备无响应\n"
+                + "【问题结论】ACK超时\n"
+                + "【证据链路】发送后等待30秒\n"
+                + "【关键代码/SQL/数据证据】sendWithAck=false\n"
+                + "【根因类型】设备通信异常\n"
+                + "【建议处理人】设备开发\n"
+                + "【置信度】HIGH";
+
+        String completed = reporter.ensureAnalysisReportFormat(report, new ArrayList<Map<String, Object>>());
+
+        assertTrue(completed.startsWith(report), completed);
+        assertEquals(1, countOccurrences(completed, "【通俗结论】"));
+        assertEquals(1, countOccurrences(completed, "【给开发 AI 的修复提示】"));
+    }
+
+    private static int countOccurrences(String text, String target) {
+        int count = 0;
+        int index = 0;
+        while ((index = text.indexOf(target, index)) >= 0) {
+            count++;
+            index += target.length();
+        }
+        return count;
     }
 }

@@ -35,8 +35,9 @@ public class AgentPromptBuilder {
         prompt.append("通过调用提供的工具（tool_calls）行动，不要自己手写 JSON，不要输出 Markdown。\n");
         prompt.append("调用工具前，可在回复正文用一两句话简述这步要查什么、为什么。\n");
         prompt.append("证据足够后调用 finish 工具收口：report 参数留空或只写一句结论概要即可，完整报告会在收口后让你单独用纯文字输出；不要继续追查无关细节。\n");
-        prompt.append("最终报告必须包含：通俗结论、问题结论、证据链路、关键代码/SQL/数据证据、根因类型、建议处理人、置信度。\n");
+        prompt.append("最终报告必须包含：通俗结论、问题结论、证据链路、关键代码/SQL/数据证据、根因类型、建议处理人、置信度、给开发 AI 的修复提示。\n");
         prompt.append("其中【通俗结论】放在最前面，用一句话讲清楚是什么问题，让运维、测试、实施都能看懂（例：xx 字段在数据库不存在、xx 字段存的值超长、必填字段没传值）。\n\n");
+        prompt.append("【给开发 AI 的修复提示】放在最后，控制在 300-600 字，只写问题、已确认、修改目标、验证四块。它只是给编码 AI 的任务提示，不是已验证补丁；只使用已查证的文件、方法、字段和事实，不编造代码、行号或产品决定，不重复整份报告，不携带无关生产数据和敏感信息，并提醒编码 AI 先读取当前代码再实施。\n\n");
         prompt.append("【收口规则】\n");
         prompt.append("如果你已经能明确指出最可能的根因和最小修复点，就不要再查重复证据，直接 finish。\n");
         prompt.append("如果只能给出高概率判断，也要在最终报告里说明剩余风险，不要空转。\n");
@@ -74,7 +75,9 @@ public class AgentPromptBuilder {
         return "下面是针对同一个 Bug、几个不同根因假设各自独立调查得出的结论：\n\n" + branchReports + "\n\n"
                 + "基于各结论给出的证据强度，判断哪个才是真正的根因（证据最直接、链路最完整的胜出），"
                 + "必要时融合多条线索。输出一份最终定位报告，包含：通俗结论、问题结论、证据链路、"
-                + "关键代码/SQL/数据证据、根因类型、建议处理人、置信度。直接给报告正文，不要复述各假设。";
+                + "关键代码/SQL/数据证据、根因类型、建议处理人、置信度、给开发 AI 的修复提示。"
+                + "修复提示控制在 300-600 字，只含问题、已确认、修改目标、验证四块，不能把建议方案写成已验证补丁。"
+                + "直接给报告正文，不要复述各假设。";
     }
 
     public String buildForceFinishInstruction(String forceFinishReason) {
@@ -106,7 +109,8 @@ public class AgentPromptBuilder {
         prompt.append("你是只读接口讲解 Agent，给定接口路径，讲清这个接口是干什么的、完整流程，不修改代码，不挑 Bug。\n");
         prompt.append("初始证据已预取入口与关键调用节点的源码快照，先基于它判断，链路没讲透再调用工具补查。\n");
         prompt.append("初始证据已含本接口的完整调用链，不要再对同一接口调用 trace_call_chain（只有追查其他接口时才用它）；");
-        prompt.append("用 get_code_detail / search_code 读关键方法；接口讲解不查询业务数据库。\n");
+        prompt.append("用 get_code_detail / search_code 读关键方法；数据库能力以本次证据中的权限边界为准："
+                + "SCHEMA_ONLY 只能核对字段和类型，BUSINESS_DATA 才能执行当前环境只读 SQL。\n");
         prompt.append("同一文件、同一方法已读过就不要重复读；流程讲清楚就调用 finish 收口，不要无限下钻无关细节。\n");
         prompt.append("如果初始证据里带了【用户描述】，那是提问人的关注点，讲解要优先围绕它展开，先回答清楚他关心的部分。\n\n");
         prompt.append("【工具使用方式】\n");

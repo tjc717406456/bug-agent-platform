@@ -68,6 +68,7 @@ public final class ProjectExecutionScope {
         if ("describe_tables".equals(name) && schemaDatasource == null) {
             return false;
         }
+        // 空集合表示未配置工具限制；需要禁用部分工具时必须通过 child() 传入明确白名单
         return allowedTools.isEmpty() || allowedTools.contains(name);
     }
 

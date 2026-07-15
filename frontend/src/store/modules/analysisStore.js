@@ -220,13 +220,14 @@ export async function apiAnalyzeAction() {
   agentTaskStopping.value = false
   agentProgressVisible.value = true
   try {
-    // 接口讲解只需项目+版本+接口；问题描述选填，填了就当关注点引导讲解方向
+    // 接口讲解不读取日志；数据库仍按当前环境和权限策略提供结构或只读数据能力
     const payload = {
       projectId: currentProject.value.id,
       versionId: analysisForm.versionId ? Number(analysisForm.versionId) : null,
       apiPath: analysisForm.apiPath,
       userDescription: analysisForm.userDescription,
-      environment: analysisForm.environment
+      environment: analysisForm.environment,
+      databasePolicy: analysisForm.databasePolicy
     }
     const task = await submitApiExplainTask(payload)
     saveActiveTask(task.taskId)

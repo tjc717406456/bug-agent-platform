@@ -87,11 +87,18 @@ public class ApiExplainService {
         ProjectVersion version = resolveVersion(request);
         CodeGraphQueryResult graph = codeGraphQueryService.queryByApiPath(request.getProjectId(), version.getId(), request.getApiPath());
         DatasourceSelection datasourceSelection = projectService.resolveDatasourceSelection(
-                request.getProjectId(), request.getEnvironment(), DatasourceSelection.NONE);
+                request.getProjectId(), request.getEnvironment(), request.getDatabasePolicy());
         request.setEnvironment(datasourceSelection.getEnvironment());
         request.setDatabaseAccessLevel(datasourceSelection.getAccessLevel());
+        ProjectExecutionScope parentScope = progress.executionScope(
+                request.getProjectId(), version.getId(), datasourceSelection);
+        String explainTaskId = isBlank(parentScope.getTaskId()) ? "api-explain" : parentScope.getTaskId() + ":explain";
+        ProjectExecutionScope explainScope = parentScope.child(
+                explainTaskId, "search_code", "get_code_detail", "trace_call_chain",
+                "search_sql", "grep_source", "find_callers", "describe_tables",
+                "query_database", "finish");
         AgentToolExecutor.AgentToolContext toolContext = new AgentToolExecutor.AgentToolContext(
-                progress.executionScope(request.getProjectId(), version.getId(), datasourceSelection),
+                explainScope,
                 request.getApiPath(), null, null);
 
         // 讲解不需要日志/堆栈，给个空线索，初始证据按"有才拼"自动跳过这些段落

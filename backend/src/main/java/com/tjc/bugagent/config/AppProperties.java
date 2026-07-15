@@ -306,8 +306,6 @@ public class AppProperties {
         // 多 Agent 子任务只做前置取证，轮次和累计 Token 都要比主链小
         private int multiAgentSubIterations = 4;
         private int multiAgentSubTokenBudget = 30000;
-        // 子 Agent 完成调查后，主 Agent 只补明确缺口；工具预算防止重复开荒
-        private int multiAgentMainToolBudget = 6;
         // 主 Agent 先自行调查若干轮，仍未收口时才按当前证据缺口委派子 Agent
         private int multiAgentDelegateAfterIterations = 2;
         private int multiAgentWaitSeconds = 45;
@@ -384,14 +382,6 @@ public class AppProperties {
 
         public void setMultiAgentSubTokenBudget(int multiAgentSubTokenBudget) {
             this.multiAgentSubTokenBudget = multiAgentSubTokenBudget;
-        }
-
-        public int getMultiAgentMainToolBudget() {
-            return multiAgentMainToolBudget;
-        }
-
-        public void setMultiAgentMainToolBudget(int multiAgentMainToolBudget) {
-            this.multiAgentMainToolBudget = multiAgentMainToolBudget;
         }
 
         public int getMultiAgentDelegateAfterIterations() {

@@ -77,10 +77,9 @@ app:
     hypothesis-min-score-gap: 25
     hypothesis-chain-iterations: 12
     hypothesis-pool-size: 2
-    # 多 Agent 先分工取证、再由主 Agent 补缺口；两段分别限轮次和累计 Token，避免重复深挖失控
+    # 多 Agent 子任务单独限轮次和累计 Token；主 Agent 仍统一走 max-iterations 与空转收敛
     multi-agent-sub-iterations: 4
     multi-agent-sub-token-budget: 30000
-    multi-agent-main-tool-budget: 6
     multi-agent-delegate-after-iterations: 2
     multi-agent-wait-seconds: 45
   ai:
